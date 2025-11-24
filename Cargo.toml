@@ -1,0 +1,7 @@
+[workspace]
+members = [
+  # Components will be added as they are developed
+  # "model",
+  # "server",
+  # "client"
+]
