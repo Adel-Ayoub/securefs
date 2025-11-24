@@ -27,6 +27,20 @@ CREATE EXTENSION IF NOT EXISTS pgcrypto;
 -- - members: Array of user IDs in the group
 -- - created_at: Group creation timestamp
 
+-- Users table: Authentication and user management
+CREATE TABLE users (
+    id BIGSERIAL PRIMARY KEY,
+    username VARCHAR(255) UNIQUE NOT NULL,
+    password_hash VARCHAR(255) NOT NULL,
+    salt VARCHAR(255) NOT NULL,
+    is_admin BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_login TIMESTAMP WITH TIME ZONE
+);
+
+-- Create index on username for fast lookups during authentication
+CREATE INDEX idx_users_username ON users(username);
+
 -- fnode table: File/directory metadata
 -- - id: Unique identifier
 -- - name: Encrypted file/directory name
@@ -40,4 +54,4 @@ CREATE EXTENSION IF NOT EXISTS pgcrypto;
 -- - modified_at: Last modification timestamp
 -- - parent_id: Parent directory ID (NULL for root)
 
--- Schema will be implemented in subsequent commits
+-- Groups and fnode tables will be implemented in subsequent commits
