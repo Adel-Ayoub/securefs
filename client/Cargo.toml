@@ -1,0 +1,22 @@
+[package]
+name = "securefs-client"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "SecureFS command-line client for file system operations"
+license.workspace = true
+
+[[bin]]
+name = "securefs"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4.0", features = ["derive"] }
+tokio = { version = "1.0", features = ["full"] }
+tokio-tungstenite = "0.20"
+tungstenite = "0.20"
+futures-util = "0.3"
+serde_json = "1.0"
+
+# Internal dependencies
+securefs-model = { path = "../model" }
