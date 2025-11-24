@@ -54,4 +54,19 @@ CREATE INDEX idx_users_username ON users(username);
 -- - modified_at: Last modification timestamp
 -- - parent_id: Parent directory ID (NULL for root)
 
--- Groups and fnode tables will be implemented in subsequent commits
+-- Groups table: Group management and membership
+CREATE TABLE groups (
+    id BIGSERIAL PRIMARY KEY,
+    name VARCHAR(255) UNIQUE NOT NULL,
+    owner_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    members BIGINT[] NOT NULL DEFAULT '{}',
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Create index on group name for fast lookups
+CREATE INDEX idx_groups_name ON groups(name);
+
+-- Create index on owner_id for group ownership queries
+CREATE INDEX idx_groups_owner_id ON groups(owner_id);
+
+-- fnode table will be implemented in subsequent commits
