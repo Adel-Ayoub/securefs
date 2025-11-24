@@ -65,3 +65,108 @@ pub struct Group {
     /// Creation timestamp
     pub created_at: u64,
 }
+
+/// Represents a file system path
+#[derive(Debug, Clone, PartialEq)]
+pub struct Path {
+    /// Components of the path (e.g., ["home", "user", "file.txt"])
+    pub components: Vec<String>,
+    /// Whether this is an absolute path
+    pub is_absolute: bool,
+}
+
+/// File system commands supported by SecureFS
+#[derive(Debug, Clone, PartialEq)]
+pub enum Cmd {
+    // Authentication
+    Login { username: String, password: String },
+    Logout,
+
+    // File operations
+    List { path: Option<Path> },
+    ChangeDir { path: Path },
+    PrintWorkingDir,
+    ReadFile { path: Path },
+    WriteFile { path: Path, data: Vec<u8> },
+    CreateFile { path: Path },
+    CreateDir { path: Path },
+    Remove { path: Path, recursive: bool },
+    Copy { src: Path, dst: Path },
+    Move { src: Path, dst: Path },
+
+    // User management (admin only)
+    CreateUser { username: String, password: String, is_admin: bool },
+    DeleteUser { username: String },
+    ChangePassword { username: String, new_password: String },
+
+    // Group management
+    CreateGroup { name: String },
+    DeleteGroup { name: String },
+    AddUserToGroup { username: String, groupname: String },
+    RemoveUserFromGroup { username: String, groupname: String },
+
+    // Permission management
+    ChangePermissions { path: Path, permissions: u32 },
+    ChangeOwner { path: Path, username: String },
+    ChangeGroup { path: Path, groupname: String },
+
+    // Search operations
+    Find { path: Path, pattern: String },
+
+    // System info
+    WhoAmI,
+    Groups,
+}
+
+/// Message wrapper for client-server communication
+#[derive(Debug, Clone, PartialEq)]
+pub struct AppMessage {
+    /// Unique message identifier
+    pub id: String,
+    /// Session token for authenticated requests
+    pub session_token: Option<String>,
+    /// The command being executed
+    pub command: Cmd,
+    /// Timestamp when the message was created
+    pub timestamp: u64,
+}
+
+/// Response wrapper for server responses
+#[derive(Debug, Clone, PartialEq)]
+pub struct AppResponse {
+    /// Message ID this response corresponds to
+    pub message_id: String,
+    /// Whether the operation was successful
+    pub success: bool,
+    /// Response data (varies by command)
+    pub data: ResponseData,
+    /// Error message if operation failed
+    pub error: Option<String>,
+    /// Timestamp when the response was created
+    pub timestamp: u64,
+}
+
+/// Response data variants for different command types
+#[derive(Debug, Clone, PartialEq)]
+pub enum ResponseData {
+    /// Authentication response with session token
+    Auth { session_token: String, user_id: String },
+    /// File listing response
+    FileList { nodes: Vec<FNode> },
+    /// Single file/directory info
+    FileInfo { node: FNode },
+    /// File content (for read operations)
+    FileContent { data: Vec<u8> },
+    /// Current working directory
+    WorkingDir { path: Path },
+    /// User information
+    UserInfo { user: User },
+    /// Group information
+    GroupInfo { group: Group },
+    /// List of groups
+    GroupList { groups: Vec<Group> },
+    /// Simple acknowledgment (no data)
+    Ack,
+    /// Search results
+    SearchResults { nodes: Vec<FNode> },
+}
