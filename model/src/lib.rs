@@ -6,7 +6,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Represents a file or directory node in the file system
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FNode {
     /// Unique identifier for the node
     pub id: String,
@@ -33,7 +33,7 @@ pub struct FNode {
 }
 
 /// Represents a user in the system
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct User {
     /// Unique identifier for the user
     pub id: String,
@@ -52,7 +52,7 @@ pub struct User {
 }
 
 /// Represents a group in the system
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Group {
     /// Unique identifier for the group
     pub id: String,
@@ -67,7 +67,7 @@ pub struct Group {
 }
 
 /// Represents a file system path
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Path {
     /// Components of the path (e.g., ["home", "user", "file.txt"])
     pub components: Vec<String>,
@@ -75,8 +75,30 @@ pub struct Path {
     pub is_absolute: bool,
 }
 
+impl std::fmt::Display for Path {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.components.is_empty() {
+            return write!(f, "{}", if self.is_absolute { "/" } else { "." });
+        }
+
+        let mut path_str = String::new();
+        if self.is_absolute {
+            path_str.push('/');
+        }
+
+        for (i, component) in self.components.iter().enumerate() {
+            if i > 0 || self.is_absolute {
+                path_str.push('/');
+            }
+            path_str.push_str(component);
+        }
+
+        write!(f, "{}", path_str)
+    }
+}
+
 /// File system commands supported by SecureFS
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Cmd {
     // Authentication
     Login { username: String, password: String },
@@ -119,7 +141,7 @@ pub enum Cmd {
 }
 
 /// Message wrapper for client-server communication
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AppMessage {
     /// Unique message identifier
     pub id: String,
@@ -132,7 +154,7 @@ pub struct AppMessage {
 }
 
 /// Response wrapper for server responses
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AppResponse {
     /// Message ID this response corresponds to
     pub message_id: String,
@@ -147,7 +169,7 @@ pub struct AppResponse {
 }
 
 /// Response data variants for different command types
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ResponseData {
     /// Authentication response with session token
     Auth { session_token: String, user_id: String },
