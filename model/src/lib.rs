@@ -4,6 +4,69 @@
 //! the SecureFS system for representing users, files, groups, and commands.
 
 use serde::{Deserialize, Serialize};
+use std::fmt;
+
+/// Common result type used throughout SecureFS
+pub type Result<T> = std::result::Result<T, Error>;
+
+/// Custom error type for SecureFS operations
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum Error {
+    /// Authentication failed
+    AuthenticationFailed,
+    /// User not found
+    UserNotFound,
+    /// Group not found
+    GroupNotFound,
+    /// File or directory not found
+    NotFound,
+    /// Permission denied
+    PermissionDenied,
+    /// File or directory already exists
+    AlreadyExists,
+    /// Invalid path
+    InvalidPath,
+    /// I/O error
+    IoError(String),
+    /// Database error
+    DatabaseError(String),
+    /// Network error
+    NetworkError(String),
+    /// Invalid command or arguments
+    InvalidCommand(String),
+    /// Session expired or invalid
+    SessionError,
+    /// Encryption/decryption error
+    CryptoError(String),
+    /// Serialization error
+    SerializationError(String),
+    /// Internal server error
+    InternalError(String),
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Error::AuthenticationFailed => write!(f, "Authentication failed"),
+            Error::UserNotFound => write!(f, "User not found"),
+            Error::GroupNotFound => write!(f, "Group not found"),
+            Error::NotFound => write!(f, "File or directory not found"),
+            Error::PermissionDenied => write!(f, "Permission denied"),
+            Error::AlreadyExists => write!(f, "File or directory already exists"),
+            Error::InvalidPath => write!(f, "Invalid path"),
+            Error::IoError(msg) => write!(f, "I/O error: {}", msg),
+            Error::DatabaseError(msg) => write!(f, "Database error: {}", msg),
+            Error::NetworkError(msg) => write!(f, "Network error: {}", msg),
+            Error::InvalidCommand(msg) => write!(f, "Invalid command: {}", msg),
+            Error::SessionError => write!(f, "Session error"),
+            Error::CryptoError(msg) => write!(f, "Cryptography error: {}", msg),
+            Error::SerializationError(msg) => write!(f, "Serialization error: {}", msg),
+            Error::InternalError(msg) => write!(f, "Internal error: {}", msg),
+        }
+    }
+}
+
+impl std::error::Error for Error {}
 
 /// Represents a file or directory node in the file system
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
