@@ -94,3 +94,45 @@ CREATE INDEX idx_fnode_is_directory ON fnode(is_directory);
 -- Add constraint to ensure root has no parent
 ALTER TABLE fnode ADD CONSTRAINT chk_root_no_parent
     CHECK (parent_id IS NOT NULL OR encrypted_path = '\x2f'); -- '/' in hex
+
+-- =====================================================
+-- INITIAL DATA SEEDING
+-- =====================================================
+
+-- Insert default admin user
+-- Password: "admin123" (hashed with Argon2)
+-- Salt generated for this user
+INSERT INTO users (username, password_hash, salt, is_admin, created_at)
+VALUES (
+    'admin',
+    '$argon2id$v=19$m=19456,t=2,p=1$2x+D890DlNldiUEFWj6osA$xCXFoO12ImKyfo9B9VNcMx+fJcexMcvQ7Z4f7BmF5do',
+    '$argon2id$v=19$m=19456,t=2,p=1$2x+D890DlNldiUEFWj6osA',
+    true,
+    CURRENT_TIMESTAMP
+);
+
+-- Insert default admin group
+INSERT INTO groups (name, owner_id, members, created_at)
+VALUES (
+    'admin',
+    1,  -- Reference to the admin user we just created
+    '{1}', -- Admin user is member of admin group
+    CURRENT_TIMESTAMP
+);
+
+-- Create root directory (/)
+-- Note: In production, the encrypted name and path would be properly encrypted
+-- For initial setup, we're using placeholder encrypted values
+INSERT INTO fnode (encrypted_name, encrypted_path, is_directory, size, owner_id, group_id, permissions, created_at, modified_at, parent_id)
+VALUES (
+    pgp_sym_encrypt('root', 'securefs_init_key'),  -- Encrypted name
+    pgp_sym_encrypt('/', 'securefs_init_key'),     -- Encrypted path
+    true,        -- is_directory
+    0,           -- size (0 for directories)
+    1,           -- owner_id (admin user)
+    1,           -- group_id (admin group)
+    493,         -- permissions (0755 in decimal: rwxr-xr-x)
+    CURRENT_TIMESTAMP,
+    CURRENT_TIMESTAMP,
+    NULL         -- parent_id (NULL for root)
+);
