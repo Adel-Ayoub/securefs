@@ -69,4 +69,28 @@ CREATE INDEX idx_groups_name ON groups(name);
 -- Create index on owner_id for group ownership queries
 CREATE INDEX idx_groups_owner_id ON groups(owner_id);
 
--- fnode table will be implemented in subsequent commits
+-- fnode table: File/directory metadata storage
+CREATE TABLE fnode (
+    id BIGSERIAL PRIMARY KEY,
+    encrypted_name BYTEA NOT NULL,        -- Encrypted file/directory name
+    encrypted_path BYTEA NOT NULL,        -- Encrypted full path
+    is_directory BOOLEAN NOT NULL,
+    size BIGINT NOT NULL DEFAULT 0,       -- File size in bytes (0 for directories)
+    owner_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    group_id BIGINT NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+    permissions INTEGER NOT NULL,          -- Unix-style permissions (octal, e.g., 0755)
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    modified_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    parent_id BIGINT REFERENCES fnode(id) ON DELETE CASCADE
+);
+
+-- Create indexes for efficient file system operations
+CREATE INDEX idx_fnode_encrypted_path ON fnode(encrypted_path);
+CREATE INDEX idx_fnode_parent_id ON fnode(parent_id);
+CREATE INDEX idx_fnode_owner_id ON fnode(owner_id);
+CREATE INDEX idx_fnode_group_id ON fnode(group_id);
+CREATE INDEX idx_fnode_is_directory ON fnode(is_directory);
+
+-- Add constraint to ensure root has no parent
+ALTER TABLE fnode ADD CONSTRAINT chk_root_no_parent
+    CHECK (parent_id IS NOT NULL OR encrypted_path = '\x2f'); -- '/' in hex
