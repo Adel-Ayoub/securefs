@@ -1,0 +1,10 @@
+[package]
+name = "securefs-model"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "SecureFS shared data models and types"
+license.workspace = true
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }

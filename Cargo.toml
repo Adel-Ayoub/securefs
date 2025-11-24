@@ -1,5 +1,7 @@
 [workspace]
-members = []
+members = [
+  "model"
+]
 resolver = "2"
 
 [workspace.package]
