@@ -1,7 +1,13 @@
 [workspace]
-members = [
-  # Components will be added as they are developed
-  # "model",
-  # "server",
-  # "client"
-]
+members = []
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["SecureFS Team"]
+description = "A secure distributed file system"
+repository = "https://github.com/securefs/securefs"
+license = "MIT OR Apache-2.0"
+keywords = ["filesystem", "encryption", "distributed", "secure"]
+categories = ["filesystem", "cryptography"]
