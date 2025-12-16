@@ -31,6 +31,7 @@ async fn run() -> Result<(), String> {
         .map_err(|e| format!("connect failed: {}", e))?;
 
     println!("Connected. Login with: login <username> <password>");
+    println!("Commands: login <u> <p>, logout, pwd, ls, cd <path>, mkdir <dir>, touch <file>, mv <src> <dst>, delete <name>, cat <file>, echo <data> <file>, chmod <mode> <name>");
     let stdin = io::stdin();
     loop {
         print!("> ");

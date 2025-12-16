@@ -13,6 +13,7 @@ use tokio::net::TcpStream;
 use tokio::fs;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use std::collections::HashSet;
+use std::path::Path;
 
 mod dao;
 
@@ -269,6 +270,13 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                         }
                     } else {
                         let path = format!("{}/{}", current_path, target);
+                        // remove storage copy
+                        let storage_path = format!("storage{}", path);
+                        let _ = if Path::new(&storage_path).is_file() {
+                            fs::remove_file(&storage_path).await
+                        } else {
+                            fs::remove_dir_all(&storage_path).await
+                        };
                         let parent_remove = dao::remove_file_from_parent(pg_client.clone(), current_path.clone(), target.clone()).await;
                         let del = dao::delete_path(pg_client.clone(), path.clone()).await;
                         if parent_remove.is_ok() && del.is_ok() {
