@@ -13,6 +13,7 @@ use tokio::runtime::Runtime;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
 
+/// Initialize a Tokio runtime and run the async client loop.
 fn main() {
     let rt = Runtime::new().expect("runtime");
     if let Err(e) = rt.block_on(run()) {
@@ -20,6 +21,7 @@ fn main() {
     }
 }
 
+/// Connect to the server and drive the interactive REPL.
 async fn run() -> Result<(), String> {
     let args: Vec<String> = env::args().collect();
     let bind = "127.0.0.1:8080".to_string();
@@ -34,6 +36,7 @@ async fn run() -> Result<(), String> {
     println!("Commands: login <u> <p>, logout, pwd, ls, cd <path>, mkdir <dir>, touch <file>, mv <src> <dst>, delete <name>, cat <file>, echo <data> <file>, chmod <mode> <name>");
     let stdin = io::stdin();
     loop {
+        // Simple REPL: read a line, parse it into an AppMessage, send, and print the reply.
         print!("> ");
         io::stdout().flush().map_err(|e| e.to_string())?;
         let mut line = String::new();
@@ -184,6 +187,7 @@ async fn run() -> Result<(), String> {
     Ok(())
 }
 
+/// Parse user input into an `AppMessage` understood by the server.
 fn command_parser(input: String) -> Result<AppMessage, String> {
     let mut parts = input
         .split_whitespace()
@@ -202,6 +206,7 @@ fn command_parser(input: String) -> Result<AppMessage, String> {
     Ok(AppMessage { cmd, data: args })
 }
 
+/// Send a serialized message over the websocket.
 async fn send(ws: &mut tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>, msg: &AppMessage) -> Result<(), String> {
     let payload = serde_json::to_string(msg).map_err(|e| e.to_string())?;
     ws.send(Message::Text(payload))
@@ -209,6 +214,7 @@ async fn send(ws: &mut tokio_tungstenite::WebSocketStream<tokio_tungstenite::May
         .map_err(|e| format!("send failed: {}", e))
 }
 
+/// Receive and decode the next websocket message.
 async fn recv(ws: &mut tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>) -> Result<AppMessage, String> {
     let msg = ws.next().await.ok_or("connection closed")??;
     if !msg.is_text() {

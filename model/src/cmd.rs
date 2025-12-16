@@ -1,5 +1,8 @@
+//! Helpers for mapping string input into protocol commands and validating arity.
+
 use crate::protocol::Cmd;
 
+/// Convert strings into strongly typed commands.
 pub trait MapStr: Sized {
     fn from_str(s: String) -> Result<Self, ()>;
 }
@@ -30,6 +33,7 @@ impl MapStr for Cmd {
     }
 }
 
+/// Return the expected argument count for a command string.
 pub trait NumArgs {
     fn num_args(s: String) -> Result<usize, ()>;
 }

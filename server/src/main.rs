@@ -1,3 +1,9 @@
+//! WebSocket server for SecureFS.
+//!
+//! Accepts client connections, authenticates users, and translates
+//! protocol commands into DAO/database operations and on-disk file
+//! changes.
+
 use std::env;
 use std::sync::Arc;
 
@@ -19,7 +25,10 @@ use std::fs as stdfs;
 mod dao;
 
 #[tokio::main]
+/// Launch the WebSocket server and connect to Postgres.
 async fn main() -> Result<(), String> {
+    // NOTE: Default env fallbacks are for local/dev usage; production
+    // deployments should provide explicit values.
     let db_pass = env::var("DB_PASS").unwrap_or_else(|_| "TEMP".to_string());
     let db_host = env::var("DB_HOST").unwrap_or_else(|_| "localhost".to_string());
     let db_name = env::var("DB_NAME").unwrap_or_else(|_| "db".to_string());
@@ -61,6 +70,7 @@ async fn main() -> Result<(), String> {
     Ok(())
 }
 
+/// Handle a single WebSocket connection lifecycle.
 async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgres::Client>>) -> Result<(), String> {
     let mut ws_stream = accept_async(stream)
         .await
@@ -478,7 +488,7 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
 
         send_app_message(&mut ws_stream, reply).await?;
 
-        // if logout was processed, close the loop
+        // If logout was processed, close the loop so the client can reconnect cleanly.
         if !authenticated && matches!(reply.cmd, Cmd::Logout) {
             break;
         }
@@ -487,6 +497,7 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
     Ok(())
 }
 
+/// Serialize and send an application message over the websocket.
 async fn send_app_message(ws_stream: &mut WebSocketStream<TcpStream>, resp: AppMessage) -> Result<(), String> {
     let serialized = serde_json::to_string(&resp).map_err(|e| format!("encode failed: {}", e))?;
     ws_stream
@@ -495,6 +506,7 @@ async fn send_app_message(ws_stream: &mut WebSocketStream<TcpStream>, resp: AppM
         .map_err(|e| format!("ws send failed: {}", e))
 }
 
+/// Resolve a user input path relative to the current working directory.
 fn resolve_path(current: &str, input: &str) -> String {
     if input.starts_with('/') {
         normalize_path(input.to_string())
@@ -503,6 +515,7 @@ fn resolve_path(current: &str, input: &str) -> String {
     }
 }
 
+/// Normalize path components by collapsing `.` and `..`.
 fn normalize_path(path: String) -> String {
     let mut parts: Vec<&str> = Vec::new();
     for part in path.split('/') {
@@ -521,6 +534,7 @@ fn normalize_path(path: String) -> String {
     }
 }
 
+/// Append a trailing slash to directories for display parity with `ls`.
 fn format_entry(is_dir: bool, name: String) -> String {
     if is_dir {
         format!("{}/", name)

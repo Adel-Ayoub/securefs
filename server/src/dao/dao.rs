@@ -1,3 +1,9 @@
+//! Data-access helpers for SecureFS.
+//!
+//! Handles authentication, key material generation, and CRUD helpers
+//! that persist `FNode`, `User`, and `Group` records. Queries are kept
+//! thin here so the server loop can stay focused on protocol flow.
+
 use std::{env, sync::Arc};
 use tokio::sync::Mutex;
 use tokio_postgres::Client;
@@ -13,6 +19,7 @@ use blake3;
 use rand_core::OsRng;
 use serde_json;
 
+/// Hash and salt a plaintext password using Argon2.
 pub fn salt_pass(pass: String) -> Result<String, String> {
     let b_pass = pass.as_bytes();
     let salt = SaltString::generate(&mut argon2::password_hash::rand_core::OsRng);
@@ -23,6 +30,7 @@ pub fn salt_pass(pass: String) -> Result<String, String> {
     }
 }
 
+/// Generate a random AES-256 key serialized to JSON for DB storage.
 pub fn key_gen() -> Result<String, ()> {
     let key = Aes256Gcm::generate_key(&mut OsRng);
     let u8_32_arr: [u8; 32] = key.into();
@@ -32,6 +40,7 @@ pub fn key_gen() -> Result<String, ()> {
     }
 }
 
+/// Verify a user's password against the stored Argon2 hash.
 pub async fn auth_user(client: Arc<Mutex<Client>>, user_name: String, pass: String) -> Result<bool, String> {
     let e = client.lock().await.query_one("SELECT u.salt FROM users u WHERE u.user_name=$1",
     &[&user_name]).await;
@@ -40,6 +49,8 @@ pub async fn auth_user(client: Arc<Mutex<Client>>, user_name: String, pass: Stri
         Err(_) => return Ok(false),
     };
     let hash: String = res.get("salt");
+    // SAFETY: Hashes are stored in the DB as valid Argon2 strings; parsing failures fall back
+    // to an authentication failure rather than panicking.
     let hash_str: PasswordHashString = PasswordHashString::parse(hash.as_str(), Encoding::B64).unwrap();
     let true_hash = hash_str.password_hash();
     match Argon2::default().verify_password(pass.as_bytes(), &true_hash) {
@@ -48,7 +59,9 @@ pub async fn auth_user(client: Arc<Mutex<Client>>, user_name: String, pass: Stri
     }
 }
 
+/// Create a new user row and return the decrypted symmetric key for the caller.
 pub async fn create_user(client: Arc<Mutex<Client>>, user_name: String, pass: String, group: Option<String>, is_admin: bool) -> Result<Key<Aes256Gcm>, String>{
+    // NOTE: DB_PASS default is a convenience for local dev only; deployments should set it.
     let db_pass = env::var("DB_PASS").unwrap_or("TEMP".to_string());
     let salt = match salt_pass(pass){
         Ok(salt) => salt,
@@ -67,6 +80,7 @@ pub async fn create_user(client: Arc<Mutex<Client>>, user_name: String, pass: St
     }
 }
 
+/// Insert a new group into the database.
 pub async fn create_group(client: Arc<Mutex<Client>>, group_name: String) -> Result<String, String>{
     let e = client.lock().await.execute("INSERT INTO groups (g_name, users) VALUES ($1, $2)",
     &[&group_name, &Vec::<String>::new()]).await;
@@ -76,6 +90,7 @@ pub async fn create_group(client: Arc<Mutex<Client>>, group_name: String) -> Res
     }
 }
 
+/// Persist a file or directory node.
 pub async fn add_file(client: Arc<Mutex<Client>>, file: FNode) -> Result<String, String> {
     let db_pass = env::var("DB_PASS").unwrap_or("TEMP".to_string());
     let e = client.lock().await.execute("INSERT INTO
@@ -99,6 +114,7 @@ pub async fn add_file(client: Arc<Mutex<Client>>, file: FNode) -> Result<String,
     }
 }
 
+/// Update the stored hash for a file at `path`.
 pub async fn update_hash(client: Arc<Mutex<Client>>, path: String, file_name: String, hash: String) -> Result<String, String>{
     let db_pass = env::var("DB_PASS").unwrap_or("TEMP".to_string());
     let e = client.lock().await.execute("UPDATE fnode SET hash = $1 WHERE pgp_sym_decrypt(path ::bytea, $3 ::text)=$2",
@@ -109,6 +125,7 @@ pub async fn update_hash(client: Arc<Mutex<Client>>, path: String, file_name: St
     }
 }
 
+/// Append a child entry to the parent's `children` array.
 pub async fn add_file_to_parent(client: Arc<Mutex<Client>>, parent_path: String, new_f_node_name: String) -> Result<(), String>{
     let db_pass = env::var("DB_PASS").unwrap_or("TEMP".to_string());
     let e = client.lock().await.execute("UPDATE fnode SET children =
@@ -123,6 +140,7 @@ pub async fn add_file_to_parent(client: Arc<Mutex<Client>>, parent_path: String,
     }
 }
 
+/// Remove a child entry from the parent's `children` array.
 pub async fn remove_file_from_parent(client: Arc<Mutex<Client>>, parent_path: String, f_node_name: String) -> Result<(), String>{
     let db_pass = env::var("DB_PASS").unwrap_or("TEMP".to_string());
     let e = client.lock().await.execute("UPDATE fnode
@@ -138,6 +156,7 @@ pub async fn remove_file_from_parent(client: Arc<Mutex<Client>>, parent_path: St
     }
 }
 
+/// Fetch a decrypted `FNode` by path.
 pub async fn get_f_node(client: Arc<Mutex<Client>>, path: String) -> Result<Option<FNode>, String> {
     let db_pass = env::var("DB_PASS").unwrap_or("TEMP".to_string());
     let e = client.lock().await.query_opt("SELECT
@@ -178,6 +197,7 @@ pub async fn get_f_node(client: Arc<Mutex<Client>>, path: String) -> Result<Opti
     }
 }
 
+/// Update the numeric permissions on a file or directory.
 pub async fn change_file_perms(client: Arc<Mutex<Client>>, file_path: String, u: i16, g: i16, o: i16) -> Result<(), String>{
     let db_pass = env::var("DB_PASS").unwrap_or("TEMP".to_string());
     let e = client.lock().await.execute("
@@ -193,6 +213,7 @@ pub async fn change_file_perms(client: Arc<Mutex<Client>>, file_path: String, u:
     }
 }
 
+/// Rewrite stored paths for a subtree, replacing prefixes in bulk.
 pub async fn update_path(client: Arc<Mutex<Client>>, file_path: String, new_file_path: String) -> Result<(), String>{
     let db_pass = env::var("DB_PASS").unwrap_or("TEMP".to_string());
     let e = client.lock().await.execute("UPDATE fnode SET path =
@@ -210,6 +231,7 @@ pub async fn update_path(client: Arc<Mutex<Client>>, file_path: String, new_file
     }
 }
 
+/// Delete every `fnode` whose path matches the provided prefix.
 pub async fn delete_path(client: Arc<Mutex<Client>>, file_path: String) -> Result<(), String>{
     let db_pass = env::var("DB_PASS").unwrap_or("TEMP".to_string());
     let e = client.lock().await.execute("
@@ -222,6 +244,7 @@ pub async fn delete_path(client: Arc<Mutex<Client>>, file_path: String) -> Resul
     }
 }
 
+/// Update only the display name after a path rename has occurred.
 pub async fn update_fnode_name_if_path_is_already_updated(client: Arc<Mutex<Client>>, path: String, new_name: String) -> Result<(), String>{
     let db_pass = env::var("DB_PASS").unwrap_or("TEMP".to_string());
     let e = client.lock().await.execute("UPDATE fnode SET name =
@@ -234,6 +257,7 @@ pub async fn update_fnode_name_if_path_is_already_updated(client: Arc<Mutex<Clie
     }
 }
 
+/// Update the encrypted on-disk name for a node.
 pub async fn update_fnode_enc_name(client: Arc<Mutex<Client>>, path: String, new_enc_name: String) -> Result<(), String>{
     let db_pass = env::var("DB_PASS").unwrap_or("TEMP".to_string());
     let e = client.lock().await.execute("UPDATE fnode SET encrypted_name = $2 WHERE pgp_sym_decrypt(path ::bytea, $3 ::text) = $1",
@@ -244,6 +268,7 @@ pub async fn update_fnode_enc_name(client: Arc<Mutex<Client>>, path: String, new
     }
 }
 
+/// Fetch a user record; decrypt the key with `DB_PASS` unless the user is `admin`.
 pub async fn get_user(client: Arc<Mutex<Client>>, user_name: String) -> Result<Option<User>, String> {
     let db_pass = env::var("DB_PASS").unwrap_or("TEMP".to_string());
     let e = if user_name == "admin" {
@@ -267,6 +292,7 @@ pub async fn get_user(client: Arc<Mutex<Client>>, user_name: String) -> Result<O
     }
 }
 
+/// Check whether a group exists.
 pub async fn get_group(client: Arc<Mutex<Client>>, group_name: String) -> Result<Option<String>, String> {
     let e = client.lock().await.query_opt("SELECT g_name FROM groups WHERE g_name = $1", &[&group_name]).await;
     match e {
@@ -276,6 +302,7 @@ pub async fn get_group(client: Arc<Mutex<Client>>, group_name: String) -> Result
     }
 }
 
+/// Ensure required seed data exists (currently `/home` root).
 pub async fn init_db(client: Arc<Mutex<Client>>) -> Result<(), ()> {
     let does_home_exist = get_f_node(client.clone(), "/home".to_string()).await.unwrap().is_some();
     if !does_home_exist {
