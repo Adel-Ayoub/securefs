@@ -72,6 +72,24 @@ async fn run() -> Result<(), String> {
                 println!("bye");
                 break;
             }
+            Cmd::NewUser => {
+                send(&mut ws_stream, &app_message).await?;
+                let reply = recv(&mut ws_stream).await?;
+                match reply.cmd {
+                    Cmd::NewUser => println!("user created: {}", reply.data.get(0).unwrap_or(&"".into())),
+                    Cmd::Failure => println!("{}", reply.data.get(0).unwrap_or(&"newuser failed".into())),
+                    _ => println!("unexpected reply"),
+                }
+            }
+            Cmd::NewGroup => {
+                send(&mut ws_stream, &app_message).await?;
+                let reply = recv(&mut ws_stream).await?;
+                match reply.cmd {
+                    Cmd::NewGroup => println!("group created: {}", reply.data.get(0).unwrap_or(&"".into())),
+                    Cmd::Failure => println!("{}", reply.data.get(0).unwrap_or(&"newgroup failed".into())),
+                    _ => println!("unexpected reply"),
+                }
+            }
             Cmd::Cd => {
                 send(&mut ws_stream, &app_message).await?;
                 let reply = recv(&mut ws_stream).await?;
