@@ -301,6 +301,11 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                                 AppMessage { cmd: Cmd::Failure, data: vec!["no write permission".into()] }
                             }
                         }
+                        // Prevent deleting non-empty directories for now
+                        if let Ok(Some(node)) = dao::get_f_node(pg_client.clone(), path.clone()).await {
+                            if node.dir && !node.children.is_empty() {
+                                AppMessage { cmd: Cmd::Failure, data: vec!["directory not empty".into()] }
+                            } else {
                         // remove storage copy
                         let storage_path = format!("storage{}", path);
                         if Path::new(&storage_path).exists() {
@@ -312,6 +317,13 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                             AppMessage {
                                 cmd: Cmd::Delete,
                                 data: vec!["ok".to_string()],
+                            }
+                        } else {
+                            AppMessage {
+                                cmd: Cmd::Failure,
+                                data: vec!["delete failed".to_string()],
+                            }
+                        }
                             }
                         } else {
                             AppMessage {
