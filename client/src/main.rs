@@ -99,6 +99,17 @@ async fn run() -> Result<(), String> {
                     _ => println!("unexpected reply"),
                 }
             }
+            Cmd::Mkdir => {
+                send(&mut ws_stream, &app_message).await?;
+                let reply = recv(&mut ws_stream).await?;
+                match reply.cmd {
+                    Cmd::Mkdir => println!("ok"),
+                    Cmd::Failure => {
+                        println!("{}", reply.data.get(0).unwrap_or(&"mkdir failed".into()));
+                    }
+                    _ => println!("unexpected reply"),
+                }
+            }
             _ => {
                 println!("command not implemented");
             }

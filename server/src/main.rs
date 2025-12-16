@@ -138,9 +138,19 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                         data: vec!["not authenticated".to_string()],
                     }
                 } else {
+                    AppMessage { cmd: Cmd::Ls, data: vec![] }
+                }
+            }
+            Cmd::Mkdir => {
+                if !authenticated {
                     AppMessage {
-                        cmd: Cmd::Ls,
-                        data: vec![],
+                        cmd: Cmd::Failure,
+                        data: vec!["not authenticated".to_string()],
+                    }
+                } else {
+                    AppMessage {
+                        cmd: Cmd::Mkdir,
+                        data: vec!["ok".to_string()],
                     }
                 }
             }
