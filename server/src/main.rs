@@ -63,6 +63,7 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
 
     let mut authenticated = false;
     let mut current_user: Option<String> = None;
+    let mut current_path: String = "/home".to_string();
 
     while let Some(msg) = ws_stream.next().await {
         let msg = msg.map_err(|e| format!("ws read failed: {}", e))?;
@@ -91,6 +92,12 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                 } else {
                     authenticated = true;
                     current_user = Some(user_name.clone());
+                    let user_home = format!("/home/{}", user_name);
+                    if dao::get_f_node(pg_client.clone(), user_home.clone()).await.ok().flatten().is_some() {
+                        current_path = user_home;
+                    } else {
+                        current_path = "/home".into();
+                    }
                     let is_admin = dao::get_user(pg_client.clone(), user_name.clone())
                         .await
                         .ok()
@@ -112,6 +119,7 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                 } else {
                     authenticated = false;
                     current_user = None;
+                    current_path = "/home".into();
                     AppMessage {
                         cmd: Cmd::Logout,
                         data: vec![],
@@ -127,7 +135,7 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                 } else {
                     AppMessage {
                         cmd: Cmd::Pwd,
-                        data: vec!["/".to_string()],
+                        data: vec![current_path.clone()],
                     }
                 }
             }
@@ -138,7 +146,20 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                         data: vec!["not authenticated".to_string()],
                     }
                 } else {
-                    AppMessage { cmd: Cmd::Ls, data: vec![] }
+                    let children = match dao::get_f_node(pg_client.clone(), current_path.clone()).await {
+                        Ok(Some(fnode)) => {
+                            let mut names = Vec::new();
+                            for child in fnode.children.iter() {
+                                let child_path = format!("{}/{}", current_path, child);
+                                if let Ok(Some(node)) = dao::get_f_node(pg_client.clone(), child_path) {
+                                    names.push(node.name);
+                                }
+                            }
+                            names
+                        }
+                        _ => vec![],
+                    };
+                    AppMessage { cmd: Cmd::Ls, data: children }
                 }
             }
             Cmd::Mkdir => {
@@ -148,9 +169,123 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                         data: vec!["not authenticated".to_string()],
                     }
                 } else {
+                    let dir_name = incoming.data.get(0).cloned().unwrap_or_default();
+                    if dir_name.is_empty() {
+                        AppMessage {
+                            cmd: Cmd::Failure,
+                            data: vec!["missing directory name".to_string()],
+                        }
+                    } else {
+                        let target_path = format!("{}/{}", current_path, dir_name);
+                        let parent_path = current_path.clone();
+                        let owner = current_user.clone().unwrap_or_default();
+
+                        let new_dir = securefs_model::protocol::FNode {
+                            id: -1,
+                            name: dir_name.clone(),
+                            path: target_path.clone(),
+                            owner: owner.clone(),
+                            hash: "".to_string(),
+                            parent: parent_path.clone(),
+                            dir: true,
+                            u: 7,
+                            g: 7,
+                            o: 7,
+                            children: vec![],
+                            encrypted_name: dir_name.clone(),
+                        };
+
+                        let res = dao::add_file(pg_client.clone(), new_dir).await;
+                        let parent_update = if res.is_ok() {
+                            dao::add_file_to_parent(pg_client.clone(), parent_path.clone(), dir_name.clone()).await
+                        } else {
+                            Err("parent not updated".into())
+                        };
+
+                        match (res, parent_update) {
+                            (Ok(_), Ok(_)) => AppMessage {
+                                cmd: Cmd::Mkdir,
+                                data: vec!["ok".to_string()],
+                            },
+                            _ => AppMessage {
+                                cmd: Cmd::Failure,
+                                data: vec!["mkdir failed".to_string()],
+                            },
+                        }
+                    }
+                }
+            }
+            Cmd::Cd => {
+                if !authenticated {
                     AppMessage {
-                        cmd: Cmd::Mkdir,
-                        data: vec!["ok".to_string()],
+                        cmd: Cmd::Failure,
+                        data: vec!["not authenticated".to_string()],
+                    }
+                } else {
+                    let target = incoming.data.get(0).cloned().unwrap_or_default();
+                    let new_path = resolve_path(&current_path, &target);
+                    match dao::get_f_node(pg_client.clone(), new_path.clone()).await {
+                        Ok(Some(node)) if node.dir => {
+                            current_path = new_path.clone();
+                            AppMessage { cmd: Cmd::Cd, data: vec![new_path] }
+                        }
+                        _ => AppMessage {
+                            cmd: Cmd::Failure,
+                            data: vec!["invalid path".to_string()],
+                        },
+                    }
+                }
+            }
+            Cmd::Touch => {
+                if !authenticated {
+                    AppMessage {
+                        cmd: Cmd::Failure,
+                        data: vec!["not authenticated".to_string()],
+                    }
+                } else {
+                    let file_name = incoming.data.get(0).cloned().unwrap_or_default();
+                    if file_name.is_empty() {
+                        AppMessage {
+                            cmd: Cmd::Failure,
+                            data: vec!["missing file name".to_string()],
+                        }
+                    } else {
+                        let target_path = format!("{}/{}", current_path, file_name);
+                        let parent_path = current_path.clone();
+                        let owner = current_user.clone().unwrap_or_default();
+
+                        let new_file = securefs_model::protocol::FNode {
+                            id: -1,
+                            name: file_name.clone(),
+                            path: target_path.clone(),
+                            owner: owner.clone(),
+                            hash: "".to_string(),
+                            parent: parent_path.clone(),
+                            dir: false,
+                            u: 6,
+                            g: 6,
+                            o: 4,
+                            children: vec![],
+                            encrypted_name: file_name.clone(),
+                        };
+
+                        let res = dao::add_file(pg_client.clone(), new_file).await;
+                        let parent_update = if res.is_ok() {
+                            dao::add_file_to_parent(pg_client.clone(), parent_path.clone(), file_name.clone()).await
+                        } else {
+                            Err("parent not updated".into())
+                        };
+
+                        match (res, parent_update) {
+                            (Ok(_), Ok(_)) => AppMessage {
+                                cmd: Cmd::Touch,
+                                data: vec!["ok".to_string()],
+                            },
+                            _ => AppMessage {
+                                cmd: Cmd::Failure,
+                                data: vec!["touch failed".to_string()],
+                            },
+                        }
                     }
                 }
             }
@@ -177,5 +312,31 @@ async fn send_app_message(ws_stream: &mut WebSocketStream<TcpStream>, resp: AppM
         .send(Message::text(serialized))
         .await
         .map_err(|e| format!("ws send failed: {}", e))
+}
+
+fn resolve_path(current: &str, input: &str) -> String {
+    if input.starts_with('/') {
+        normalize_path(input.to_string())
+    } else {
+        normalize_path(format!("{}/{}", current, input))
+    }
+}
+
+fn normalize_path(path: String) -> String {
+    let mut parts: Vec<&str> = Vec::new();
+    for part in path.split('/') {
+        if part.is_empty() || part == "." {
+            continue;
+        } else if part == ".." {
+            parts.pop();
+        } else {
+            parts.push(part);
+        }
+    }
+    if parts.is_empty() {
+        "/".into()
+    } else {
+        format!("/{}", parts.join("/"))
+    }
 }
 

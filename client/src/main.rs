@@ -68,6 +68,15 @@ async fn run() -> Result<(), String> {
                 println!("bye");
                 break;
             }
+            Cmd::Cd => {
+                send(&mut ws_stream, &app_message).await?;
+                let reply = recv(&mut ws_stream).await?;
+                match reply.cmd {
+                    Cmd::Cd => println!("{}", reply.data.get(0).unwrap_or(&"/".into())),
+                    Cmd::Failure => println!("{}", reply.data.get(0).unwrap_or(&"cd failed".into())),
+                    _ => println!("unexpected reply"),
+                }
+            }
             Cmd::Pwd => {
                 send(&mut ws_stream, &app_message).await?;
                 let reply = recv(&mut ws_stream).await?;
@@ -107,6 +116,15 @@ async fn run() -> Result<(), String> {
                     Cmd::Failure => {
                         println!("{}", reply.data.get(0).unwrap_or(&"mkdir failed".into()));
                     }
+                    _ => println!("unexpected reply"),
+                }
+            }
+            Cmd::Touch => {
+                send(&mut ws_stream, &app_message).await?;
+                let reply = recv(&mut ws_stream).await?;
+                match reply.cmd {
+                    Cmd::Touch => println!("ok"),
+                    Cmd::Failure => println!("{}", reply.data.get(0).unwrap_or(&"touch failed".into())),
                     _ => println!("unexpected reply"),
                 }
             }
