@@ -24,7 +24,14 @@ fn main() {
 /// Connect to the server and drive the interactive REPL.
 async fn run() -> Result<(), String> {
     let args: Vec<String> = env::args().collect();
-    let bind = "127.0.0.1:8080".to_string();
+    
+    // Check for help flag
+    if args.len() > 1 && (args[1] == "-h" || args[1] == "--help") {
+        print_help();
+        return Ok(());
+    }
+    
+    let bind = env::var("SERVER_ADDR").unwrap_or_else(|_| "127.0.0.1:8080".to_string());
     let server_addr = args.get(1).cloned().unwrap_or(bind);
     let url = format!("ws://{}", server_addr);
 
@@ -239,4 +246,21 @@ async fn recv(ws: &mut tokio_tungstenite::WebSocketStream<tokio_tungstenite::May
         return Err("non-text message".into());
     }
     serde_json::from_str(msg.to_text().unwrap()).map_err(|e| format!("decode failed: {}", e))
+}
+
+/// Print usage information.
+fn print_help() {
+    println!("SecureFS Client");
+    println!();
+    println!("USAGE:");
+    println!("    securefs-client [SERVER_ADDRESS]");
+    println!();
+    println!("ARGS:");
+    println!("    <SERVER_ADDRESS>    WebSocket server address (default: 127.0.0.1:8080)");
+    println!();
+    println!("OPTIONS:");
+    println!("    -h, --help          Print help information");
+    println!();
+    println!("ENVIRONMENT:");
+    println!("    SERVER_ADDR         Default server address");
 }
