@@ -8,6 +8,7 @@ use std::env;
 use std::sync::Arc;
 
 use futures_util::{SinkExt, StreamExt};
+use log::{info, warn, error};
 use securefs_model::protocol::{AppMessage, Cmd, FNode};
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
@@ -27,6 +28,9 @@ mod dao;
 #[tokio::main]
 /// Launch the WebSocket server and connect to Postgres.
 async fn main() -> Result<(), String> {
+    env_logger::init();
+    info!("Starting SecureFS server");
+
     // NOTE: Default env fallbacks are for local/dev usage; production
     // deployments should provide explicit values.
     let db_pass = env::var("DB_PASS").unwrap_or_else(|_| "TEMP".to_string());
@@ -48,7 +52,7 @@ async fn main() -> Result<(), String> {
     let pg_client = Arc::new(Mutex::new(client));
     tokio::spawn(async move {
         if let Err(e) = connection.await {
-            eprintln!("db connection error: {}", e);
+            error!("db connection error: {}", e);
         }
     });
 
@@ -56,13 +60,14 @@ async fn main() -> Result<(), String> {
     let listener = TcpListener::bind(&bind_addr)
         .await
         .map_err(|e| format!("bind failed: {}", e))?;
-    println!("listening on: {}", bind_addr);
+    info!("Listening on: {}", bind_addr);
 
-    while let Ok((stream, _)) = listener.accept().await {
+    while let Ok((stream, addr)) = listener.accept().await {
+        info!("New connection from: {}", addr);
         let pg = pg_client.clone();
         tokio::spawn(async move {
             if let Err(e) = handle_connection(stream, pg).await {
-                eprintln!("connection error: {}", e);
+                warn!("Connection error: {}", e);
             }
         });
     }
