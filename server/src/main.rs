@@ -61,6 +61,9 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
         .await
         .map_err(|e| format!("handshake failed: {}", e))?;
 
+    let mut authenticated = false;
+    let mut current_user: Option<String> = None;
+
     while let Some(msg) = ws_stream.next().await {
         let msg = msg.map_err(|e| format!("ws read failed: {}", e))?;
         if !msg.is_text() {
@@ -86,6 +89,8 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                         data: vec!["failed to login!".to_string(), "".to_string()],
                     }
                 } else {
+                    authenticated = true;
+                    current_user = Some(user_name.clone());
                     let is_admin = dao::get_user(pg_client.clone(), user_name.clone())
                         .await
                         .ok()
@@ -98,6 +103,47 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                     }
                 }
             }
+            Cmd::Logout => {
+                if !authenticated {
+                    AppMessage {
+                        cmd: Cmd::Failure,
+                        data: vec!["not authenticated".to_string()],
+                    }
+                } else {
+                    authenticated = false;
+                    current_user = None;
+                    AppMessage {
+                        cmd: Cmd::Logout,
+                        data: vec![],
+                    }
+                }
+            }
+            Cmd::Pwd => {
+                if !authenticated {
+                    AppMessage {
+                        cmd: Cmd::Failure,
+                        data: vec!["not authenticated".to_string()],
+                    }
+                } else {
+                    AppMessage {
+                        cmd: Cmd::Pwd,
+                        data: vec!["/".to_string()],
+                    }
+                }
+            }
+            Cmd::Ls => {
+                if !authenticated {
+                    AppMessage {
+                        cmd: Cmd::Failure,
+                        data: vec!["not authenticated".to_string()],
+                    }
+                } else {
+                    AppMessage {
+                        cmd: Cmd::Ls,
+                        data: vec![],
+                    }
+                }
+            }
             _ => AppMessage {
                 cmd: Cmd::Failure,
                 data: vec!["command not implemented".to_string()],
@@ -105,6 +151,11 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
         };
 
         send_app_message(&mut ws_stream, reply).await?;
+
+        // if logout was processed, close the loop
+        if !authenticated && matches!(reply.cmd, Cmd::Logout) {
+            break;
+        }
     }
 
     Ok(())
