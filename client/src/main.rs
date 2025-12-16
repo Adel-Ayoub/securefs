@@ -68,6 +68,37 @@ async fn run() -> Result<(), String> {
                 println!("bye");
                 break;
             }
+            Cmd::Pwd => {
+                send(&mut ws_stream, &app_message).await?;
+                let reply = recv(&mut ws_stream).await?;
+                match reply.cmd {
+                    Cmd::Pwd => {
+                        let path = reply.data.get(0).unwrap_or(&"/".into());
+                        println!("{}", path);
+                    }
+                    Cmd::Failure => {
+                        println!("{}", reply.data.get(0).unwrap_or(&"pwd failed".into()));
+                    }
+                    _ => println!("unexpected reply"),
+                }
+            }
+            Cmd::Ls => {
+                send(&mut ws_stream, &app_message).await?;
+                let reply = recv(&mut ws_stream).await?;
+                match reply.cmd {
+                    Cmd::Ls => {
+                        if reply.data.is_empty() {
+                            println!("");
+                        } else {
+                            reply.data.iter().for_each(|d| println!("{}", d));
+                        }
+                    }
+                    Cmd::Failure => {
+                        println!("{}", reply.data.get(0).unwrap_or(&"ls failed".into()));
+                    }
+                    _ => println!("unexpected reply"),
+                }
+            }
             _ => {
                 println!("command not implemented");
             }
