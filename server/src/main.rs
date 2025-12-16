@@ -12,6 +12,7 @@ use tokio_tungstenite::accept_async;
 use tokio::net::TcpStream;
 use tokio::fs;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use std::collections::HashSet;
 
 mod dao;
 
@@ -154,7 +155,7 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                             for child in fnode.children.iter() {
                                 let child_path = format!("{}/{}", current_path, child);
                                 if let Ok(Some(node)) = dao::get_f_node(pg_client.clone(), child_path) {
-                                    names.push(node.name);
+                                    names.push(format_entry(node.dir, node.name));
                                 }
                             }
                             names
@@ -172,10 +173,10 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                     }
                 } else {
                     let dir_name = incoming.data.get(0).cloned().unwrap_or_default();
-                    if dir_name.is_empty() {
+                    if dir_name.is_empty() || dir_name.contains('/') {
                         AppMessage {
                             cmd: Cmd::Failure,
-                            data: vec!["missing directory name".to_string()],
+                            data: vec!["invalid directory name".to_string()],
                         }
                     } else {
                         let target_path = format!("{}/{}", current_path, dir_name);
@@ -293,6 +294,14 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                 } else {
                     let target = incoming.data.get(0).cloned().unwrap_or_default();
                     let new_path = resolve_path(&current_path, &target);
+                    // simple cycle guard
+                    let mut guard = HashSet::new();
+                    if !guard.insert(new_path.clone()) {
+                        AppMessage {
+                            cmd: Cmd::Failure,
+                            data: vec!["invalid path".to_string()],
+                        }
+                    } else {
                     match dao::get_f_node(pg_client.clone(), new_path.clone()).await {
                         Ok(Some(node)) if node.dir => {
                             current_path = new_path.clone();
@@ -302,6 +311,7 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                             cmd: Cmd::Failure,
                             data: vec!["invalid path".to_string()],
                         },
+                    }
                     }
                 }
             }
