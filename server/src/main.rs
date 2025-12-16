@@ -588,10 +588,15 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                                 data: vec!["invalid mode".to_string()],
                             }
                         } else {
-                            let res = dao::change_file_perms(pg_client.clone(), path, ugo[0], ugo[1], ugo[2]).await;
-                            match res {
-                                Ok(_) => AppMessage { cmd: Cmd::Chmod, data: vec!["ok".to_string()] },
-                                Err(_) => AppMessage { cmd: Cmd::Failure, data: vec!["chmod failed".to_string()] },
+                            match dao::get_f_node(pg_client.clone(), path.clone()).await {
+                                Ok(Some(node)) if current_user.as_ref() == Some(&node.owner) => {
+                                    let res = dao::change_file_perms(pg_client.clone(), path, ugo[0], ugo[1], ugo[2]).await;
+                                    match res {
+                                        Ok(_) => AppMessage { cmd: Cmd::Chmod, data: vec!["ok".to_string()] },
+                                        Err(_) => AppMessage { cmd: Cmd::Failure, data: vec!["chmod failed".to_string()] },
+                                    }
+                                }
+                                _ => AppMessage { cmd: Cmd::Failure, data: vec!["not owner".to_string()] },
                             }
                         }
                     }
