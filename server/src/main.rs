@@ -167,7 +167,7 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                             for child in fnode.children.iter() {
                                 let child_path = format!("{}/{}", current_path, child);
                                 if let Ok(Some(node)) = dao::get_f_node(pg_client.clone(), child_path) {
-                                    names.push(format_entry(node.dir, node.name, node.u, node.g, node.o));
+                                    names.push(format_ls_entry(&node));
                                 }
                             }
                             names
@@ -585,10 +585,26 @@ fn normalize_path(path: String) -> String {
     }
 }
 
-/// Format ls output with a trailing slash for dirs and perms tuple.
-fn format_entry(is_dir: bool, name: String, u: i16, g: i16, o: i16) -> String {
-    let suffix = if is_dir { "/" } else { "" };
-    format!("{name}{suffix} ({u}{g}{o})")
+/// Format ls entry with owner, group, permissions, and name.
+fn format_ls_entry(node: &FNode) -> String {
+    let suffix = if node.dir { "/" } else { "" };
+    let perms = format_permissions(node.u, node.g, node.o);
+    format!("{} {} {}{}", node.owner, perms, node.name, suffix)
+}
+
+/// Format Unix-style permissions into rwxrwxrwx string.
+fn format_permissions(u: i16, g: i16, o: i16) -> String {
+    let mut perms = String::new();
+    perms.push(if u & 0b100 != 0 { 'r' } else { '-' });
+    perms.push(if u & 0b010 != 0 { 'w' } else { '-' });
+    perms.push(if u & 0b001 != 0 { 'x' } else { '-' });
+    perms.push(if g & 0b100 != 0 { 'r' } else { '-' });
+    perms.push(if g & 0b010 != 0 { 'w' } else { '-' });
+    perms.push(if g & 0b001 != 0 { 'x' } else { '-' });
+    perms.push(if o & 0b100 != 0 { 'r' } else { '-' });
+    perms.push(if o & 0b010 != 0 { 'w' } else { '-' });
+    perms.push(if o & 0b001 != 0 { 'x' } else { '-' });
+    perms
 }
 
 /// Check if the current user can read the node (owner or world-read).
