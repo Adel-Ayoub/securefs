@@ -167,7 +167,7 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                             for child in fnode.children.iter() {
                                 let child_path = format!("{}/{}", current_path, child);
                                 if let Ok(Some(node)) = dao::get_f_node(pg_client.clone(), child_path) {
-                                    names.push(format_entry(node.dir, node.name));
+                                    names.push(format_entry(node.dir, node.name, node.u, node.g, node.o));
                                 }
                             }
                             names
@@ -566,13 +566,10 @@ fn normalize_path(path: String) -> String {
     }
 }
 
-/// Append a trailing slash to directories for display parity with `ls`.
-fn format_entry(is_dir: bool, name: String) -> String {
-    if is_dir {
-        format!("{}/", name)
-    } else {
-        name
-    }
+/// Format ls output with a trailing slash for dirs and perms tuple.
+fn format_entry(is_dir: bool, name: String, u: i16, g: i16, o: i16) -> String {
+    let suffix = if is_dir { "/" } else { "" };
+    format!("{name}{suffix} ({u}{g}{o})")
 }
 
 /// Check if the current user can read the node (owner or world-read).
