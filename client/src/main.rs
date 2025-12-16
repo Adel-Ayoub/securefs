@@ -3,6 +3,109 @@
 //! This is the main entry point for the SecureFS CLI client,
 //! providing a command-line interface to the SecureFS file system.
 
+use std::env;
+use std::io::{self, Write};
+
+use futures_util::{SinkExt, StreamExt};
+use securefs_model::cmd::{MapStr, NumArgs};
+use securefs_model::protocol::{AppMessage, Cmd};
+use tokio::runtime::Runtime;
+use tokio_tungstenite::connect_async;
+use tokio_tungstenite::tungstenite::Message;
+
 fn main() {
-    println!("SecureFS Client - Coming soon!");
+    let rt = Runtime::new().expect("runtime");
+    if let Err(e) = rt.block_on(run()) {
+        eprintln!("{}", e);
+    }
+}
+
+async fn run() -> Result<(), String> {
+    let args: Vec<String> = env::args().collect();
+    let bind = "127.0.0.1:8080".to_string();
+    let server_addr = args.get(1).cloned().unwrap_or(bind);
+    let url = format!("ws://{}", server_addr);
+
+    let (mut ws_stream, _) = connect_async(url)
+        .await
+        .map_err(|e| format!("connect failed: {}", e))?;
+
+    println!("Connected. Login with: login <username> <password>");
+    let stdin = io::stdin();
+    loop {
+        print!("> ");
+        io::stdout().flush().map_err(|e| e.to_string())?;
+        let mut line = String::new();
+        stdin.read_line(&mut line).map_err(|e| e.to_string())?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let line = line.trim_end().to_string();
+        let app_message = match command_parser(line.clone()) {
+            Ok(msg) => msg,
+            Err(err) => {
+                println!("{}", err);
+                continue;
+            }
+        };
+
+        match app_message.cmd {
+            Cmd::Login => {
+                send(&mut ws_stream, &app_message).await?;
+                let reply = recv(&mut ws_stream).await?;
+                match reply.cmd {
+                    Cmd::Login => {
+                        let is_admin = reply.data.get(1).unwrap_or(&"false".into());
+                        println!("login ok (is_admin: {})", is_admin);
+                    }
+                    Cmd::Failure => {
+                        println!("{}", reply.data.get(0).unwrap_or(&"login failed".into()));
+                    }
+                    _ => println!("unexpected reply"),
+                }
+            }
+            Cmd::Logout => {
+                println!("bye");
+                break;
+            }
+            _ => {
+                println!("command not implemented");
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn command_parser(input: String) -> Result<AppMessage, String> {
+    let mut parts = input
+        .split_whitespace()
+        .map(|s| s.to_string())
+        .collect::<Vec<String>>();
+    let cmd_str = match parts.get(0) {
+        Some(c) => c.clone(),
+        None => return Err("missing command".into()),
+    };
+    let num_args = Cmd::num_args(cmd_str.clone()).unwrap_or(usize::MAX);
+    if num_args < usize::MAX && parts.len() != num_args {
+        return Err("invalid number of args".into());
+    }
+    let args = parts.split_off(1);
+    let cmd = Cmd::from_str(cmd_str).unwrap_or_default();
+    Ok(AppMessage { cmd, data: args })
+}
+
+async fn send(ws: &mut tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>, msg: &AppMessage) -> Result<(), String> {
+    let payload = serde_json::to_string(msg).map_err(|e| e.to_string())?;
+    ws.send(Message::Text(payload))
+        .await
+        .map_err(|e| format!("send failed: {}", e))
+}
+
+async fn recv(ws: &mut tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>) -> Result<AppMessage, String> {
+    let msg = ws.next().await.ok_or("connection closed")??;
+    if !msg.is_text() {
+        return Err("non-text message".into());
+    }
+    serde_json::from_str(msg.to_text().unwrap()).map_err(|e| format!("decode failed: {}", e))
 }
