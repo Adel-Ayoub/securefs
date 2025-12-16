@@ -8,7 +8,7 @@ use std::env;
 use std::sync::Arc;
 
 use futures_util::{SinkExt, StreamExt};
-use securefs_model::protocol::{AppMessage, Cmd};
+use securefs_model::protocol::{AppMessage, Cmd, FNode};
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 use tokio_postgres::NoTls;
@@ -339,16 +339,16 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                             data: vec!["invalid path".to_string()],
                         }
                     } else {
-                    match dao::get_f_node(pg_client.clone(), new_path.clone()).await {
-                        Ok(Some(node)) if node.dir => {
-                            current_path = new_path.clone();
-                            AppMessage { cmd: Cmd::Cd, data: vec![new_path] }
+                        match dao::get_f_node(pg_client.clone(), new_path.clone()).await {
+                            Ok(Some(node)) if node.dir && can_read(&node, current_user.as_ref()) => {
+                                current_path = new_path.clone();
+                                AppMessage { cmd: Cmd::Cd, data: vec![new_path] }
+                            }
+                            _ => AppMessage {
+                                cmd: Cmd::Failure,
+                                data: vec!["invalid path".to_string()],
+                            },
                         }
-                        _ => AppMessage {
-                            cmd: Cmd::Failure,
-                            data: vec!["invalid path".to_string()],
-                        },
-                    }
                     }
                 }
             }
@@ -366,6 +366,12 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                             data: vec!["missing file name".to_string()],
                         }
                     } else {
+                        match dao::get_f_node(pg_client.clone(), current_path.clone()).await {
+                            Ok(Some(parent)) if can_write(&parent, current_user.as_ref()) => {}
+                            _ => {
+                                AppMessage { cmd: Cmd::Failure, data: vec!["no write permission".into()] }
+                            }
+                        }
                         let target_path = format!("{}/{}", current_path, file_name);
                         let parent_path = current_path.clone();
                         let owner = current_user.clone().unwrap_or_default();
@@ -421,17 +427,20 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                     } else {
                         let target_path = format!("storage{}", current_path);
                         let file_path = format!("{}/{}", target_path, file_name);
-                        let mut buf = String::new();
-                        let read_res = fs::File::open(&file_path).await;
-                        match read_res {
-                            Ok(mut f) => {
-                                let _ = f.read_to_string(&mut buf).await;
-                                AppMessage { cmd: Cmd::Cat, data: vec![buf] }
+                        match dao::get_f_node(pg_client.clone(), format!("{}/{}", current_path, file_name)).await {
+                            Ok(Some(node)) if node.dir => AppMessage { cmd: Cmd::Failure, data: vec!["cannot cat dir".into()] },
+                            Ok(Some(node)) if can_read(&node, current_user.as_ref()) => {
+                                let mut buf = String::new();
+                                let read_res = fs::File::open(&file_path).await;
+                                match read_res {
+                                    Ok(mut f) => {
+                                        let _ = f.read_to_string(&mut buf).await;
+                                        AppMessage { cmd: Cmd::Cat, data: vec![buf] }
+                                    }
+                                    Err(_) => AppMessage { cmd: Cmd::Failure, data: vec!["cat failed".to_string()] },
+                                }
                             }
-                            Err(_) => AppMessage {
-                                cmd: Cmd::Failure,
-                                data: vec!["cat failed".to_string()],
-                            },
+                            _ => AppMessage { cmd: Cmd::Failure, data: vec!["no read permission".into()] },
                         }
                     }
                 }
@@ -451,13 +460,16 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                             data: vec!["missing file name".to_string()],
                         }
                     } else {
+                        match dao::get_f_node(pg_client.clone(), current_path.clone()).await {
+                            Ok(Some(parent)) if can_write(&parent, current_user.as_ref()) => {}
+                            _ => {
+                                AppMessage { cmd: Cmd::Failure, data: vec!["no write permission".into()] }
+                            }
+                        }
                         let target_path = format!("storage{}", current_path);
                         let file_path = format!("{}/{}", target_path, file_name);
                         if fs::create_dir_all(&target_path).await.is_err() {
-                            AppMessage {
-                                cmd: Cmd::Failure,
-                                data: vec!["echo failed".to_string()],
-                            }
+                            AppMessage { cmd: Cmd::Failure, data: vec!["echo failed".to_string()] }
                         } else {
                             let write_res = fs::File::create(&file_path).await.and_then(|mut f| f.write_all(content.as_bytes()));
                             match write_res {
