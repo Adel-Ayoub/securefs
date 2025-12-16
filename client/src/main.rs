@@ -156,6 +156,7 @@ async fn run() -> Result<(), String> {
                 }
             }
             Cmd::Echo => {
+                // echo "<data>" filename
                 send(&mut ws_stream, &app_message).await?;
                 let reply = recv(&mut ws_stream).await?;
                 match reply.cmd {

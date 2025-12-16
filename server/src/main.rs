@@ -10,6 +10,8 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::accept_async;
 use tokio::net::TcpStream;
+use tokio::fs;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 mod dao;
 
@@ -370,13 +372,16 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                             data: vec!["missing file name".to_string()],
                         }
                     } else {
-                        let target_path = format!("{}/{}", current_path, file_name);
-                        match dao::get_f_node(pg_client.clone(), target_path.clone()).await {
-                            Ok(Some(node)) if !node.dir => AppMessage {
-                                cmd: Cmd::Cat,
-                                data: vec!["".to_string()],
-                            },
-                            _ => AppMessage {
+                        let target_path = format!("storage{}", current_path);
+                        let file_path = format!("{}/{}", target_path, file_name);
+                        let mut buf = String::new();
+                        let read_res = fs::File::open(&file_path).await;
+                        match read_res {
+                            Ok(mut f) => {
+                                let _ = f.read_to_string(&mut buf).await;
+                                AppMessage { cmd: Cmd::Cat, data: vec![buf] }
+                            }
+                            Err(_) => AppMessage {
                                 cmd: Cmd::Failure,
                                 data: vec!["cat failed".to_string()],
                             },
@@ -399,18 +404,18 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                             data: vec!["missing file name".to_string()],
                         }
                     } else {
-                        let target_path = format!("{}/{}", current_path, file_name);
-                        let exists = dao::get_f_node(pg_client.clone(), target_path.clone()).await.ok().flatten();
-                        if exists.is_none() {
+                        let target_path = format!("storage{}", current_path);
+                        let file_path = format!("{}/{}", target_path, file_name);
+                        if fs::create_dir_all(&target_path).await.is_err() {
                             AppMessage {
                                 cmd: Cmd::Failure,
-                                data: vec!["echo target missing".to_string()],
+                                data: vec!["echo failed".to_string()],
                             }
                         } else {
-                            // stub: we do not store content; acknowledge
-                            AppMessage {
-                                cmd: Cmd::Echo,
-                                data: vec!["ok".to_string()],
+                            let write_res = fs::File::create(&file_path).await.and_then(|mut f| f.write_all(content.as_bytes()));
+                            match write_res {
+                                Ok(_) => AppMessage { cmd: Cmd::Echo, data: vec!["ok".to_string()] },
+                                Err(_) => AppMessage { cmd: Cmd::Failure, data: vec!["echo failed".to_string()] },
                             }
                         }
                     }
