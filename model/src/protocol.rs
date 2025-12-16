@@ -1,6 +1,4 @@
 use serde::{Deserialize, Serialize};
-
-/// Legacy/Test-compatible command set and message shapes.
 #[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Clone, Default)]
 pub enum Cmd {
     Cat,

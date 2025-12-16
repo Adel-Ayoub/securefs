@@ -9,9 +9,5 @@ resolver = "2"
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-authors = ["SecureFS Team"]
+authors = ["Adel Ayoub"]
 description = "A secure distributed file system"
-repository = "https://github.com/securefs/securefs"
-license = "MIT OR Apache-2.0"
-keywords = ["filesystem", "encryption", "distributed", "secure"]
-categories = ["filesystem", "cryptography"]
