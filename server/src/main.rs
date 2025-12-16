@@ -237,7 +237,7 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                             let mut names = Vec::new();
                             for child in fnode.children.iter() {
                                 let child_path = format!("{}/{}", current_path, child);
-                                if let Ok(Some(node)) = dao::get_f_node(pg_client.clone(), child_path) {
+                                if let Ok(Some(node)) = dao::get_f_node(pg_client.clone(), child_path).await {
                                     names.push(format_ls_entry(&node));
                                 }
                             }
@@ -262,12 +262,13 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                             data: vec!["invalid directory name".to_string()],
                         }
                     } else {
-                        match dao::get_f_node(pg_client.clone(), current_path.clone()).await {
-                            Ok(Some(parent)) if can_write(&parent, current_user.as_ref()) => {}
-                            _ => {
-                                AppMessage { cmd: Cmd::Failure, data: vec!["no write permission".into()] }
-                            }
-                        }
+                        let has_perm = match dao::get_f_node(pg_client.clone(), current_path.clone()).await {
+                            Ok(Some(parent)) if can_write(&parent, current_user.as_ref()) => true,
+                            _ => false,
+                        };
+                        if !has_perm {
+                            AppMessage { cmd: Cmd::Failure, data: vec!["no write permission".into()] }
+                        } else {
                         let target_path = format!("{}/{}", current_path, dir_name);
                         let parent_path = current_path.clone();
                         let owner = current_user.clone().unwrap_or_default();
@@ -303,6 +304,7 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                                 cmd: Cmd::Failure,
                                 data: vec!["mkdir failed".to_string()],
                             },
+                        }
                         }
                     }
                 }
@@ -372,14 +374,13 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                     } else {
                         let path = format!("{}/{}", current_path, target);
                         // Require write on parent
-                        match dao::get_f_node(pg_client.clone(), current_path.clone()).await {
-                            Ok(Some(parent)) if can_write(&parent, current_user.as_ref()) => {}
-                            _ => {
-                                AppMessage { cmd: Cmd::Failure, data: vec!["no write permission".into()] }
-                            }
-                        }
-                        // Prevent deleting non-empty directories for now
-                        if let Ok(Some(node)) = dao::get_f_node(pg_client.clone(), path.clone()).await {
+                        let has_perm = match dao::get_f_node(pg_client.clone(), current_path.clone()).await {
+                            Ok(Some(parent)) if can_write(&parent, current_user.as_ref()) => true,
+                            _ => false,
+                        };
+                        if !has_perm {
+                            AppMessage { cmd: Cmd::Failure, data: vec!["no write permission".into()] }
+                        } else if let Ok(Some(node)) = dao::get_f_node(pg_client.clone(), path.clone()).await {
                             if node.dir && !node.children.is_empty() {
                                 AppMessage { cmd: Cmd::Failure, data: vec!["directory not empty".into()] }
                             } else {
@@ -462,12 +463,13 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                             data: vec!["invalid file name".to_string()],
                         }
                     } else {
-                        match dao::get_f_node(pg_client.clone(), current_path.clone()).await {
-                            Ok(Some(parent)) if can_write(&parent, current_user.as_ref()) => {}
-                            _ => {
-                                AppMessage { cmd: Cmd::Failure, data: vec!["no write permission".into()] }
-                            }
-                        }
+                        let has_perm = match dao::get_f_node(pg_client.clone(), current_path.clone()).await {
+                            Ok(Some(parent)) if can_write(&parent, current_user.as_ref()) => true,
+                            _ => false,
+                        };
+                        if !has_perm {
+                            AppMessage { cmd: Cmd::Failure, data: vec!["no write permission".into()] }
+                        } else {
                         let target_path = format!("{}/{}", current_path, file_name);
                         let parent_path = current_path.clone();
                         let owner = current_user.clone().unwrap_or_default();
@@ -503,6 +505,7 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                                 cmd: Cmd::Failure,
                                 data: vec!["touch failed".to_string()],
                             },
+                        }
                         }
                     }
                 }
@@ -557,21 +560,22 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                         }
                     } else {
                         match dao::get_f_node(pg_client.clone(), current_path.clone()).await {
-                            Ok(Some(parent)) if can_write(&parent, current_user.as_ref()) => {}
-                            _ => {
-                                AppMessage { cmd: Cmd::Failure, data: vec!["no write permission".into()] }
+                            Ok(Some(parent)) if can_write(&parent, current_user.as_ref()) => {
+                                let target_path = format!("storage{}", current_path);
+                                let file_path = format!("{}/{}", target_path, file_name);
+                                if fs::create_dir_all(&target_path).await.is_err() {
+                                    AppMessage { cmd: Cmd::Failure, data: vec!["echo failed".to_string()] }
+                                } else {
+                                    match fs::File::create(&file_path).await {
+                                        Ok(mut f) => match f.write_all(content.as_bytes()).await {
+                                            Ok(_) => AppMessage { cmd: Cmd::Echo, data: vec!["ok".to_string()] },
+                                            Err(_) => AppMessage { cmd: Cmd::Failure, data: vec!["echo failed".to_string()] },
+                                        }
+                                        Err(_) => AppMessage { cmd: Cmd::Failure, data: vec!["echo failed".to_string()] },
+                                    }
+                                }
                             }
-                        }
-                        let target_path = format!("storage{}", current_path);
-                        let file_path = format!("{}/{}", target_path, file_name);
-                        if fs::create_dir_all(&target_path).await.is_err() {
-                            AppMessage { cmd: Cmd::Failure, data: vec!["echo failed".to_string()] }
-                        } else {
-                            let write_res = fs::File::create(&file_path).await.and_then(|mut f| f.write_all(content.as_bytes()));
-                            match write_res {
-                                Ok(_) => AppMessage { cmd: Cmd::Echo, data: vec!["ok".to_string()] },
-                                Err(_) => AppMessage { cmd: Cmd::Failure, data: vec!["echo failed".to_string()] },
-                            }
+                            _ => AppMessage { cmd: Cmd::Failure, data: vec!["no write permission".into()] }
                         }
                     }
                 }
@@ -619,10 +623,11 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
             },
         };
 
+        let is_logout = matches!(reply.cmd, Cmd::Logout);
         send_app_message(&mut ws_stream, reply).await?;
 
         // If logout was processed, close the loop so the client can reconnect cleanly.
-        if !authenticated && matches!(reply.cmd, Cmd::Logout) {
+        if !authenticated && is_logout {
             break;
         }
     }
@@ -716,5 +721,38 @@ fn is_valid_name(name: &str) -> bool {
         && !name.contains('\0')
         && name != "." 
         && name != ".."
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_normalize_path() {
+        assert_eq!(normalize_path("/home/user".into()), "/home/user");
+        assert_eq!(normalize_path("/home/user/".into()), "/home/user");
+        assert_eq!(normalize_path("/home/./user".into()), "/home/user");
+        assert_eq!(normalize_path("/home/user/..".into()), "/home");
+        assert_eq!(normalize_path("/home/../root".into()), "/root");
+        assert_eq!(normalize_path("/../..".into()), "/");
+    }
+
+    #[test]
+    fn test_is_valid_name() {
+        assert!(is_valid_name("file.txt"));
+        assert!(is_valid_name("mydir"));
+        assert!(!is_valid_name(""));
+        assert!(!is_valid_name("."));
+        assert!(!is_valid_name(".."));
+        assert!(!is_valid_name("dir/subdir"));
+        assert!(!is_valid_name("file\0name"));
+    }
+
+    #[test]
+    fn test_format_permissions() {
+        assert_eq!(format_permissions(7, 5, 4), "rwxr-xr--");
+        assert_eq!(format_permissions(6, 4, 0), "rw-r-----");
+        assert_eq!(format_permissions(0, 0, 0), "---------");
+    }
 }
 
