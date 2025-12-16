@@ -356,6 +356,98 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                     }
                 }
             }
+            Cmd::Cat => {
+                if !authenticated {
+                    AppMessage {
+                        cmd: Cmd::Failure,
+                        data: vec!["not authenticated".to_string()],
+                    }
+                } else {
+                    let file_name = incoming.data.get(0).cloned().unwrap_or_default();
+                    if file_name.is_empty() {
+                        AppMessage {
+                            cmd: Cmd::Failure,
+                            data: vec!["missing file name".to_string()],
+                        }
+                    } else {
+                        let target_path = format!("{}/{}", current_path, file_name);
+                        match dao::get_f_node(pg_client.clone(), target_path.clone()).await {
+                            Ok(Some(node)) if !node.dir => AppMessage {
+                                cmd: Cmd::Cat,
+                                data: vec!["".to_string()],
+                            },
+                            _ => AppMessage {
+                                cmd: Cmd::Failure,
+                                data: vec!["cat failed".to_string()],
+                            },
+                        }
+                    }
+                }
+            }
+            Cmd::Echo => {
+                if !authenticated {
+                    AppMessage {
+                        cmd: Cmd::Failure,
+                        data: vec!["not authenticated".to_string()],
+                    }
+                } else {
+                    let file_name = incoming.data.get(0).cloned().unwrap_or_default();
+                    let content = incoming.data.get(1).cloned().unwrap_or_default();
+                    if file_name.is_empty() {
+                        AppMessage {
+                            cmd: Cmd::Failure,
+                            data: vec!["missing file name".to_string()],
+                        }
+                    } else {
+                        let target_path = format!("{}/{}", current_path, file_name);
+                        let exists = dao::get_f_node(pg_client.clone(), target_path.clone()).await.ok().flatten();
+                        if exists.is_none() {
+                            AppMessage {
+                                cmd: Cmd::Failure,
+                                data: vec!["echo target missing".to_string()],
+                            }
+                        } else {
+                            // stub: we do not store content; acknowledge
+                            AppMessage {
+                                cmd: Cmd::Echo,
+                                data: vec!["ok".to_string()],
+                            }
+                        }
+                    }
+                }
+            }
+            Cmd::Chmod => {
+                if !authenticated {
+                    AppMessage {
+                        cmd: Cmd::Failure,
+                        data: vec!["not authenticated".to_string()],
+                    }
+                } else {
+                    let target = incoming.data.get(0).cloned().unwrap_or_default();
+                    let mode = incoming.data.get(1).cloned().unwrap_or_default();
+                    if target.is_empty() || mode.len() != 3 {
+                        AppMessage {
+                            cmd: Cmd::Failure,
+                            data: vec!["invalid args".to_string()],
+                        }
+                    } else {
+                        let path = format!("{}/{}", current_path, target);
+                        let ugo: Vec<i16> = mode.chars().filter_map(|c| c.to_digit(8)).map(|d| d as i16).collect();
+                        if ugo.len() != 3 {
+                            AppMessage {
+                                cmd: Cmd::Failure,
+                                data: vec!["invalid mode".to_string()],
+                            }
+                        } else {
+                            let res = dao::change_file_perms(pg_client.clone(), path, ugo[0], ugo[1], ugo[2]).await;
+                            match res {
+                                Ok(_) => AppMessage { cmd: Cmd::Chmod, data: vec!["ok".to_string()] },
+                                Err(_) => AppMessage { cmd: Cmd::Failure, data: vec!["chmod failed".to_string()] },
+                            }
+                        }
+                    }
+                }
+            }
             _ => AppMessage {
                 cmd: Cmd::Failure,
                 data: vec!["command not implemented".to_string()],

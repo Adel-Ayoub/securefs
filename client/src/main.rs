@@ -146,6 +146,33 @@ async fn run() -> Result<(), String> {
                     _ => println!("unexpected reply"),
                 }
             }
+            Cmd::Cat => {
+                send(&mut ws_stream, &app_message).await?;
+                let reply = recv(&mut ws_stream).await?;
+                match reply.cmd {
+                    Cmd::Cat => println!("{}", reply.data.get(0).unwrap_or(&"".into())),
+                    Cmd::Failure => println!("{}", reply.data.get(0).unwrap_or(&"cat failed".into())),
+                    _ => println!("unexpected reply"),
+                }
+            }
+            Cmd::Echo => {
+                send(&mut ws_stream, &app_message).await?;
+                let reply = recv(&mut ws_stream).await?;
+                match reply.cmd {
+                    Cmd::Echo => println!("ok"),
+                    Cmd::Failure => println!("{}", reply.data.get(0).unwrap_or(&"echo failed".into())),
+                    _ => println!("unexpected reply"),
+                }
+            }
+            Cmd::Chmod => {
+                send(&mut ws_stream, &app_message).await?;
+                let reply = recv(&mut ws_stream).await?;
+                match reply.cmd {
+                    Cmd::Chmod => println!("ok"),
+                    Cmd::Failure => println!("{}", reply.data.get(0).unwrap_or(&"chmod failed".into())),
+                    _ => println!("unexpected reply"),
+                }
+            }
             _ => {
                 println!("command not implemented");
             }
