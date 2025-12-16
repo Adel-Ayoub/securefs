@@ -128,6 +128,24 @@ async fn run() -> Result<(), String> {
                     _ => println!("unexpected reply"),
                 }
             }
+            Cmd::Mv => {
+                send(&mut ws_stream, &app_message).await?;
+                let reply = recv(&mut ws_stream).await?;
+                match reply.cmd {
+                    Cmd::Mv => println!("ok"),
+                    Cmd::Failure => println!("{}", reply.data.get(0).unwrap_or(&"mv failed".into())),
+                    _ => println!("unexpected reply"),
+                }
+            }
+            Cmd::Delete => {
+                send(&mut ws_stream, &app_message).await?;
+                let reply = recv(&mut ws_stream).await?;
+                match reply.cmd {
+                    Cmd::Delete => println!("ok"),
+                    Cmd::Failure => println!("{}", reply.data.get(0).unwrap_or(&"delete failed".into())),
+                    _ => println!("unexpected reply"),
+                }
+            }
             _ => {
                 println!("command not implemented");
             }

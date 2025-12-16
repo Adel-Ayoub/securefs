@@ -215,6 +215,73 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                     }
                 }
             }
+            Cmd::Mv => {
+                if !authenticated {
+                    AppMessage {
+                        cmd: Cmd::Failure,
+                        data: vec!["not authenticated".to_string()],
+                    }
+                } else {
+                    let src = incoming.data.get(0).cloned().unwrap_or_default();
+                    let dst = incoming.data.get(1).cloned().unwrap_or_default();
+                    if src.is_empty() || dst.is_empty() {
+                        AppMessage {
+                            cmd: Cmd::Failure,
+                            data: vec!["missing paths".to_string()],
+                        }
+                    } else {
+                        let old_path = format!("{}/{}", current_path, src);
+                        let new_path = format!("{}/{}", current_path, dst);
+                        let res = dao::update_path(pg_client.clone(), old_path.clone(), new_path.clone()).await;
+                        let name_res = dao::update_fnode_name_if_path_is_already_updated(pg_client.clone(), new_path.clone(), dst.clone()).await;
+                        let enc_res = dao::update_fnode_enc_name(pg_client.clone(), new_path.clone(), dst.clone()).await;
+                        let parent_remove = dao::remove_file_from_parent(pg_client.clone(), current_path.clone(), src.clone()).await;
+                        let parent_add = dao::add_file_to_parent(pg_client.clone(), current_path.clone(), dst.clone()).await;
+                        if res.is_ok() && name_res.is_ok() && enc_res.is_ok() && parent_remove.is_ok() && parent_add.is_ok() {
+                            AppMessage {
+                                cmd: Cmd::Mv,
+                                data: vec!["ok".to_string()],
+                            }
+                        } else {
+                            AppMessage {
+                                cmd: Cmd::Failure,
+                                data: vec!["mv failed".to_string()],
+                            }
+                        }
+                    }
+                }
+            }
+            Cmd::Delete => {
+                if !authenticated {
+                    AppMessage {
+                        cmd: Cmd::Failure,
+                        data: vec!["not authenticated".to_string()],
+                    }
+                } else {
+                    let target = incoming.data.get(0).cloned().unwrap_or_default();
+                    if target.is_empty() {
+                        AppMessage {
+                            cmd: Cmd::Failure,
+                            data: vec!["missing path".to_string()],
+                        }
+                    } else {
+                        let path = format!("{}/{}", current_path, target);
+                        let parent_remove = dao::remove_file_from_parent(pg_client.clone(), current_path.clone(), target.clone()).await;
+                        let del = dao::delete_path(pg_client.clone(), path.clone()).await;
+                        if parent_remove.is_ok() && del.is_ok() {
+                            AppMessage {
+                                cmd: Cmd::Delete,
+                                data: vec!["ok".to_string()],
+                            }
+                        } else {
+                            AppMessage {
+                                cmd: Cmd::Failure,
+                                data: vec!["delete failed".to_string()],
+                            }
+                        }
+                    }
+                }
+            }
             Cmd::Cd => {
                 if !authenticated {
                     AppMessage {

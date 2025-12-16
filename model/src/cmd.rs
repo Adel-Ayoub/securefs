@@ -45,6 +45,7 @@ impl NumArgs for Cmd {
             "ls" => Ok(1),
             "mkdir" => Ok(2),
             "mv" => Ok(3),
+            "delete" => Ok(2),
             "chmod" => Ok(3),
             "scan" => Ok(usize::MAX),
             "new_connection" => Ok(usize::MAX),
