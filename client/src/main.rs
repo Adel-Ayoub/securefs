@@ -217,10 +217,10 @@ fn command_parser(input: String) -> Result<AppMessage, String> {
     };
     let num_args = Cmd::num_args(cmd_str.clone()).unwrap_or(usize::MAX);
     if num_args < usize::MAX && parts.len() != num_args {
-        return Err("invalid number of args".into());
+        return Err(format!("expected {} args for '{}', got {}", num_args - 1, cmd_str, parts.len() - 1));
     }
     let args = parts.split_off(1);
-    let cmd = Cmd::from_str(cmd_str).unwrap_or_default();
+    let cmd = Cmd::from_str(cmd_str.clone()).ok_or_else(|| format!("unknown command: {}", cmd_str))?;
     Ok(AppMessage { cmd, data: args })
 }
 
