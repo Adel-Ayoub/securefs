@@ -256,7 +256,7 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                     }
                 } else {
                     let dir_name = incoming.data.get(0).cloned().unwrap_or_default();
-                    if dir_name.is_empty() || dir_name.contains('/') {
+                    if !is_valid_name(&dir_name) {
                         AppMessage {
                             cmd: Cmd::Failure,
                             data: vec!["invalid directory name".to_string()],
@@ -450,10 +450,10 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                     }
                 } else {
                     let file_name = incoming.data.get(0).cloned().unwrap_or_default();
-                    if file_name.is_empty() {
+                    if !is_valid_name(&file_name) {
                         AppMessage {
                             cmd: Cmd::Failure,
-                            data: vec!["missing file name".to_string()],
+                            data: vec!["invalid file name".to_string()],
                         }
                     } else {
                         match dao::get_f_node(pg_client.clone(), current_path.clone()).await {
@@ -701,5 +701,14 @@ fn can_write(node: &FNode, user: Option<&String>) -> bool {
         }
     }
     (node.o & 0b010) != 0
+}
+
+/// Validate file or directory name (no path separators or special chars).
+fn is_valid_name(name: &str) -> bool {
+    !name.is_empty() 
+        && !name.contains('/') 
+        && !name.contains('\0')
+        && name != "." 
+        && name != ".."
 }
 
