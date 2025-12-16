@@ -515,10 +515,10 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                     }
                 } else {
                     let file_name = incoming.data.get(0).cloned().unwrap_or_default();
-                    if file_name.is_empty() {
+                    if !is_valid_name(&file_name) {
                         AppMessage {
                             cmd: Cmd::Failure,
-                            data: vec!["missing file name".to_string()],
+                            data: vec!["invalid file name".to_string()],
                         }
                     } else {
                         let target_path = format!("storage{}", current_path);
@@ -550,10 +550,10 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                 } else {
                     let file_name = incoming.data.get(0).cloned().unwrap_or_default();
                     let content = incoming.data.get(1).cloned().unwrap_or_default();
-                    if file_name.is_empty() {
+                    if !is_valid_name(&file_name) {
                         AppMessage {
                             cmd: Cmd::Failure,
-                            data: vec!["missing file name".to_string()],
+                            data: vec!["invalid file name".to_string()],
                         }
                     } else {
                         match dao::get_f_node(pg_client.clone(), current_path.clone()).await {
