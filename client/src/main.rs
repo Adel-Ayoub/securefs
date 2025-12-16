@@ -28,11 +28,11 @@ async fn run() -> Result<(), String> {
     let server_addr = args.get(1).cloned().unwrap_or(bind);
     let url = format!("ws://{}", server_addr);
 
-    let (mut ws_stream, _) = connect_async(url)
+    let (mut ws_stream, _) = connect_async(&url)
         .await
         .map_err(|e| format!("connect failed: {}", e))?;
 
-    println!("Connected. Login with: login <username> <password>");
+    println!("Connected to {}. Login with: login <username> <password>", server_addr);
     println!("Commands: login <u> <p>, logout, pwd, ls, cd <path>, mkdir <dir>, touch <file>, mv <src> <dst>, delete <name>, cat <file>, echo <data> <file>, chmod <mode> <name>");
     let stdin = io::stdin();
     loop {
