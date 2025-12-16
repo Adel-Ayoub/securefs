@@ -543,3 +543,23 @@ fn format_entry(is_dir: bool, name: String) -> String {
     }
 }
 
+/// Check if the current user can read the node (owner or world-read).
+fn can_read(node: &FNode, user: Option<&String>) -> bool {
+    if let Some(u) = user {
+        if node.owner == *u && (node.u & 0b100) != 0 {
+            return true;
+        }
+    }
+    (node.o & 0b100) != 0
+}
+
+/// Check if the current user can write the node (owner or world-write).
+fn can_write(node: &FNode, user: Option<&String>) -> bool {
+    if let Some(u) = user {
+        if node.owner == *u && (node.u & 0b010) != 0 {
+            return true;
+        }
+    }
+    (node.o & 0b010) != 0
+}
+
