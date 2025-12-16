@@ -141,6 +141,72 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                     }
                 }
             }
+            Cmd::NewUser => {
+                if !authenticated {
+                    AppMessage { cmd: Cmd::Failure, data: vec!["not authenticated".to_string()] }
+                } else {
+                    let user_name = incoming.data.get(0).cloned().unwrap_or_default();
+                    let pass = incoming.data.get(1).cloned().unwrap_or_default();
+                    let group = incoming.data.get(2).cloned().unwrap_or_default();
+                    if user_name.is_empty() || pass.is_empty() || group.is_empty() {
+                        AppMessage { cmd: Cmd::Failure, data: vec!["missing user data".to_string()] }
+                    } else {
+                        let exists = dao::get_user(pg_client.clone(), user_name.clone()).await.ok().flatten().is_some();
+                        if exists {
+                            AppMessage { cmd: Cmd::Failure, data: vec!["user already exists".to_string()] }
+                        } else {
+                            let group_exists = dao::get_group(pg_client.clone(), group.clone()).await.ok().flatten().is_some();
+                            if !group_exists {
+                                AppMessage { cmd: Cmd::Failure, data: vec!["group does not exist".to_string()] }
+                            } else {
+                                match dao::create_user(pg_client.clone(), user_name.clone(), pass, Some(group.clone()), false).await {
+                                    Ok(_) => {
+                                        let user_home = format!("/home/{}", user_name);
+                                        let new_dir = securefs_model::protocol::FNode {
+                                            id: -1,
+                                            name: user_name.clone(),
+                                            path: user_home.clone(),
+                                            owner: user_name.clone(),
+                                            hash: "".to_string(),
+                                            parent: "/home".to_string(),
+                                            dir: true,
+                                            u: 7,
+                                            g: 7,
+                                            o: 0,
+                                            children: vec![],
+                                            encrypted_name: user_name.clone(),
+                                        };
+                                        let _ = dao::add_file(pg_client.clone(), new_dir).await;
+                                        let _ = dao::add_file_to_parent(pg_client.clone(), "/home".to_string(), user_name.clone()).await;
+                                        AppMessage { cmd: Cmd::NewUser, data: vec![user_home] }
+                                    }
+                                    Err(_) => AppMessage { cmd: Cmd::Failure, data: vec!["failed to create user".to_string()] },
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Cmd::NewGroup => {
+                if !authenticated {
+                    AppMessage { cmd: Cmd::Failure, data: vec!["not authenticated".to_string()] }
+                } else {
+                    let group_name = incoming.data.get(0).cloned().unwrap_or_default();
+                    if group_name.is_empty() {
+                        AppMessage { cmd: Cmd::Failure, data: vec!["missing group name".to_string()] }
+                    } else {
+                        let exists = dao::get_group(pg_client.clone(), group_name.clone()).await.ok().flatten().is_some();
+                        if exists {
+                            AppMessage { cmd: Cmd::Failure, data: vec!["group already exists".to_string()] }
+                        } else {
+                            match dao::create_group(pg_client.clone(), group_name.clone()).await {
+                                Ok(_) => AppMessage { cmd: Cmd::NewGroup, data: vec![group_name] },
+                                Err(_) => AppMessage { cmd: Cmd::Failure, data: vec!["failed to create group".to_string()] },
+                            }
+                        }
+                    }
+                }
+            }
             Cmd::Pwd => {
                 if !authenticated {
                     AppMessage {
