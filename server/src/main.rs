@@ -331,6 +331,12 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                 } else {
                     let target = incoming.data.get(0).cloned().unwrap_or_default();
                     let new_path = resolve_path(&current_path, &target);
+                    if !new_path.starts_with("/home") {
+                        AppMessage {
+                            cmd: Cmd::Failure,
+                            data: vec!["path not allowed".to_string()],
+                        }
+                    } else {
                     // simple cycle guard
                     let mut guard = HashSet::new();
                     if !guard.insert(new_path.clone()) {
@@ -349,6 +355,7 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                                 data: vec!["invalid path".to_string()],
                             },
                         }
+                    }
                     }
                 }
             }
