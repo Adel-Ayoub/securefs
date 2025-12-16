@@ -316,35 +316,41 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                 } else {
                     let src = incoming.data.get(0).cloned().unwrap_or_default();
                     let dst = incoming.data.get(1).cloned().unwrap_or_default();
-                    if src.is_empty() || dst.is_empty() {
+                    if !is_valid_name(&src) || !is_valid_name(&dst) {
                         AppMessage {
                             cmd: Cmd::Failure,
-                            data: vec!["missing paths".to_string()],
+                            data: vec!["invalid name".to_string()],
                         }
                     } else {
                         let old_path = format!("{}/{}", current_path, src);
                         let new_path = format!("{}/{}", current_path, dst);
-                        // Require write on parent
-                        match dao::get_f_node(pg_client.clone(), current_path.clone()).await {
-                            Ok(Some(parent)) if can_write(&parent, current_user.as_ref()) => {}
-                            _ => {
-                                AppMessage { cmd: Cmd::Failure, data: vec!["no write permission".into()] }
-                            }
-                        }
-                        let res = dao::update_path(pg_client.clone(), old_path.clone(), new_path.clone()).await;
-                        let name_res = dao::update_fnode_name_if_path_is_already_updated(pg_client.clone(), new_path.clone(), dst.clone()).await;
-                        let enc_res = dao::update_fnode_enc_name(pg_client.clone(), new_path.clone(), dst.clone()).await;
-                        let parent_remove = dao::remove_file_from_parent(pg_client.clone(), current_path.clone(), src.clone()).await;
-                        let parent_add = dao::add_file_to_parent(pg_client.clone(), current_path.clone(), dst.clone()).await;
-                        if res.is_ok() && name_res.is_ok() && enc_res.is_ok() && parent_remove.is_ok() && parent_add.is_ok() {
-                            AppMessage {
-                                cmd: Cmd::Mv,
-                                data: vec!["ok".to_string()],
-                            }
+                        
+                        // Check source exists
+                        let src_exists = dao::get_f_node(pg_client.clone(), old_path.clone()).await.ok().flatten().is_some();
+                        if !src_exists {
+                            AppMessage { cmd: Cmd::Failure, data: vec!["source not found".to_string()] }
                         } else {
-                            AppMessage {
-                                cmd: Cmd::Failure,
-                                data: vec!["mv failed".to_string()],
+                            // Require write on parent
+                            match dao::get_f_node(pg_client.clone(), current_path.clone()).await {
+                                Ok(Some(parent)) if can_write(&parent, current_user.as_ref()) => {
+                                    let res = dao::update_path(pg_client.clone(), old_path.clone(), new_path.clone()).await;
+                                    let name_res = dao::update_fnode_name_if_path_is_already_updated(pg_client.clone(), new_path.clone(), dst.clone()).await;
+                                    let enc_res = dao::update_fnode_enc_name(pg_client.clone(), new_path.clone(), dst.clone()).await;
+                                    let parent_remove = dao::remove_file_from_parent(pg_client.clone(), current_path.clone(), src.clone()).await;
+                                    let parent_add = dao::add_file_to_parent(pg_client.clone(), current_path.clone(), dst.clone()).await;
+                                    if res.is_ok() && name_res.is_ok() && enc_res.is_ok() && parent_remove.is_ok() && parent_add.is_ok() {
+                                        AppMessage {
+                                            cmd: Cmd::Mv,
+                                            data: vec!["ok".to_string()],
+                                        }
+                                    } else {
+                                        AppMessage {
+                                            cmd: Cmd::Failure,
+                                            data: vec!["mv failed".to_string()],
+                                        }
+                                    }
+                                }
+                                _ => AppMessage { cmd: Cmd::Failure, data: vec!["no write permission".into()] }
                             }
                         }
                     }
