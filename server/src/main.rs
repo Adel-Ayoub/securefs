@@ -191,6 +191,12 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                             data: vec!["invalid directory name".to_string()],
                         }
                     } else {
+                        match dao::get_f_node(pg_client.clone(), current_path.clone()).await {
+                            Ok(Some(parent)) if can_write(&parent, current_user.as_ref()) => {}
+                            _ => {
+                                AppMessage { cmd: Cmd::Failure, data: vec!["no write permission".into()] }
+                            }
+                        }
                         let target_path = format!("{}/{}", current_path, dir_name);
                         let parent_path = current_path.clone();
                         let owner = current_user.clone().unwrap_or_default();
@@ -247,6 +253,13 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                     } else {
                         let old_path = format!("{}/{}", current_path, src);
                         let new_path = format!("{}/{}", current_path, dst);
+                        // Require write on parent
+                        match dao::get_f_node(pg_client.clone(), current_path.clone()).await {
+                            Ok(Some(parent)) if can_write(&parent, current_user.as_ref()) => {}
+                            _ => {
+                                AppMessage { cmd: Cmd::Failure, data: vec!["no write permission".into()] }
+                            }
+                        }
                         let res = dao::update_path(pg_client.clone(), old_path.clone(), new_path.clone()).await;
                         let name_res = dao::update_fnode_name_if_path_is_already_updated(pg_client.clone(), new_path.clone(), dst.clone()).await;
                         let enc_res = dao::update_fnode_enc_name(pg_client.clone(), new_path.clone(), dst.clone()).await;
@@ -281,6 +294,13 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                         }
                     } else {
                         let path = format!("{}/{}", current_path, target);
+                        // Require write on parent
+                        match dao::get_f_node(pg_client.clone(), current_path.clone()).await {
+                            Ok(Some(parent)) if can_write(&parent, current_user.as_ref()) => {}
+                            _ => {
+                                AppMessage { cmd: Cmd::Failure, data: vec!["no write permission".into()] }
+                            }
+                        }
                         // remove storage copy
                         let storage_path = format!("storage{}", path);
                         if Path::new(&storage_path).exists() {
