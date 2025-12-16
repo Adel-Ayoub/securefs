@@ -1,7 +1,7 @@
-//! SecureFS command-line client
+//! SecureFS command-line client.
 //!
-//! This is the main entry point for the SecureFS CLI client,
-//! providing a command-line interface to the SecureFS file system.
+//! Establishes a WebSocket connection to the server and forwards CLI
+//! commands to protocol messages.
 
 use std::env;
 use std::io::{self, Write};
