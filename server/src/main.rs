@@ -364,10 +364,10 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                     }
                 } else {
                     let target = incoming.data.get(0).cloned().unwrap_or_default();
-                    if target.is_empty() {
+                    if !is_valid_name(&target) {
                         AppMessage {
                             cmd: Cmd::Failure,
-                            data: vec!["missing path".to_string()],
+                            data: vec!["invalid path".to_string()],
                         }
                     } else {
                         let path = format!("{}/{}", current_path, target);
