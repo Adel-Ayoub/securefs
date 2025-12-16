@@ -521,3 +521,11 @@ fn normalize_path(path: String) -> String {
     }
 }
 
+fn format_entry(is_dir: bool, name: String) -> String {
+    if is_dir {
+        format!("{}/", name)
+    } else {
+        name
+    }
+}
+
