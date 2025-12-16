@@ -568,7 +568,13 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                                 } else {
                                     match fs::File::create(&file_path).await {
                                         Ok(mut f) => match f.write_all(content.as_bytes()).await {
-                                            Ok(_) => AppMessage { cmd: Cmd::Echo, data: vec!["ok".to_string()] },
+                                            Ok(_) => {
+                                                // Update hash in DB after successful write
+                                                let hash = hash_content(content.as_bytes());
+                                                let node_path = format!("{}/{}", current_path, file_name);
+                                                let _ = dao::update_hash(pg_client.clone(), node_path, file_name.clone(), hash).await;
+                                                AppMessage { cmd: Cmd::Echo, data: vec!["ok".to_string()] }
+                                            }
                                             Err(_) => AppMessage { cmd: Cmd::Failure, data: vec!["echo failed".to_string()] },
                                         }
                                         Err(_) => AppMessage { cmd: Cmd::Failure, data: vec!["echo failed".to_string()] },
