@@ -64,3 +64,50 @@ impl NumArgs for Cmd {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_map_str_valid_commands() {
+        assert_eq!(Cmd::from_str("ls".into()).unwrap(), Cmd::Ls);
+        assert_eq!(Cmd::from_str("cd".into()).unwrap(), Cmd::Cd);
+        assert_eq!(Cmd::from_str("pwd".into()).unwrap(), Cmd::Pwd);
+        assert_eq!(Cmd::from_str("mkdir".into()).unwrap(), Cmd::Mkdir);
+        assert_eq!(Cmd::from_str("touch".into()).unwrap(), Cmd::Touch);
+        assert_eq!(Cmd::from_str("cat".into()).unwrap(), Cmd::Cat);
+        assert_eq!(Cmd::from_str("echo".into()).unwrap(), Cmd::Echo);
+        assert_eq!(Cmd::from_str("mv".into()).unwrap(), Cmd::Mv);
+        assert_eq!(Cmd::from_str("delete".into()).unwrap(), Cmd::Delete);
+        assert_eq!(Cmd::from_str("chmod".into()).unwrap(), Cmd::Chmod);
+        assert_eq!(Cmd::from_str("scan".into()).unwrap(), Cmd::Scan);
+        assert_eq!(Cmd::from_str("login".into()).unwrap(), Cmd::Login);
+        assert_eq!(Cmd::from_str("logout".into()).unwrap(), Cmd::Logout);
+    }
+
+    #[test]
+    fn test_map_str_case_insensitive() {
+        assert_eq!(Cmd::from_str("LS".into()).unwrap(), Cmd::Ls);
+        assert_eq!(Cmd::from_str("Pwd".into()).unwrap(), Cmd::Pwd);
+        assert_eq!(Cmd::from_str("CHMOD".into()).unwrap(), Cmd::Chmod);
+    }
+
+    #[test]
+    fn test_map_str_invalid() {
+        assert!(Cmd::from_str("invalid_cmd".into()).is_err());
+        assert!(Cmd::from_str("".into()).is_err());
+        assert!(Cmd::from_str("cp".into()).is_err());
+    }
+
+    #[test]
+    fn test_num_args() {
+        assert_eq!(Cmd::num_args("ls".into()).unwrap(), 1);
+        assert_eq!(Cmd::num_args("cd".into()).unwrap(), 2);
+        assert_eq!(Cmd::num_args("mkdir".into()).unwrap(), 2);
+        assert_eq!(Cmd::num_args("mv".into()).unwrap(), 3);
+        assert_eq!(Cmd::num_args("chmod".into()).unwrap(), 3);
+        assert_eq!(Cmd::num_args("echo".into()).unwrap(), usize::MAX);
+        assert!(Cmd::num_args("invalid".into()).is_err());
+    }
+}
+
