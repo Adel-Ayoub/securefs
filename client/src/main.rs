@@ -93,6 +93,24 @@ async fn run() -> Result<(), String> {
                     _ => println!("unexpected reply"),
                 }
             }
+            Cmd::LsGroups => {
+                send(&mut ws_stream, &app_message).await?;
+                let reply = recv(&mut ws_stream).await?;
+                match reply.cmd {
+                    Cmd::LsGroups => {
+                        if reply.data.is_empty() {
+                            println!("no groups found");
+                        } else {
+                            println!("groups:");
+                            for group in &reply.data {
+                                println!("  {}", group);
+                            }
+                        }
+                    }
+                    Cmd::Failure => println!("error: {}", reply.data.get(0).unwrap_or(&"lsgroups failed".into())),
+                    _ => println!("unexpected reply"),
+                }
+            }
             Cmd::Logout => {
                 println!("bye");
                 break;

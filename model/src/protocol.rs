@@ -40,6 +40,8 @@ pub enum Cmd {
     Chmod,
     /// List all users (admin only).
     LsUsers,
+    /// List all groups (admin only).
+    LsGroups,
     /// Terminate the session.
     Logout,
     #[default]
