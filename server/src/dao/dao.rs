@@ -302,6 +302,30 @@ pub async fn get_group(client: Arc<Mutex<Client>>, group_name: String) -> Result
     }
 }
 
+/// Retrieve all group names from the database.
+pub async fn get_all_groups(client: Arc<Mutex<Client>>) -> Result<Vec<String>, String> {
+    let rows = client.lock().await.query("SELECT g_name FROM groups ORDER BY g_name", &[]).await;
+    match rows {
+        Ok(rows) => {
+            let groups: Vec<String> = rows.iter().map(|row| row.get("g_name")).collect();
+            Ok(groups)
+        }
+        Err(_) => Err("failed to list groups".to_string()),
+    }
+}
+
+/// Retrieve all usernames from the database.
+pub async fn get_all_users(client: Arc<Mutex<Client>>) -> Result<Vec<String>, String> {
+    let rows = client.lock().await.query("SELECT user_name FROM users ORDER BY user_name", &[]).await;
+    match rows {
+        Ok(rows) => {
+            let users: Vec<String> = rows.iter().map(|row| row.get("user_name")).collect();
+            Ok(users)
+        }
+        Err(_) => Err("failed to list users".to_string()),
+    }
+}
+
 /// Ensure required seed data exists (currently `/home` root).
 pub async fn init_db(client: Arc<Mutex<Client>>) -> Result<(), ()> {
     let does_home_exist = get_f_node(client.clone(), "/home".to_string()).await.unwrap().is_some();
