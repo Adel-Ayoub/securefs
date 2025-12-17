@@ -815,6 +815,24 @@ fn can_write(node: &FNode, user: Option<&String>) -> bool {
     (node.o & 0b010) != 0
 }
 
+/// Check if the current user can execute the node (owner or world-execute).
+fn can_execute(node: &FNode, user: Option<&String>) -> bool {
+    if let Some(u) = user {
+        if node.owner == *u && (node.u & 0b001) != 0 {
+            return true;
+        }
+    }
+    (node.o & 0b001) != 0
+}
+
+/// Check if the current user is the owner of the node.
+fn is_owner(node: &FNode, user: Option<&String>) -> bool {
+    if let Some(u) = user {
+        return node.owner == *u;
+    }
+    false
+}
+
 /// Validate file or directory name (no path separators or special chars).
 fn is_valid_name(name: &str) -> bool {
     !name.is_empty() 
