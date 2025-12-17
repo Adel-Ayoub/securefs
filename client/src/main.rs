@@ -203,6 +203,26 @@ async fn run() -> Result<(), String> {
                     _ => println!("unexpected reply"),
                 }
             }
+            Cmd::Scan => {
+                send(&mut ws_stream, &app_message).await?;
+                let reply = recv(&mut ws_stream).await?;
+                match reply.cmd {
+                    Cmd::Scan => println!("{}", reply.data.get(0).unwrap_or(&"scan ok".into())),
+                    Cmd::Failure => println!("{}", reply.data.get(0).unwrap_or(&"scan failed".into())),
+                    _ => println!("unexpected reply"),
+                }
+            }
+            Cmd::GetEncryptedFile => {
+                send(&mut ws_stream, &app_message).await?;
+                let reply = recv(&mut ws_stream).await?;
+                match reply.cmd {
+                    Cmd::GetEncryptedFile => {
+                        println!("encrypted path: {}", reply.data.join("/"));
+                    }
+                    Cmd::Failure => println!("{}", reply.data.get(0).unwrap_or(&"failed to get encrypted file".into())),
+                    _ => println!("unexpected reply"),
+                }
+            }
             _ => {
                 println!("command not implemented");
             }
