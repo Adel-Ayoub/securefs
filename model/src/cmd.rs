@@ -28,6 +28,7 @@ impl MapStr for Cmd {
             "pwd" => Ok(Cmd::Pwd),
             "touch" => Ok(Cmd::Touch),
             "logout" => Ok(Cmd::Logout),
+            "lsusers" => Ok(Cmd::LsUsers),
             _ => Err(()),
         }
     }
@@ -59,6 +60,7 @@ impl NumArgs for Cmd {
             "pwd" => Ok(1),
             "touch" => Ok(2),
             "logout" => Ok(1),
+            "lsusers" => Ok(1),
             _ => Err(()),
         }
     }

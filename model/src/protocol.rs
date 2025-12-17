@@ -38,6 +38,8 @@ pub enum Cmd {
     Touch,
     /// Change permissions on a file or directory.
     Chmod,
+    /// List all users (admin only).
+    LsUsers,
     /// Terminate the session.
     Logout,
     #[default]

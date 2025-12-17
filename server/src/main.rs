@@ -130,6 +130,34 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                     }
                 }
             }
+            Cmd::LsUsers => {
+                if !authenticated {
+                    AppMessage {
+                        cmd: Cmd::Failure,
+                        data: vec!["not authenticated".to_string()],
+                    }
+                } else {
+                    // Check if current user is admin
+                    match dao::is_admin(pg_client.clone(), current_user.clone().unwrap()).await {
+                        Ok(true) => {
+                            match dao::get_all_users(pg_client.clone()).await {
+                                Ok(users) => AppMessage {
+                                    cmd: Cmd::LsUsers,
+                                    data: users,
+                                },
+                                Err(_) => AppMessage {
+                                    cmd: Cmd::Failure,
+                                    data: vec!["failed to list users".to_string()],
+                                },
+                            }
+                        }
+                        _ => AppMessage {
+                            cmd: Cmd::Failure,
+                            data: vec!["admin privileges required".to_string()],
+                        },
+                    }
+                }
+            }
             Cmd::Logout => {
                 if !authenticated {
                     AppMessage {

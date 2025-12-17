@@ -75,6 +75,24 @@ async fn run() -> Result<(), String> {
                     _ => println!("unexpected reply"),
                 }
             }
+            Cmd::LsUsers => {
+                send(&mut ws_stream, &app_message).await?;
+                let reply = recv(&mut ws_stream).await?;
+                match reply.cmd {
+                    Cmd::LsUsers => {
+                        if reply.data.is_empty() {
+                            println!("no users found");
+                        } else {
+                            println!("users:");
+                            for user in &reply.data {
+                                println!("  {}", user);
+                            }
+                        }
+                    }
+                    Cmd::Failure => println!("error: {}", reply.data.get(0).unwrap_or(&"lsusers failed".into())),
+                    _ => println!("unexpected reply"),
+                }
+            }
             Cmd::Logout => {
                 println!("bye");
                 break;
