@@ -9,13 +9,12 @@ use tokio::sync::Mutex;
 use tokio_postgres::Client;
 use argon2::{
     password_hash::{
-        Encoding, PasswordHash, PasswordHashString, PasswordHasher, PasswordVerifier, SaltString
+        Encoding, PasswordHashString, PasswordHasher, PasswordVerifier, SaltString
     },
     Argon2
 };
 use securefs_model::protocol::{FNode, User};
-use aes_gcm::{Aes256Gcm, KeyInit, Key, aead::{AeadCore}};
-use blake3;
+use aes_gcm::{Aes256Gcm, KeyInit, Key};
 use rand_core::OsRng;
 use serde_json;
 
@@ -115,7 +114,7 @@ pub async fn add_file(client: Arc<Mutex<Client>>, file: FNode) -> Result<String,
 }
 
 /// Update the stored hash for a file at `path`.
-pub async fn update_hash(client: Arc<Mutex<Client>>, path: String, file_name: String, hash: String) -> Result<String, String>{
+pub async fn update_hash(client: Arc<Mutex<Client>>, path: String, _file_name: String, hash: String) -> Result<String, String>{
     let db_pass = env::var("DB_PASS").unwrap_or("TEMP".to_string());
     let e = client.lock().await.execute("UPDATE fnode SET hash = $1 WHERE pgp_sym_decrypt(path ::bytea, $3 ::text)=$2",
     &[&hash, &path, &db_pass]).await;
