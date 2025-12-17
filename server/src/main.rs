@@ -842,6 +842,19 @@ fn is_valid_name(name: &str) -> bool {
         && name != ".."
 }
 
+/// Create a failure response with a custom message.
+fn failure(msg: &str) -> AppMessage {
+    AppMessage {
+        cmd: Cmd::Failure,
+        data: vec![msg.to_string()],
+    }
+}
+
+/// Create a success response for a given command with optional data.
+fn success(cmd: Cmd, data: Vec<String>) -> AppMessage {
+    AppMessage { cmd, data }
+}
+
 /// Compute BLAKE3 hash of file content for integrity verification.
 fn hash_content(content: &[u8]) -> String {
     hex::encode(blake3::hash(content).as_bytes())
