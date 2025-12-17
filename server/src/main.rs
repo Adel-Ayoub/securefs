@@ -270,6 +270,12 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                             AppMessage { cmd: Cmd::Failure, data: vec!["no write permission".into()] }
                         } else {
                         let target_path = format!("{}/{}", current_path, dir_name);
+                        
+                        // Check if directory already exists
+                        if dao::get_f_node(pg_client.clone(), target_path.clone()).await.ok().flatten().is_some() {
+                            return AppMessage { cmd: Cmd::Failure, data: vec!["directory already exists".to_string()] };
+                        }
+                        
                         let parent_path = current_path.clone();
                         let owner = current_user.clone().unwrap_or_default();
 
@@ -471,6 +477,12 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                             AppMessage { cmd: Cmd::Failure, data: vec!["no write permission".into()] }
                         } else {
                         let target_path = format!("{}/{}", current_path, file_name);
+                        
+                        // Check if file already exists
+                        if dao::get_f_node(pg_client.clone(), target_path.clone()).await.ok().flatten().is_some() {
+                            return AppMessage { cmd: Cmd::Failure, data: vec!["file already exists".to_string()] };
+                        }
+                        
                         let parent_path = current_path.clone();
                         let owner = current_user.clone().unwrap_or_default();
 
