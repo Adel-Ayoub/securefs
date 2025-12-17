@@ -610,7 +610,7 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                             }
                         } else {
                             match dao::get_f_node(pg_client.clone(), path.clone()).await {
-                                Ok(Some(node)) if current_user.as_ref() == Some(&node.owner) => {
+                                Ok(Some(node)) if is_owner(&node, current_user.as_ref()) => {
                                     let res = dao::change_file_perms(pg_client.clone(), path, ugo[0], ugo[1], ugo[2]).await;
                                     match res {
                                         Ok(_) => AppMessage { cmd: Cmd::Chmod, data: vec!["ok".to_string()] },
