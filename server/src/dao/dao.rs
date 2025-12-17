@@ -326,6 +326,16 @@ pub async fn get_all_users(client: Arc<Mutex<Client>>) -> Result<Vec<String>, St
     }
 }
 
+/// Check if a user has admin privileges.
+pub async fn is_admin(client: Arc<Mutex<Client>>, user_name: String) -> Result<bool, String> {
+    let row = client.lock().await.query_opt("SELECT is_admin FROM users WHERE user_name = $1", &[&user_name]).await;
+    match row {
+        Ok(Some(row)) => Ok(row.get("is_admin")),
+        Ok(None) => Ok(false),
+        Err(_) => Err("failed to check admin status".to_string()),
+    }
+}
+
 /// Ensure required seed data exists (currently `/home` root).
 pub async fn init_db(client: Arc<Mutex<Client>>) -> Result<(), ()> {
     let does_home_exist = get_f_node(client.clone(), "/home".to_string()).await.unwrap().is_some();
