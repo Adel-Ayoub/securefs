@@ -676,6 +676,48 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                     }
                 }
             }
+            Cmd::GetEncryptedFile => {
+                if !authenticated {
+                    AppMessage {
+                        cmd: Cmd::Failure,
+                        data: vec!["not authenticated".to_string()],
+                    }
+                } else {
+                    let file_name = incoming.data.get(0).cloned().unwrap_or_default();
+                    if !is_valid_name(&file_name) {
+                        AppMessage {
+                            cmd: Cmd::Failure,
+                            data: vec!["invalid file name".to_string()],
+                        }
+                    } else {
+                        let file_path = format!("{}/{}", current_path, file_name);
+                        match dao::get_f_node(pg_client.clone(), file_path).await {
+                            Ok(Some(node)) if can_read(&node, current_user.as_ref()) => {
+                                let path_parts: Vec<String> = current_path
+                                    .split('/')
+                                    .filter(|s| !s.is_empty())
+                                    .map(|s| s.to_string())
+                                    .collect();
+                                let mut result = vec!["/".to_string()];
+                                result.extend(path_parts);
+                                result.push(node.encrypted_name);
+                                AppMessage {
+                                    cmd: Cmd::GetEncryptedFile,
+                                    data: result,
+                                }
+                            }
+                            Ok(Some(_)) => AppMessage {
+                                cmd: Cmd::Failure,
+                                data: vec!["no read permission".to_string()],
+                            },
+                            _ => AppMessage {
+                                cmd: Cmd::Failure,
+                                data: vec!["file not found".to_string()],
+                            },
+                        }
+                    }
+                }
+            }
             _ => AppMessage {
                 cmd: Cmd::Failure,
                 data: vec!["command not implemented".to_string()],
