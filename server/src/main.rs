@@ -891,5 +891,55 @@ mod tests {
         assert_eq!(format_permissions(6, 4, 0), "rw-r-----");
         assert_eq!(format_permissions(0, 0, 0), "---------");
     }
+
+    #[test]
+    fn test_permission_helpers() {
+        use crate::FNode;
+        
+        let node = FNode {
+            id: 1,
+            name: "test.txt".to_string(),
+            path: "/home/user/test.txt".to_string(),
+            owner: "alice".to_string(),
+            hash: "".to_string(),
+            parent: "/home/user".to_string(),
+            dir: false,
+            u: 6, // rw-
+            g: 4, // r--
+            o: 4, // r--
+            children: vec![],
+            encrypted_name: "".to_string(),
+        };
+
+        // Test can_read
+        assert!(can_read(&node, Some(&"alice".to_string()))); // owner with read
+        assert!(can_read(&node, Some(&"bob".to_string()))); // other with read
+        assert!(can_read(&node, None)); // world-readable
+
+        // Test can_write
+        assert!(can_write(&node, Some(&"alice".to_string()))); // owner with write
+        assert!(!can_write(&node, Some(&"bob".to_string()))); // other without write
+        assert!(!can_write(&node, None)); // not world-writable
+
+        // Test can_execute
+        assert!(!can_execute(&node, Some(&"alice".to_string()))); // owner without execute
+        assert!(!can_execute(&node, Some(&"bob".to_string()))); // other without execute
+
+        // Test is_owner
+        assert!(is_owner(&node, Some(&"alice".to_string())));
+        assert!(!is_owner(&node, Some(&"bob".to_string())));
+        assert!(!is_owner(&node, None));
+    }
+
+    #[test]
+    fn test_helper_responses() {
+        let fail = failure("test error");
+        assert_eq!(fail.cmd, Cmd::Failure);
+        assert_eq!(fail.data, vec!["test error".to_string()]);
+
+        let succ = success(Cmd::Pwd, vec!["/home/user".to_string()]);
+        assert_eq!(succ.cmd, Cmd::Pwd);
+        assert_eq!(succ.data, vec!["/home/user".to_string()]);
+    }
 }
 
