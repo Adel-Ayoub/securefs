@@ -335,6 +335,15 @@ pub async fn is_admin(client: Arc<Mutex<Client>>, user_name: String) -> Result<b
     }
 }
 
+/// Check if a file or directory exists at the given path.
+pub async fn path_exists(client: Arc<Mutex<Client>>, path: String) -> Result<bool, String> {
+    match get_f_node(client, path).await {
+        Ok(Some(_)) => Ok(true),
+        Ok(None) => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
 /// Ensure required seed data exists (currently `/home` root).
 pub async fn init_db(client: Arc<Mutex<Client>>) -> Result<(), ()> {
     let does_home_exist = get_f_node(client.clone(), "/home".to_string()).await.unwrap().is_some();
