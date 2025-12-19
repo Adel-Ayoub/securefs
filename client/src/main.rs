@@ -12,6 +12,8 @@ use securefs_model::protocol::{AppMessage, Cmd};
 use tokio::runtime::Runtime;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
+use x25519_dalek::{EphemeralSecret, PublicKey};
+use rand_core::OsRng;
 
 /// Initialize a Tokio runtime and run the async client loop.
 fn main() {
@@ -38,6 +40,43 @@ async fn run() -> Result<(), String> {
     let (mut ws_stream, _) = connect_async(&url)
         .await
         .map_err(|e| format!("connect failed: {}", e))?;
+
+    // Perform X25519 key exchange with server
+    let client_secret = EphemeralSecret::random_from_rng(OsRng);
+    let client_public = PublicKey::from(&client_secret);
+    
+    // Send our public key to server
+    let key_exchange_msg = AppMessage {
+        cmd: Cmd::KeyExchangeInit,
+        data: vec![hex::encode(client_public.as_bytes())],
+    };
+    send(&mut ws_stream, &key_exchange_msg).await?;
+    
+    // Receive server's public key
+    let reply = recv(&mut ws_stream).await?;
+    let _shared_secret = match reply.cmd {
+        Cmd::KeyExchangeResponse => {
+            let server_pubkey_hex = reply.data.get(0).cloned().unwrap_or_default();
+            let server_bytes = hex::decode(&server_pubkey_hex)
+                .map_err(|_| "invalid server public key")?;
+            if server_bytes.len() != 32 {
+                return Err("invalid server public key length".into());
+            }
+            let mut server_pubkey_bytes = [0u8; 32];
+            server_pubkey_bytes.copy_from_slice(&server_bytes);
+            let server_public = PublicKey::from(server_pubkey_bytes);
+            let shared = client_secret.diffie_hellman(&server_public);
+            println!("Secure key exchange completed");
+            shared
+        }
+        Cmd::Failure => {
+            let err = reply.data.get(0).cloned().unwrap_or_else(|| "key exchange failed".into());
+            return Err(err);
+        }
+        _ => return Err("unexpected response to key exchange".into()),
+    };
+    
+    // TODO: Use _shared_secret for encrypting subsequent messages
 
     println!("Connected to {}. Login with: login <username> <password>", server_addr);
     println!("Commands: login <u> <p>, logout, pwd, ls, cd <path>, mkdir <dir>, touch <file>, mv <src> <dst>, delete <name>, cat <file>, echo <data> <file>, chmod <mode> <name>");
