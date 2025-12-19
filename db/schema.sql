@@ -37,3 +37,15 @@ INSERT INTO users (id, user_name, key, salt, is_admin) VALUES (
     '$argon2id$v=19$m=19456,t=2,p=1$2x+D890DlNldiUEFWj6osA$xCXFoO12ImKyfo9B9VNcMx+fJcexMcvQ7Z4f7BmF5do',
     true
 );
+
+INSERT INTO fnode (name, path, owner, hash, parent, dir, u, g, o, children, encrypted_name) VALUES (
+    pgp_sym_encrypt('home', 'DOES_NOT_MATTER'),
+    pgp_sym_encrypt('/home', 'DOES_NOT_MATTER'),
+    pgp_sym_encrypt('admin', 'DOES_NOT_MATTER'),
+    '',
+    '/',
+    true,
+    '7', '5', '5',
+    ARRAY[]::VARCHAR[],
+    'home'
+);
