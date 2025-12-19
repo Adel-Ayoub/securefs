@@ -17,6 +17,10 @@ tokio-tungstenite = "0.20"
 tungstenite = "0.20"
 futures-util = "0.3"
 serde_json = "1.0"
+x25519-dalek = { version = "2.0.1", features = ["serde"] }
+aes-gcm = "0.10.3"
+hex = "0.4.3"
+rand_core = { version = "0.6.4", features = ["getrandom"] }
 
 # Internal dependencies
 securefs-model = { path = "../model" }
