@@ -22,8 +22,11 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use std::collections::HashSet;
 use std::path::Path;
 use std::fs as stdfs;
+use x25519_dalek::{EphemeralSecret, PublicKey};
+use rand_core::OsRng;
 
 mod dao;
+
 
 #[tokio::main]
 /// Launch the WebSocket server and connect to Postgres.
@@ -790,6 +793,43 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                     }
                 }
             }
+            Cmd::KeyExchangeInit => {
+                // Client sends their public key (hex-encoded)
+                let client_pubkey_hex = incoming.data.get(0).cloned().unwrap_or_default();
+                if client_pubkey_hex.is_empty() || client_pubkey_hex.len() != 64 {
+                    AppMessage {
+                        cmd: Cmd::Failure,
+                        data: vec!["invalid public key".to_string()],
+                    }
+                } else {
+                    match hex::decode(&client_pubkey_hex) {
+                        Ok(bytes) if bytes.len() == 32 => {
+                            // Generate server ephemeral keypair
+                            let server_secret = EphemeralSecret::random_from_rng(OsRng);
+                            let server_public = PublicKey::from(&server_secret);
+                            
+                            // Derive shared secret (this is where forward secrecy comes from)
+                            let mut client_pubkey_bytes = [0u8; 32];
+                            client_pubkey_bytes.copy_from_slice(&bytes);
+                            let client_public = PublicKey::from(client_pubkey_bytes);
+                            let _shared_secret = server_secret.diffie_hellman(&client_public);
+                            
+                            // TODO: Store shared secret for session encryption
+                            // For now, just complete the handshake
+                            info!("Key exchange completed with client");
+                            
+                            AppMessage {
+                                cmd: Cmd::KeyExchangeResponse,
+                                data: vec![hex::encode(server_public.as_bytes())],
+                            }
+                        }
+                        _ => AppMessage {
+                            cmd: Cmd::Failure,
+                            data: vec!["invalid public key format".to_string()],
+                        },
+                    }
+                }
+            }
             _ => AppMessage {
                 cmd: Cmd::Failure,
                 data: vec!["command not implemented".to_string()],
@@ -1038,6 +1078,26 @@ mod tests {
         assert!(!is_valid_password(""));
         assert!(!is_valid_password("short"));
         assert!(!is_valid_password("1234567")); // Only 7 chars
+    }
+
+    #[test]
+    fn test_x25519_key_exchange() {
+        use x25519_dalek::{EphemeralSecret, PublicKey};
+        use rand_core::OsRng;
+
+        // Simulate client keypair
+        let client_secret = EphemeralSecret::random_from_rng(OsRng);
+        let client_public = PublicKey::from(&client_secret);
+
+        // Simulate server keypair
+        let server_secret = EphemeralSecret::random_from_rng(OsRng);
+        let server_public = PublicKey::from(&server_secret);
+
+        // Both sides derive the same shared secret
+        let client_shared = client_secret.diffie_hellman(&server_public);
+        let server_shared = server_secret.diffie_hellman(&client_public);
+
+        assert_eq!(client_shared.as_bytes(), server_shared.as_bytes());
     }
 }
 
