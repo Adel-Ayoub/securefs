@@ -66,7 +66,8 @@ async fn run() -> Result<(), String> {
                 let reply = recv(&mut ws_stream).await?;
                 match reply.cmd {
                     Cmd::Login => {
-                        let is_admin = reply.data.get(1).unwrap_or(&"false".into());
+                        let default_admin = "false".to_string();
+                        let is_admin = reply.data.get(1).unwrap_or(&default_admin);
                         println!("login ok (is_admin: {})", is_admin);
                     }
                     Cmd::Failure => {
@@ -147,7 +148,8 @@ async fn run() -> Result<(), String> {
                 let reply = recv(&mut ws_stream).await?;
                 match reply.cmd {
                     Cmd::Pwd => {
-                        let path = reply.data.get(0).unwrap_or(&"/".into());
+                        let default_path = "/".to_string();
+                        let path = reply.data.get(0).unwrap_or(&default_path);
                         println!("{}", path);
                     }
                     Cmd::Failure => {
@@ -283,7 +285,7 @@ fn command_parser(input: String) -> Result<AppMessage, String> {
         return Err(format!("expected {} args for '{}', got {}", num_args - 1, cmd_str, parts.len() - 1));
     }
     let args = parts.split_off(1);
-    let cmd = Cmd::from_str(cmd_str.clone()).ok_or_else(|| format!("unknown command: {}", cmd_str))?;
+    let cmd = Cmd::from_str(cmd_str.clone()).map_err(|_| format!("unknown command: {}", cmd_str))?;
     Ok(AppMessage { cmd, data: args })
 }
 
@@ -297,7 +299,8 @@ async fn send(ws: &mut tokio_tungstenite::WebSocketStream<tokio_tungstenite::May
 
 /// Receive and decode the next websocket message.
 async fn recv(ws: &mut tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>) -> Result<AppMessage, String> {
-    let msg = ws.next().await.ok_or("connection closed")??;
+    let msg = ws.next().await.ok_or("connection closed".to_string())?
+        .map_err(|e| format!("recv failed: {}", e))?;
     if !msg.is_text() {
         return Err("non-text message".into());
     }
