@@ -108,7 +108,9 @@ mod tests {
     fn test_map_str_invalid() {
         assert!(Cmd::from_str("invalid_cmd".into()).is_err());
         assert!(Cmd::from_str("".into()).is_err());
-        assert!(Cmd::from_str("cp".into()).is_err());
+        assert!(Cmd::from_str("invalid_cmd".into()).is_err());
+        assert!(Cmd::from_str("".into()).is_err());
+        assert_eq!(Cmd::from_str("cp".into()).unwrap(), Cmd::Cp);
     }
 
     #[test]

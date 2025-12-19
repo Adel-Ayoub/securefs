@@ -50,10 +50,10 @@ async fn run() -> Result<(), String> {
         cmd: Cmd::KeyExchangeInit,
         data: vec![hex::encode(client_public.as_bytes())],
     };
-    send(&mut ws_stream, &key_exchange_msg).await?;
+    send(&mut ws_stream, &key_exchange_msg, None).await?;
     
     // Receive server's public key
-    let reply = recv(&mut ws_stream).await?;
+    let reply = recv(&mut ws_stream, None).await?;
     let _shared_secret = match reply.cmd {
         Cmd::KeyExchangeResponse => {
             let server_pubkey_hex = reply.data.get(0).cloned().unwrap_or_default();
@@ -76,7 +76,7 @@ async fn run() -> Result<(), String> {
         _ => return Err("unexpected response to key exchange".into()),
     };
     
-    // TODO: Use _shared_secret for encrypting subsequent messages
+    let shared_secret_key: Option<Key<Aes256Gcm>> = Some(Key::<Aes256Gcm>::from(_shared_secret.as_bytes().clone()));
 
     println!("Connected to {}. Login with: login <username> <password>", server_addr);
     println!("Commands: login <u> <p>, logout, pwd, ls, cd <path>, mkdir <dir>, touch <file>, mv <src> <dst>, delete <name>, cat <file>, echo <data> <file>, chmod <mode> <name>");
@@ -101,8 +101,8 @@ async fn run() -> Result<(), String> {
 
         match app_message.cmd {
             Cmd::Login => {
-                send(&mut ws_stream, &app_message).await?;
-                let reply = recv(&mut ws_stream).await?;
+                send(&mut ws_stream, &app_message, shared_secret_key.as_ref()).await?;
+                let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
                 match reply.cmd {
                     Cmd::Login => {
                         let default_admin = "false".to_string();
@@ -116,8 +116,8 @@ async fn run() -> Result<(), String> {
                 }
             }
             Cmd::LsUsers => {
-                send(&mut ws_stream, &app_message).await?;
-                let reply = recv(&mut ws_stream).await?;
+                send(&mut ws_stream, &app_message, shared_secret_key.as_ref()).await?;
+                let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
                 match reply.cmd {
                     Cmd::LsUsers => {
                         if reply.data.is_empty() {
@@ -134,8 +134,8 @@ async fn run() -> Result<(), String> {
                 }
             }
             Cmd::LsGroups => {
-                send(&mut ws_stream, &app_message).await?;
-                let reply = recv(&mut ws_stream).await?;
+                send(&mut ws_stream, &app_message, shared_secret_key.as_ref()).await?;
+                let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
                 match reply.cmd {
                     Cmd::LsGroups => {
                         if reply.data.is_empty() {
@@ -156,8 +156,8 @@ async fn run() -> Result<(), String> {
                 break;
             }
             Cmd::NewUser => {
-                send(&mut ws_stream, &app_message).await?;
-                let reply = recv(&mut ws_stream).await?;
+                send(&mut ws_stream, &app_message, shared_secret_key.as_ref()).await?;
+                let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
                 match reply.cmd {
                     Cmd::NewUser => println!("user created: {}", reply.data.get(0).unwrap_or(&"".into())),
                     Cmd::Failure => println!("{}", reply.data.get(0).unwrap_or(&"newuser failed".into())),
@@ -165,8 +165,8 @@ async fn run() -> Result<(), String> {
                 }
             }
             Cmd::NewGroup => {
-                send(&mut ws_stream, &app_message).await?;
-                let reply = recv(&mut ws_stream).await?;
+                send(&mut ws_stream, &app_message, shared_secret_key.as_ref()).await?;
+                let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
                 match reply.cmd {
                     Cmd::NewGroup => println!("group created: {}", reply.data.get(0).unwrap_or(&"".into())),
                     Cmd::Failure => println!("{}", reply.data.get(0).unwrap_or(&"newgroup failed".into())),
@@ -174,8 +174,8 @@ async fn run() -> Result<(), String> {
                 }
             }
             Cmd::Cd => {
-                send(&mut ws_stream, &app_message).await?;
-                let reply = recv(&mut ws_stream).await?;
+                send(&mut ws_stream, &app_message, shared_secret_key.as_ref()).await?;
+                let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
                 match reply.cmd {
                     Cmd::Cd => println!("{}", reply.data.get(0).unwrap_or(&"/".into())),
                     Cmd::Failure => println!("{}", reply.data.get(0).unwrap_or(&"cd failed".into())),
@@ -183,8 +183,8 @@ async fn run() -> Result<(), String> {
                 }
             }
             Cmd::Pwd => {
-                send(&mut ws_stream, &app_message).await?;
-                let reply = recv(&mut ws_stream).await?;
+                send(&mut ws_stream, &app_message, shared_secret_key.as_ref()).await?;
+                let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
                 match reply.cmd {
                     Cmd::Pwd => {
                         let default_path = "/".to_string();
@@ -198,8 +198,8 @@ async fn run() -> Result<(), String> {
                 }
             }
             Cmd::Ls => {
-                send(&mut ws_stream, &app_message).await?;
-                let reply = recv(&mut ws_stream).await?;
+                send(&mut ws_stream, &app_message, shared_secret_key.as_ref()).await?;
+                let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
                 match reply.cmd {
                     Cmd::Ls => {
                         if reply.data.is_empty() {
@@ -215,8 +215,8 @@ async fn run() -> Result<(), String> {
                 }
             }
             Cmd::Mkdir => {
-                send(&mut ws_stream, &app_message).await?;
-                let reply = recv(&mut ws_stream).await?;
+                send(&mut ws_stream, &app_message, shared_secret_key.as_ref()).await?;
+                let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
                 match reply.cmd {
                     Cmd::Mkdir => println!("ok"),
                     Cmd::Failure => {
@@ -226,8 +226,8 @@ async fn run() -> Result<(), String> {
                 }
             }
             Cmd::Touch => {
-                send(&mut ws_stream, &app_message).await?;
-                let reply = recv(&mut ws_stream).await?;
+                send(&mut ws_stream, &app_message, shared_secret_key.as_ref()).await?;
+                let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
                 match reply.cmd {
                     Cmd::Touch => println!("ok"),
                     Cmd::Failure => println!("{}", reply.data.get(0).unwrap_or(&"touch failed".into())),
@@ -235,8 +235,8 @@ async fn run() -> Result<(), String> {
                 }
             }
             Cmd::Mv => {
-                send(&mut ws_stream, &app_message).await?;
-                let reply = recv(&mut ws_stream).await?;
+                send(&mut ws_stream, &app_message, shared_secret_key.as_ref()).await?;
+                let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
                 match reply.cmd {
                     Cmd::Mv => println!("ok"),
                     Cmd::Failure => println!("{}", reply.data.get(0).unwrap_or(&"mv failed".into())),
@@ -244,8 +244,8 @@ async fn run() -> Result<(), String> {
                 }
             }
             Cmd::Delete => {
-                send(&mut ws_stream, &app_message).await?;
-                let reply = recv(&mut ws_stream).await?;
+                send(&mut ws_stream, &app_message, shared_secret_key.as_ref()).await?;
+                let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
                 match reply.cmd {
                     Cmd::Delete => println!("ok"),
                     Cmd::Failure => println!("{}", reply.data.get(0).unwrap_or(&"delete failed".into())),
@@ -253,8 +253,8 @@ async fn run() -> Result<(), String> {
                 }
             }
             Cmd::Cat => {
-                send(&mut ws_stream, &app_message).await?;
-                let reply = recv(&mut ws_stream).await?;
+                send(&mut ws_stream, &app_message, shared_secret_key.as_ref()).await?;
+                let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
                 match reply.cmd {
                     Cmd::Cat => println!("{}", reply.data.get(0).unwrap_or(&"".into())),
                     Cmd::Failure => println!("{}", reply.data.get(0).unwrap_or(&"cat failed".into())),
@@ -263,8 +263,8 @@ async fn run() -> Result<(), String> {
             }
             Cmd::Echo => {
                 // echo "<data>" filename
-                send(&mut ws_stream, &app_message).await?;
-                let reply = recv(&mut ws_stream).await?;
+                send(&mut ws_stream, &app_message, shared_secret_key.as_ref()).await?;
+                let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
                 match reply.cmd {
                     Cmd::Echo => println!("ok"),
                     Cmd::Failure => println!("{}", reply.data.get(0).unwrap_or(&"echo failed".into())),
@@ -272,8 +272,8 @@ async fn run() -> Result<(), String> {
                 }
             }
             Cmd::Chmod => {
-                send(&mut ws_stream, &app_message).await?;
-                let reply = recv(&mut ws_stream).await?;
+                send(&mut ws_stream, &app_message, shared_secret_key.as_ref()).await?;
+                let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
                 match reply.cmd {
                     Cmd::Chmod => println!("ok"),
                     Cmd::Failure => println!("{}", reply.data.get(0).unwrap_or(&"chmod failed".into())),
@@ -281,8 +281,8 @@ async fn run() -> Result<(), String> {
                 }
             }
             Cmd::Scan => {
-                send(&mut ws_stream, &app_message).await?;
-                let reply = recv(&mut ws_stream).await?;
+                send(&mut ws_stream, &app_message, shared_secret_key.as_ref()).await?;
+                let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
                 match reply.cmd {
                     Cmd::Scan => println!("{}", reply.data.get(0).unwrap_or(&"scan ok".into())),
                     Cmd::Failure => println!("{}", reply.data.get(0).unwrap_or(&"scan failed".into())),
@@ -290,8 +290,8 @@ async fn run() -> Result<(), String> {
                 }
             }
             Cmd::GetEncryptedFile => {
-                send(&mut ws_stream, &app_message).await?;
-                let reply = recv(&mut ws_stream).await?;
+                send(&mut ws_stream, &app_message, shared_secret_key.as_ref()).await?;
+                let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
                 match reply.cmd {
                     Cmd::GetEncryptedFile => {
                         println!("encrypted path: {}", reply.data.join("/"));
@@ -301,8 +301,8 @@ async fn run() -> Result<(), String> {
                 }
             }
             Cmd::Cp => {
-                send(&mut ws_stream, &app_message).await?;
-                let reply = recv(&mut ws_stream).await?;
+                send(&mut ws_stream, &app_message, shared_secret_key.as_ref()).await?;
+                let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
                 match reply.cmd {
                     Cmd::Cp => println!("ok"),
                     Cmd::Failure => println!("{}", reply.data.get(0).unwrap_or(&"cp failed".into())),
@@ -310,8 +310,8 @@ async fn run() -> Result<(), String> {
                 }
             }
             Cmd::Find => {
-                send(&mut ws_stream, &app_message).await?;
-                let reply = recv(&mut ws_stream).await?;
+                send(&mut ws_stream, &app_message, shared_secret_key.as_ref()).await?;
+                let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
                 match reply.cmd {
                     Cmd::Find => {
                         for path in &reply.data {
@@ -350,22 +350,49 @@ fn command_parser(input: String) -> Result<AppMessage, String> {
     Ok(AppMessage { cmd, data: args })
 }
 
-/// Send a serialized message over the websocket.
-async fn send(ws: &mut tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>, msg: &AppMessage) -> Result<(), String> {
-    let payload = serde_json::to_string(msg).map_err(|e| e.to_string())?;
+use aes_gcm::{Aes256Gcm, Key, Nonce, KeyInit};
+use aes_gcm::aead::{Aead, AeadCore};
+
+/// Encrypt and send message
+async fn send(ws: &mut tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>, msg: &AppMessage, key: Option<&Key<Aes256Gcm>>) -> Result<(), String> {
+    let payload = if let Some(k) = key {
+        let cipher = Aes256Gcm::new(k);
+        let nonce = Aes256Gcm::generate_nonce(OsRng);
+        let msg_str = serde_json::to_string(msg).map_err(|e| e.to_string())?;
+        let ciphertext = cipher.encrypt(&nonce, msg_str.as_bytes())
+            .map_err(|e| format!("encryption failed: {}", e))?;
+        let tuple = (hex::encode(ciphertext), Into::<[u8; 12]>::into(nonce));
+        serde_json::to_string(&tuple).map_err(|e| e.to_string())?
+    } else {
+        serde_json::to_string(msg).map_err(|e| e.to_string())?
+    };
     ws.send(Message::Text(payload))
         .await
         .map_err(|e| format!("send failed: {}", e))
 }
 
-/// Receive and decode the next websocket message.
-async fn recv(ws: &mut tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>) -> Result<AppMessage, String> {
+/// Receive and decrypt message
+async fn recv(ws: &mut tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>, key: Option<&Key<Aes256Gcm>>) -> Result<AppMessage, String> {
     let msg = ws.next().await.ok_or("connection closed".to_string())?
         .map_err(|e| format!("recv failed: {}", e))?;
     if !msg.is_text() {
         return Err("non-text message".into());
     }
-    serde_json::from_str(msg.to_text().unwrap()).map_err(|e| format!("decode failed: {}", e))
+    let text = msg.to_text().unwrap();
+    
+    if let Some(k) = key {
+        let (ciphertext_hex, nonce_bytes): (String, [u8; 12]) = serde_json::from_str(text)
+            .map_err(|e| format!("encrypted decode failed: {}", e))?;
+        let cipher = Aes256Gcm::new(k);
+        let nonce = Nonce::from_slice(&nonce_bytes);
+        let ciphertext = hex::decode(ciphertext_hex).map_err(|_| "invalid ciphertext hex".to_string())?;
+        let plaintext = cipher.decrypt(nonce, ciphertext.as_ref())
+            .map_err(|e| format!("decryption failed: {}", e))?;
+        let plaintext_str = String::from_utf8(plaintext).map_err(|_| "invalid utf8".to_string())?;
+        serde_json::from_str(&plaintext_str).map_err(|e| format!("json decode failed: {}", e))
+    } else {
+        serde_json::from_str(text).map_err(|e| format!("decode failed: {}", e))
+    }
 }
 
 /// Print usage information.

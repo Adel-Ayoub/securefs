@@ -19,11 +19,14 @@ use tokio_tungstenite::accept_async;
 use tokio::net::TcpStream;
 use tokio::fs;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use std::collections::HashSet;
-use std::path::Path;
 use std::fs as stdfs;
 use x25519_dalek::{EphemeralSecret, PublicKey};
 use rand_core::OsRng;
+use aes_gcm::{Aes256Gcm, Key, Nonce, KeyInit};
+use aes_gcm::aead::{Aead, AeadCore};
+
+use std::path::Path;
+use std::collections::HashSet;
 
 mod dao;
 
@@ -78,6 +81,33 @@ async fn main() -> Result<(), String> {
     Ok(())
 }
 
+/// Encrypt an AppMessage using AES-256-GCM (Reference Implementation Style)
+/// Returns a tuple of (ciphertext_hex, nonce_bytes)
+fn encrypt_app_message(key: &Key<Aes256Gcm>, msg: &AppMessage) -> Result<(String, [u8; 12]), String> {
+    let cipher = Aes256Gcm::new(key);
+    let nonce = Aes256Gcm::generate_nonce(OsRng); // 96-bits
+    let payload = serde_json::to_string(msg).map_err(|e| e.to_string())?;
+    
+    let ciphertext = cipher.encrypt(&nonce, payload.as_bytes())
+        .map_err(|e| format!("encryption failed: {}", e))?;
+        
+    Ok((hex::encode(ciphertext), nonce.into()))
+}
+
+/// Decrypt a message using AES-256-GCM (Reference Implementation Style)
+fn decrypt_app_message(key: &Key<Aes256Gcm>, msg_tuple: &(String, [u8; 12])) -> Result<AppMessage, String> {
+    let (ciphertext_hex, nonce_bytes) = msg_tuple;
+    let cipher = Aes256Gcm::new(key);
+    let nonce = Nonce::from_slice(nonce_bytes);
+    let ciphertext = hex::decode(ciphertext_hex).map_err(|_| "invalid ciphertext hex".to_string())?;
+    
+    let plaintext = cipher.decrypt(nonce, ciphertext.as_ref())
+        .map_err(|e| format!("decryption failed: {}", e))?;
+        
+    let plaintext_str = String::from_utf8(plaintext).map_err(|_| "invalid utf8".to_string())?;
+    serde_json::from_str(&plaintext_str).map_err(|e| format!("json decode failed: {}", e))
+}
+
 /// Handle a single WebSocket connection lifecycle.
 async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgres::Client>>) -> Result<(), String> {
     let mut ws_stream = accept_async(stream)
@@ -89,14 +119,25 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
     let mut current_path: String = "/home".to_string();
     let mut failed_login_attempts: u8 = 0;
     const MAX_LOGIN_ATTEMPTS: u8 = 5;
+    let mut shared_secret: Option<Key<Aes256Gcm>> = None;
 
     while let Some(msg) = ws_stream.next().await {
         let msg = msg.map_err(|e| format!("ws read failed: {}", e))?;
         if !msg.is_text() {
             continue;
         }
-        let incoming: AppMessage = serde_json::from_str(msg.to_text().unwrap())
-            .map_err(|e| format!("decode failed: {}", e))?;
+        
+        // Decrypt if we have a shared secret, otherwise parse as plaintext
+        let incoming: AppMessage = if let Some(key) = &shared_secret {
+            let enc_tuple: (String, [u8; 12]) = serde_json::from_str(msg.to_text().unwrap())
+                .map_err(|e| format!("encrypted decode failed: {}", e))?;
+            decrypt_app_message(key, &enc_tuple)?
+        } else {
+            serde_json::from_str(msg.to_text().unwrap())
+                .map_err(|e| format!("decode failed: {}", e))?
+        };
+
+        let mut next_secret = None;
 
         let reply = match incoming.cmd {
             Cmd::NewConnection => AppMessage {
@@ -827,10 +868,13 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                             let mut client_pubkey_bytes = [0u8; 32];
                             client_pubkey_bytes.copy_from_slice(&bytes);
                             let client_public = PublicKey::from(client_pubkey_bytes);
-                            let _shared_secret = server_secret.diffie_hellman(&client_public);
+                            let client_shared = server_secret.diffie_hellman(&client_public);
                             
-                            // TODO: Store shared secret for session encryption
-                            // For now, just complete the handshake
+                            // Store shared secret for session encryption (will be applied after response)
+                            // Store shared secret for session encryption (will be applied after response)
+                            let final_secret = *Key::<Aes256Gcm>::from_slice(client_shared.as_bytes());
+                            next_secret = Some(final_secret);
+                            
                             info!("Key exchange completed with client");
                             
                             AppMessage {
@@ -858,53 +902,55 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                         AppMessage { cmd: Cmd::Failure, data: vec!["invalid name".to_string()] }
                     } else {
                         let src_path = format!("{}/{}", current_path, src);
-                        let dst_path = format!("{}/{}", current_path, dst);
+                        let dst_path_orig = format!("{}/{}", current_path, dst);
                         
                         // Check source exists and we can read it
                         match dao::get_f_node(pg_client.clone(), src_path.clone()).await {
                             Ok(Some(src_node)) if can_read(&src_node, current_user.as_ref()) => {
-                                // Check destination doesn't already exist
-                                let dst_exists = dao::get_f_node(pg_client.clone(), dst_path.clone()).await.ok().flatten().is_some();
-                                if dst_exists {
-                                    AppMessage { cmd: Cmd::Failure, data: vec!["destination already exists".to_string()] }
-                                } else {
-                                    // Check write permission on parent
-                                    match dao::get_f_node(pg_client.clone(), current_path.clone()).await {
-                                        Ok(Some(parent)) if can_write(&parent, current_user.as_ref()) => {
-                                            // Create new node with same properties but new path/name
-                                            let new_node = FNode {
-                                                id: -1,
-                                                name: dst.clone(),
-                                                path: dst_path.clone(),
-                                                owner: current_user.clone().unwrap_or_default(),
-                                                hash: src_node.hash.clone(),
-                                                parent: current_path.clone(),
-                                                dir: src_node.dir,
-                                                u: src_node.u,
-                                                g: src_node.g,
-                                                o: src_node.o,
-                                                children: if src_node.dir { vec![] } else { vec![] },
-                                                encrypted_name: dst.clone(),
-                                            };
-                                            
-                                            let add_res = dao::add_file(pg_client.clone(), new_node).await;
-                                            let parent_res = dao::add_file_to_parent(pg_client.clone(), current_path.clone(), dst.clone()).await;
-                                            
-                                            // If it's a file, copy the content
-                                            if !src_node.dir {
-                                                let src_storage = format!("storage{}/{}", current_path, src);
-                                                let dst_storage = format!("storage{}/{}", current_path, dst);
-                                                let _ = fs::copy(&src_storage, &dst_storage).await;
-                                            }
-                                            
-                                            if add_res.is_ok() && parent_res.is_ok() {
-                                                AppMessage { cmd: Cmd::Cp, data: vec!["ok".to_string()] }
-                                            } else {
-                                                AppMessage { cmd: Cmd::Failure, data: vec!["cp failed".to_string()] }
-                                            }
+                                // Check destination
+                                let (final_dst_path, valid_dst) = match dao::get_f_node(pg_client.clone(), dst_path_orig.clone()).await {
+                                    Ok(Some(dst_node)) => {
+                                        if dst_node.dir {
+                                            // Copy INTO directory
+                                            let src_name = Path::new(&src_path).file_name().unwrap().to_str().unwrap();
+                                            // Logic: dst_path_orig is the directory we are copying into.
+                                            // The new path is dst_path_orig/src_name
+                                            (format!("{}/{}", dst_path_orig, src_name), true)
+                                        } else {
+                                            // Destination exists and is a file -> Error (no overwrite support yet)
+                                            (String::new(), false)
                                         }
-                                        _ => AppMessage { cmd: Cmd::Failure, data: vec!["no write permission".to_string()] }
                                     }
+                                    Ok(None) => (dst_path_orig, true), // Copy AS new name
+                                    Err(_) => (String::new(), false),
+                                };
+
+                                if !valid_dst || final_dst_path.is_empty() {
+                                    AppMessage { cmd: Cmd::Failure, data: vec!["destination exists as file or error".to_string()] }
+                                } else {
+                                    // Check if final destination already exists (to avoid overwrite/collision in the copy-into case)
+                                     match dao::get_f_node(pg_client.clone(), final_dst_path.clone()).await {
+                                         Ok(Some(_)) => AppMessage { cmd: Cmd::Failure, data: vec!["destination already exists".to_string()] },
+                                         _ => {
+                                             // Check write permission on PARENT of final_dst_path
+                                             let path_obj = Path::new(&final_dst_path);
+                                             let parent_opt = path_obj.parent().map(|p| p.to_str().unwrap_or("/"));
+                                             let parent_str = match parent_opt {
+                                                 Some("") | None => "/".to_string(),
+                                                 Some(p) => p.to_string(),
+                                             };
+
+                                             match dao::get_f_node(pg_client.clone(), parent_str).await {
+                                                 Ok(Some(parent_node)) if can_write(&parent_node, current_user.as_ref()) => {
+                                                     match dao::copy_recursive(pg_client.clone(), src_path, final_dst_path, current_user.clone().unwrap()).await {
+                                                         Ok(_) => AppMessage { cmd: Cmd::Cp, data: vec!["ok".to_string()] },
+                                                         Err(e) => AppMessage { cmd: Cmd::Failure, data: vec![e] }
+                                                     }
+                                                 }
+                                                 _ => AppMessage { cmd: Cmd::Failure, data: vec!["no write permission on target directory".to_string()] }
+                                             }
+                                         }
+                                     }
                                 }
                             }
                             _ => AppMessage { cmd: Cmd::Failure, data: vec!["source not found or no read permission".to_string()] }
@@ -960,7 +1006,11 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
         };
 
         let is_logout = matches!(reply.cmd, Cmd::Logout);
-        send_app_message(&mut ws_stream, reply).await?;
+        send_app_message(&mut ws_stream, reply, shared_secret.as_ref()).await?;
+
+        if let Some(s) = next_secret {
+            shared_secret = Some(s);
+        }
 
         // If logout was processed, close the loop so the client can reconnect cleanly.
         if !authenticated && is_logout {
@@ -972,12 +1022,16 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
 }
 
 /// Serialize and send an application message over the websocket.
-async fn send_app_message(ws_stream: &mut WebSocketStream<TcpStream>, resp: AppMessage) -> Result<(), String> {
-    let serialized = serde_json::to_string(&resp).map_err(|e| format!("encode failed: {}", e))?;
-    ws_stream
-        .send(Message::text(serialized))
+async fn send_app_message(ws_stream: &mut WebSocketStream<TcpStream>, resp: AppMessage, key: Option<&Key<Aes256Gcm>>) -> Result<(), String> {
+    let payload = if let Some(k) = key {
+        let enc_tuple = encrypt_app_message(k, &resp)?;
+        serde_json::to_string(&enc_tuple).map_err(|e| e.to_string())?
+    } else {
+        serde_json::to_string(&resp).map_err(|e| e.to_string())?
+    };
+    ws_stream.send(Message::Text(payload))
         .await
-        .map_err(|e| format!("ws send failed: {}", e))
+        .map_err(|e| format!("send failed: {}", e))
 }
 
 /// Resolve a user input path relative to the current working directory.
@@ -1102,6 +1156,8 @@ fn failure(msg: &str) -> AppMessage {
 fn success(cmd: Cmd, data: Vec<String>) -> AppMessage {
     AppMessage { cmd, data }
 }
+
+
 
 /// Compute BLAKE3 hash of file content for integrity verification.
 fn hash_content(content: &[u8]) -> String {

@@ -8,11 +8,14 @@ use tokio_postgres::NoTls;
 #[tokio::test]
 async fn auth_user_roundtrip() {
     // These env vars should point to a running test database (e.g., docker-compose).
-    let db_pass = std::env::var("DB_PASS").unwrap_or_else(|_| "TEMP".into());
+    let db_pass = std::env::var("DB_PASS").unwrap_or_else(|_| "securefs_password".into());
     let db_host = std::env::var("DB_HOST").unwrap_or_else(|_| "localhost".into());
-    let db_name = std::env::var("DB_NAME").unwrap_or_else(|_| "db".into());
-    let db_user = std::env::var("DB_USER").unwrap_or_else(|_| "USER".into());
+    let db_name = std::env::var("DB_NAME").unwrap_or_else(|_| "securefs".into());
+    let db_user = std::env::var("DB_USER").unwrap_or_else(|_| "securefs_user".into());
     let db_port = std::env::var("DB_PORT").unwrap_or_else(|_| "5431".into());
+
+    // Matches schema.sql encryption key
+    std::env::set_var("DB_PASS", "securefs");
 
     let (client, connection) = tokio_postgres::connect(
         &format!(
@@ -30,8 +33,12 @@ async fn auth_user_roundtrip() {
         }
     });
 
+    // Clean up potentially stale data with wrong encryption keys
+    pg_client.lock().await.execute("DELETE FROM fnode", &[]).await.unwrap();
+    pg_client.lock().await.execute("DELETE FROM users", &[]).await.unwrap();
+
     // Ensure base init is present.
-    dao::init_db(pg_client.clone()).await.ok();
+    dao::init_db(pg_client.clone()).await.expect("init_db");
 
     let user_name = format!("user_{}", uuid::Uuid::new_v4());
     let pass = "pass123".to_string();

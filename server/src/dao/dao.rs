@@ -367,3 +367,74 @@ pub async fn init_db(client: Arc<Mutex<Client>>) -> Result<(), ()> {
     }
     Ok(())
 }
+
+/// Recursively copy a file or directory tree.
+pub async fn copy_recursive(
+    pg_client: Arc<Mutex<Client>>,
+    src_root: String,
+    dst_root: String,
+    owner: String,
+) -> Result<(), String> {
+    let mut stack = vec![(src_root, dst_root)];
+
+    while let Some((src, dst)) = stack.pop() {
+        if let Ok(Some(node)) = get_f_node(pg_client.clone(), src.clone()).await {
+            let path_obj = std::path::Path::new(&dst);
+            let name = path_obj.file_name().unwrap_or_default().to_str().unwrap_or_default().to_string();
+            let parent_opt = path_obj.parent().map(|p| p.to_str().unwrap_or("/"));
+            let parent = match parent_opt {
+                Some("") | None => "/".to_string(),
+                Some(p) => p.to_string(),
+            };
+            
+            let new_node = FNode {
+                id: -1,
+                name: name.clone(),
+                path: dst.clone(),
+                owner: owner.clone(),
+                hash: node.hash.clone(),
+                parent: parent.clone(),
+                dir: node.dir,
+                u: node.u,
+                g: node.g,
+                o: node.o,
+                children: vec![],
+                encrypted_name: name.clone(),
+            };
+
+            if let Err(e) = add_file(pg_client.clone(), new_node).await {
+                return Err(format!("db error creating {}: {}", dst, e));
+            }
+            if let Err(e) = add_file_to_parent(pg_client.clone(), parent, name).await {
+                return Err(format!("db parent error linking {}: {}", dst, e));
+            }
+
+            if node.dir {
+                for child in node.children {
+                    // Avoid double slashes if root
+                    let child_src = if src == "/" { format!("/{}", child) } else { format!("{}/{}", src, child) };
+                    let child_dst = if dst == "/" { format!("/{}", child) } else { format!("{}/{}", dst, child) };
+                    stack.push((child_src, child_dst));
+                }
+            } else {
+                let src_storage = format!("storage{}", src);
+                let dst_storage = format!("storage{}", dst);
+                if let Err(e) = tokio::fs::copy(&src_storage, &dst_storage).await {
+                     // Creating directory if it doesn't exist?
+                     // Relying on previous loop iteration to have created parent dir.
+                     // But if top level is file, parent should exist.
+                     // If top level is dir, we handle mkdir below.
+                    return Err(format!("fs copy error: {}", e));
+                }
+            }
+            
+            if node.dir {
+                let dst_storage = format!("storage{}", dst);
+                if let Err(e) = tokio::fs::create_dir_all(&dst_storage).await {
+                     return Err(format!("fs mkdir error: {}", e));
+                }
+            }
+        }
+    }
+    Ok(())
+}
