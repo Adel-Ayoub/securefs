@@ -300,6 +300,28 @@ async fn run() -> Result<(), String> {
                     _ => println!("unexpected reply"),
                 }
             }
+            Cmd::Cp => {
+                send(&mut ws_stream, &app_message).await?;
+                let reply = recv(&mut ws_stream).await?;
+                match reply.cmd {
+                    Cmd::Cp => println!("ok"),
+                    Cmd::Failure => println!("{}", reply.data.get(0).unwrap_or(&"cp failed".into())),
+                    _ => println!("unexpected reply"),
+                }
+            }
+            Cmd::Find => {
+                send(&mut ws_stream, &app_message).await?;
+                let reply = recv(&mut ws_stream).await?;
+                match reply.cmd {
+                    Cmd::Find => {
+                        for path in &reply.data {
+                            println!("{}", path);
+                        }
+                    }
+                    Cmd::Failure => println!("{}", reply.data.get(0).unwrap_or(&"find failed".into())),
+                    _ => println!("unexpected reply"),
+                }
+            }
             _ => {
                 println!("command not implemented");
             }
