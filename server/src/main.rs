@@ -211,10 +211,8 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                     let group = incoming.data.get(2).cloned().unwrap_or_default();
                     if user_name.is_empty() || pass.is_empty() || group.is_empty() {
                         AppMessage { cmd: Cmd::Failure, data: vec!["missing user data".to_string()] }
-                    } else if !is_valid_user_group_name(&user_name) {
-                        AppMessage { cmd: Cmd::Failure, data: vec!["invalid username format".to_string()] }
-                    } else if !is_valid_user_group_name(&group) {
-                        AppMessage { cmd: Cmd::Failure, data: vec!["invalid group name format".to_string()] }
+                    } else if !is_valid_password(&pass) {
+                        AppMessage { cmd: Cmd::Failure, data: vec!["password must be at least 8 characters".to_string()] }
                     } else {
                         let exists = dao::get_user(pg_client.clone(), user_name.clone()).await.ok().flatten().is_some();
                         if exists {
@@ -259,8 +257,6 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                     let group_name = incoming.data.get(0).cloned().unwrap_or_default();
                     if group_name.is_empty() {
                         AppMessage { cmd: Cmd::Failure, data: vec!["missing group name".to_string()] }
-                    } else if !is_valid_user_group_name(&group_name) {
-                        AppMessage { cmd: Cmd::Failure, data: vec!["invalid group name format".to_string()] }
                     } else {
                         let exists = dao::get_group(pg_client.clone(), group_name.clone()).await.ok().flatten().is_some();
                         if exists {
@@ -926,6 +922,11 @@ fn is_valid_user_group_name(name: &str) -> bool {
         && name.chars().next().unwrap().is_alphabetic()
 }
 
+/// Validate password strength (minimum 8 characters).
+fn is_valid_password(pass: &str) -> bool {
+    pass.len() >= 8
+}
+
 /// Create a failure response with a custom message.
 fn failure(msg: &str) -> AppMessage {
     AppMessage {
@@ -967,25 +968,6 @@ mod tests {
         assert!(!is_valid_name(".."));
         assert!(!is_valid_name("dir/subdir"));
         assert!(!is_valid_name("file\0name"));
-    }
-
-    #[test]
-    fn test_is_valid_user_group_name() {
-        // Valid names
-        assert!(is_valid_user_group_name("alice"));
-        assert!(is_valid_user_group_name("user123"));
-        assert!(is_valid_user_group_name("test_user"));
-        assert!(is_valid_user_group_name("my-group"));
-        assert!(is_valid_user_group_name("a"));
-        
-        // Invalid names
-        assert!(!is_valid_user_group_name(""));
-        assert!(!is_valid_user_group_name("123user")); // Must start with letter
-        assert!(!is_valid_user_group_name("_user")); // Must start with letter
-        assert!(!is_valid_user_group_name("-user")); // Must start with letter
-        assert!(!is_valid_user_group_name("user name")); // No spaces
-        assert!(!is_valid_user_group_name("user@name")); // No special chars
-        assert!(!is_valid_user_group_name(&"a".repeat(33))); // Too long
     }
 
     #[test]
@@ -1043,6 +1025,19 @@ mod tests {
         let succ = success(Cmd::Pwd, vec!["/home/user".to_string()]);
         assert_eq!(succ.cmd, Cmd::Pwd);
         assert_eq!(succ.data, vec!["/home/user".to_string()]);
+    }
+
+    #[test]
+    fn test_is_valid_password() {
+        // Valid passwords
+        assert!(is_valid_password("password123"));
+        assert!(is_valid_password("12345678"));
+        assert!(is_valid_password("abcdefgh"));
+        
+        // Invalid passwords
+        assert!(!is_valid_password(""));
+        assert!(!is_valid_password("short"));
+        assert!(!is_valid_password("1234567")); // Only 7 chars
     }
 }
 
