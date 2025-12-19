@@ -87,6 +87,8 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
     let mut authenticated = false;
     let mut current_user: Option<String> = None;
     let mut current_path: String = "/home".to_string();
+    let mut failed_login_attempts: u8 = 0;
+    const MAX_LOGIN_ATTEMPTS: u8 = 5;
 
     while let Some(msg) = ws_stream.next().await {
         let msg = msg.map_err(|e| format!("ws read failed: {}", e))?;
@@ -102,34 +104,47 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                 data: vec![],
             },
             Cmd::Login => {
-                let user_name = incoming.data.get(0).cloned().unwrap_or_default();
-                let pass = incoming.data.get(1).cloned().unwrap_or_default();
-                let is_ok = dao::auth_user(pg_client.clone(), user_name.clone(), pass)
-                    .await
-                    .unwrap_or(false);
-                if !is_ok {
+                // Rate limiting: block after MAX_LOGIN_ATTEMPTS failed attempts
+                if failed_login_attempts >= MAX_LOGIN_ATTEMPTS {
+                    warn!("Connection blocked due to too many failed login attempts");
                     AppMessage {
                         cmd: Cmd::Failure,
-                        data: vec!["failed to login!".to_string(), "".to_string()],
+                        data: vec!["too many failed login attempts".to_string()],
                     }
                 } else {
-                    authenticated = true;
-                    current_user = Some(user_name.clone());
-                    let user_home = format!("/home/{}", user_name);
-                    if dao::get_f_node(pg_client.clone(), user_home.clone()).await.ok().flatten().is_some() {
-                        current_path = user_home;
-                    } else {
-                        current_path = "/home".into();
-                    }
-                    let is_admin = dao::get_user(pg_client.clone(), user_name.clone())
+                    let user_name = incoming.data.get(0).cloned().unwrap_or_default();
+                    let pass = incoming.data.get(1).cloned().unwrap_or_default();
+                    let is_ok = dao::auth_user(pg_client.clone(), user_name.clone(), pass)
                         .await
-                        .ok()
-                        .flatten()
-                        .map(|u| u.is_admin)
                         .unwrap_or(false);
-                    AppMessage {
-                        cmd: Cmd::Login,
-                        data: vec![user_name, is_admin.to_string()],
+                    if !is_ok {
+                        failed_login_attempts += 1;
+                        warn!("Failed login attempt {} for user '{}'", failed_login_attempts, user_name);
+                        AppMessage {
+                            cmd: Cmd::Failure,
+                            data: vec!["failed to login!".to_string(), format!("{} attempts remaining", MAX_LOGIN_ATTEMPTS - failed_login_attempts)],
+                        }
+                    } else {
+                        // Reset counter on successful login
+                        failed_login_attempts = 0;
+                        authenticated = true;
+                        current_user = Some(user_name.clone());
+                        let user_home = format!("/home/{}", user_name);
+                        if dao::get_f_node(pg_client.clone(), user_home.clone()).await.ok().flatten().is_some() {
+                            current_path = user_home;
+                        } else {
+                            current_path = "/home".into();
+                        }
+                        let is_admin = dao::get_user(pg_client.clone(), user_name.clone())
+                            .await
+                            .ok()
+                            .flatten()
+                            .map(|u| u.is_admin)
+                            .unwrap_or(false);
+                        AppMessage {
+                            cmd: Cmd::Login,
+                            data: vec![user_name, is_admin.to_string()],
+                        }
                     }
                 }
             }
