@@ -830,6 +830,114 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                     }
                 }
             }
+            Cmd::Cp => {
+                if !authenticated {
+                    AppMessage {
+                        cmd: Cmd::Failure,
+                        data: vec!["not authenticated".to_string()],
+                    }
+                } else {
+                    let src = incoming.data.get(0).cloned().unwrap_or_default();
+                    let dst = incoming.data.get(1).cloned().unwrap_or_default();
+                    if !is_valid_name(&src) || !is_valid_name(&dst) {
+                        AppMessage { cmd: Cmd::Failure, data: vec!["invalid name".to_string()] }
+                    } else {
+                        let src_path = format!("{}/{}", current_path, src);
+                        let dst_path = format!("{}/{}", current_path, dst);
+                        
+                        // Check source exists and we can read it
+                        match dao::get_f_node(pg_client.clone(), src_path.clone()).await {
+                            Ok(Some(src_node)) if can_read(&src_node, current_user.as_ref()) => {
+                                // Check destination doesn't already exist
+                                let dst_exists = dao::get_f_node(pg_client.clone(), dst_path.clone()).await.ok().flatten().is_some();
+                                if dst_exists {
+                                    AppMessage { cmd: Cmd::Failure, data: vec!["destination already exists".to_string()] }
+                                } else {
+                                    // Check write permission on parent
+                                    match dao::get_f_node(pg_client.clone(), current_path.clone()).await {
+                                        Ok(Some(parent)) if can_write(&parent, current_user.as_ref()) => {
+                                            // Create new node with same properties but new path/name
+                                            let new_node = FNode {
+                                                id: -1,
+                                                name: dst.clone(),
+                                                path: dst_path.clone(),
+                                                owner: current_user.clone().unwrap_or_default(),
+                                                hash: src_node.hash.clone(),
+                                                parent: current_path.clone(),
+                                                dir: src_node.dir,
+                                                u: src_node.u,
+                                                g: src_node.g,
+                                                o: src_node.o,
+                                                children: if src_node.dir { vec![] } else { vec![] },
+                                                encrypted_name: dst.clone(),
+                                            };
+                                            
+                                            let add_res = dao::add_file(pg_client.clone(), new_node).await;
+                                            let parent_res = dao::add_file_to_parent(pg_client.clone(), current_path.clone(), dst.clone()).await;
+                                            
+                                            // If it's a file, copy the content
+                                            if !src_node.dir {
+                                                let src_storage = format!("storage{}/{}", current_path, src);
+                                                let dst_storage = format!("storage{}/{}", current_path, dst);
+                                                let _ = fs::copy(&src_storage, &dst_storage).await;
+                                            }
+                                            
+                                            if add_res.is_ok() && parent_res.is_ok() {
+                                                AppMessage { cmd: Cmd::Cp, data: vec!["ok".to_string()] }
+                                            } else {
+                                                AppMessage { cmd: Cmd::Failure, data: vec!["cp failed".to_string()] }
+                                            }
+                                        }
+                                        _ => AppMessage { cmd: Cmd::Failure, data: vec!["no write permission".to_string()] }
+                                    }
+                                }
+                            }
+                            _ => AppMessage { cmd: Cmd::Failure, data: vec!["source not found or no read permission".to_string()] }
+                        }
+                    }
+                }
+            }
+            Cmd::Find => {
+                if !authenticated {
+                    AppMessage {
+                        cmd: Cmd::Failure,
+                        data: vec!["not authenticated".to_string()],
+                    }
+                } else {
+                    let pattern = incoming.data.get(0).cloned().unwrap_or_default();
+                    if pattern.is_empty() {
+                        AppMessage { cmd: Cmd::Failure, data: vec!["missing pattern".to_string()] }
+                    } else {
+                        // Search recursively from current path
+                        let mut results: Vec<String> = Vec::new();
+                        let mut to_search = vec![current_path.clone()];
+                        
+                        while let Some(search_path) = to_search.pop() {
+                            if let Ok(Some(node)) = dao::get_f_node(pg_client.clone(), search_path.clone()).await {
+                                if can_read(&node, current_user.as_ref()) {
+                                    // Check if name matches pattern (simple contains match)
+                                    if node.name.contains(&pattern) {
+                                        results.push(node.path.clone());
+                                    }
+                                    // If directory, add children to search queue
+                                    if node.dir {
+                                        for child in node.children.iter() {
+                                            let child_path = format!("{}/{}", search_path, child);
+                                            to_search.push(child_path);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        
+                        if results.is_empty() {
+                            AppMessage { cmd: Cmd::Find, data: vec!["no matches found".to_string()] }
+                        } else {
+                            AppMessage { cmd: Cmd::Find, data: results }
+                        }
+                    }
+                }
+            }
             _ => AppMessage {
                 cmd: Cmd::Failure,
                 data: vec!["command not implemented".to_string()],
