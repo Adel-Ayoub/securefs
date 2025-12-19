@@ -30,6 +30,8 @@ impl MapStr for Cmd {
             "logout" => Ok(Cmd::Logout),
             "lsusers" => Ok(Cmd::LsUsers),
             "lsgroups" => Ok(Cmd::LsGroups),
+            "key_exchange_init" => Ok(Cmd::KeyExchangeInit),
+            "key_exchange_response" => Ok(Cmd::KeyExchangeResponse),
             _ => Err(()),
         }
     }
@@ -63,6 +65,8 @@ impl NumArgs for Cmd {
             "logout" => Ok(1),
             "lsusers" => Ok(1),
             "lsgroups" => Ok(1),
+            "key_exchange_init" => Ok(2),
+            "key_exchange_response" => Ok(2),
             _ => Err(()),
         }
     }

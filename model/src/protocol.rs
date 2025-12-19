@@ -44,6 +44,10 @@ pub enum Cmd {
     LsGroups,
     /// Terminate the session.
     Logout,
+    /// Client initiates X25519 key exchange with public key.
+    KeyExchangeInit,
+    /// Server responds with its X25519 public key.
+    KeyExchangeResponse,
     #[default]
     /// Placeholder for unknown commands.
     Invalid,
