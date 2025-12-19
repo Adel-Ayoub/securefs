@@ -211,6 +211,10 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                     let group = incoming.data.get(2).cloned().unwrap_or_default();
                     if user_name.is_empty() || pass.is_empty() || group.is_empty() {
                         AppMessage { cmd: Cmd::Failure, data: vec!["missing user data".to_string()] }
+                    } else if !is_valid_user_group_name(&user_name) {
+                        AppMessage { cmd: Cmd::Failure, data: vec!["invalid username format".to_string()] }
+                    } else if !is_valid_user_group_name(&group) {
+                        AppMessage { cmd: Cmd::Failure, data: vec!["invalid group name format".to_string()] }
                     } else {
                         let exists = dao::get_user(pg_client.clone(), user_name.clone()).await.ok().flatten().is_some();
                         if exists {
@@ -255,6 +259,8 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                     let group_name = incoming.data.get(0).cloned().unwrap_or_default();
                     if group_name.is_empty() {
                         AppMessage { cmd: Cmd::Failure, data: vec!["missing group name".to_string()] }
+                    } else if !is_valid_user_group_name(&group_name) {
+                        AppMessage { cmd: Cmd::Failure, data: vec!["invalid group name format".to_string()] }
                     } else {
                         let exists = dao::get_group(pg_client.clone(), group_name.clone()).await.ok().flatten().is_some();
                         if exists {
@@ -328,10 +334,10 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                         let target_path = format!("{}/{}", current_path, dir_name);
                         
                         // Check if directory already exists
-                        if dao::get_f_node(pg_client.clone(), target_path.clone()).await.ok().flatten().is_some() {
-                            return AppMessage { cmd: Cmd::Failure, data: vec!["directory already exists".to_string()] };
-                        }
-                        
+                        let exists = dao::get_f_node(pg_client.clone(), target_path.clone()).await.ok().flatten().is_some();
+                        if exists {
+                            AppMessage { cmd: Cmd::Failure, data: vec!["directory already exists".to_string()] }
+                        } else {
                         let parent_path = current_path.clone();
                         let owner = current_user.clone().unwrap_or_default();
 
@@ -366,6 +372,7 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                                 cmd: Cmd::Failure,
                                 data: vec!["mkdir failed".to_string()],
                             },
+                        }
                         }
                         }
                     }
@@ -535,10 +542,10 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                         let target_path = format!("{}/{}", current_path, file_name);
                         
                         // Check if file already exists
-                        if dao::get_f_node(pg_client.clone(), target_path.clone()).await.ok().flatten().is_some() {
-                            return AppMessage { cmd: Cmd::Failure, data: vec!["file already exists".to_string()] };
-                        }
-                        
+                        let exists = dao::get_f_node(pg_client.clone(), target_path.clone()).await.ok().flatten().is_some();
+                        if exists {
+                            AppMessage { cmd: Cmd::Failure, data: vec!["file already exists".to_string()] }
+                        } else {
                         let parent_path = current_path.clone();
                         let owner = current_user.clone().unwrap_or_default();
 
@@ -573,6 +580,7 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                                 cmd: Cmd::Failure,
                                 data: vec!["touch failed".to_string()],
                             },
+                        }
                         }
                         }
                     }
@@ -903,11 +911,19 @@ fn is_owner(node: &FNode, user: Option<&String>) -> bool {
 
 /// Validate file or directory name (no path separators or special chars).
 fn is_valid_name(name: &str) -> bool {
-    !name.is_empty() 
-        && !name.contains('/') 
+    !name.is_empty()
+        && !name.contains('/')
         && !name.contains('\0')
-        && name != "." 
+        && name != "."
         && name != ".."
+}
+
+/// Validate username or group name (alphanumeric + underscore/hyphen).
+fn is_valid_user_group_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 32
+        && name.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+        && name.chars().next().unwrap().is_alphabetic()
 }
 
 /// Create a failure response with a custom message.
@@ -951,6 +967,25 @@ mod tests {
         assert!(!is_valid_name(".."));
         assert!(!is_valid_name("dir/subdir"));
         assert!(!is_valid_name("file\0name"));
+    }
+
+    #[test]
+    fn test_is_valid_user_group_name() {
+        // Valid names
+        assert!(is_valid_user_group_name("alice"));
+        assert!(is_valid_user_group_name("user123"));
+        assert!(is_valid_user_group_name("test_user"));
+        assert!(is_valid_user_group_name("my-group"));
+        assert!(is_valid_user_group_name("a"));
+        
+        // Invalid names
+        assert!(!is_valid_user_group_name(""));
+        assert!(!is_valid_user_group_name("123user")); // Must start with letter
+        assert!(!is_valid_user_group_name("_user")); // Must start with letter
+        assert!(!is_valid_user_group_name("-user")); // Must start with letter
+        assert!(!is_valid_user_group_name("user name")); // No spaces
+        assert!(!is_valid_user_group_name("user@name")); // No special chars
+        assert!(!is_valid_user_group_name(&"a".repeat(33))); // Too long
     }
 
     #[test]
