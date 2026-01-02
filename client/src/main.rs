@@ -4,9 +4,10 @@
 //! commands to protocol messages.
 
 use std::env;
-use std::io::{self, Write};
 
 use futures_util::{SinkExt, StreamExt};
+use rustyline::error::ReadlineError;
+use rustyline::DefaultEditor;
 use securefs_model::cmd::{MapStr, NumArgs};
 use securefs_model::protocol::{AppMessage, Cmd};
 use tokio::runtime::Runtime;
@@ -80,17 +81,31 @@ async fn run() -> Result<(), String> {
 
     println!("Connected to {}. Login with: login <username> <password>", server_addr);
     println!("Commands: login <u> <p>, logout, pwd, ls, cd, mkdir, touch, mv, delete, cat, echo, chmod, chown, chgrp, cp, find");
-    let stdin = io::stdin();
+    println!("Use up/down arrows for command history. Ctrl+C or 'logout' to exit.");
+    
+    // Initialize rustyline editor for command history and line editing
+    let mut rl = DefaultEditor::new().map_err(|e| format!("failed to init readline: {}", e))?;
+    
     loop {
-        // Simple REPL: read a line, parse it into an AppMessage, send, and print the reply.
-        print!("> ");
-        io::stdout().flush().map_err(|e| e.to_string())?;
-        let mut line = String::new();
-        stdin.read_line(&mut line).map_err(|e| e.to_string())?;
+        // REPL with command history support
+        let readline = rl.readline("> ");
+        let line = match readline {
+            Ok(l) => l,
+            Err(ReadlineError::Interrupted) => {
+                println!("Use 'logout' to exit");
+                continue;
+            }
+            Err(ReadlineError::Eof) => break,
+            Err(e) => return Err(format!("readline error: {}", e)),
+        };
+        
         if line.trim().is_empty() {
             continue;
         }
-        let line = line.trim_end().to_string();
+        
+        // Add to history
+        let _ = rl.add_history_entry(&line);
+        
         let app_message = match command_parser(line.clone()) {
             Ok(msg) => msg,
             Err(err) => {

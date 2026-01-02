@@ -21,6 +21,7 @@ x25519-dalek = { version = "2.0.1", features = ["serde"] }
 aes-gcm = "0.10.3"
 hex = "0.4.3"
 rand_core = { version = "0.6.4", features = ["getrandom"] }
+rustyline = "14.0"
 
 # Internal dependencies
 securefs-model = { path = "../model" }
