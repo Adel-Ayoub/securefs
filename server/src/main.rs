@@ -116,6 +116,7 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
 
     let mut authenticated = false;
     let mut current_user: Option<String> = None;
+    let mut current_user_group: Option<String> = None;
     let mut current_path: String = "/home".to_string();
     let mut failed_login_attempts: u8 = 0;
     const MAX_LOGIN_ATTEMPTS: u8 = 5;
@@ -176,12 +177,11 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                         } else {
                             current_path = "/home".into();
                         }
-                        let is_admin = dao::get_user(pg_client.clone(), user_name.clone())
-                            .await
-                            .ok()
-                            .flatten()
-                            .map(|u| u.is_admin)
-                            .unwrap_or(false);
+                        // Fetch user details including group membership
+                        let user_opt = dao::get_user(pg_client.clone(), user_name.clone()).await.ok().flatten();
+                        let is_admin = user_opt.as_ref().map(|u| u.is_admin).unwrap_or(false);
+                        current_user_group = user_opt.and_then(|u| u.group_name);
+                        info!("User {} logged in, group: {:?}", user_name, current_user_group);
                         AppMessage {
                             cmd: Cmd::Login,
                             data: vec![user_name, is_admin.to_string()],
@@ -1158,33 +1158,102 @@ fn format_permissions(u: i16, g: i16, o: i16) -> String {
     perms
 }
 
-/// Check if the current user can read the node (owner or world-read).
+/// Check if the current user can read the node.
+/// Permission hierarchy: owner -> group -> other (world).
+/// NOTE: This basic version doesn't check group membership; use `can_read_with_group` for full checks.
 fn can_read(node: &FNode, user: Option<&String>) -> bool {
     if let Some(u) = user {
+        // Owner check
         if node.owner == *u && (node.u & 0b100) != 0 {
             return true;
         }
     }
+    // World/other check
     (node.o & 0b100) != 0
 }
 
-/// Check if the current user can write the node (owner or world-write).
+/// Check if the current user can read the node with full group permission support.
+#[allow(dead_code)]
+fn can_read_with_group(node: &FNode, user: Option<&String>, user_group: Option<&String>, owner_group: Option<&String>) -> bool {
+    if let Some(u) = user {
+        // Owner check
+        if node.owner == *u && (node.u & 0b100) != 0 {
+            return true;
+        }
+        // Group check: user belongs to same group as file owner
+        if let (Some(ug), Some(og)) = (user_group, owner_group) {
+            if ug == og && (node.g & 0b100) != 0 {
+                return true;
+            }
+        }
+    }
+    // World/other check
+    (node.o & 0b100) != 0
+}
+
+/// Check if the current user can write the node.
+/// Permission hierarchy: owner -> group -> other (world).
+/// NOTE: This basic version doesn't check group membership; use `can_write_with_group` for full checks.
 fn can_write(node: &FNode, user: Option<&String>) -> bool {
     if let Some(u) = user {
+        // Owner check
         if node.owner == *u && (node.u & 0b010) != 0 {
             return true;
         }
     }
+    // World/other check
     (node.o & 0b010) != 0
 }
 
-/// Check if the current user can execute the node (owner or world-execute).
+/// Check if the current user can write the node with full group permission support.
+#[allow(dead_code)]
+fn can_write_with_group(node: &FNode, user: Option<&String>, user_group: Option<&String>, owner_group: Option<&String>) -> bool {
+    if let Some(u) = user {
+        // Owner check
+        if node.owner == *u && (node.u & 0b010) != 0 {
+            return true;
+        }
+        // Group check
+        if let (Some(ug), Some(og)) = (user_group, owner_group) {
+            if ug == og && (node.g & 0b010) != 0 {
+                return true;
+            }
+        }
+    }
+    // World/other check
+    (node.o & 0b010) != 0
+}
+
+/// Check if the current user can execute the node.
+/// Permission hierarchy: owner -> group -> other (world).
+#[allow(dead_code)]
 fn can_execute(node: &FNode, user: Option<&String>) -> bool {
     if let Some(u) = user {
+        // Owner check
         if node.owner == *u && (node.u & 0b001) != 0 {
             return true;
         }
     }
+    // World/other check
+    (node.o & 0b001) != 0
+}
+
+/// Check if the current user can execute the node with full group permission support.
+#[allow(dead_code)]
+fn can_execute_with_group(node: &FNode, user: Option<&String>, user_group: Option<&String>, owner_group: Option<&String>) -> bool {
+    if let Some(u) = user {
+        // Owner check
+        if node.owner == *u && (node.u & 0b001) != 0 {
+            return true;
+        }
+        // Group check
+        if let (Some(ug), Some(og)) = (user_group, owner_group) {
+            if ug == og && (node.g & 0b001) != 0 {
+                return true;
+            }
+        }
+    }
+    // World/other check
     (node.o & 0b001) != 0
 }
 
@@ -1307,6 +1376,47 @@ mod tests {
         assert!(is_owner(&node, Some(&"alice".to_string())));
         assert!(!is_owner(&node, Some(&"bob".to_string())));
         assert!(!is_owner(&node, None));
+    }
+
+    #[test]
+    fn test_group_permission_helpers() {
+        use crate::FNode;
+        
+        // File owned by alice in group "devs"
+        let node = FNode {
+            id: 1,
+            name: "project.rs".to_string(),
+            path: "/home/alice/project.rs".to_string(),
+            owner: "alice".to_string(),
+            hash: "".to_string(),
+            parent: "/home/alice".to_string(),
+            dir: false,
+            u: 6, // rw-
+            g: 4, // r-- (group read)
+            o: 0, // --- (no world access)
+            children: vec![],
+            encrypted_name: "".to_string(),
+        };
+
+        let owner_group = Some("devs".to_string());
+        let alice_group = Some("devs".to_string());
+        let bob_group = Some("devs".to_string()); // Bob is also in devs
+        let charlie_group = Some("users".to_string()); // Charlie is in different group
+
+        // Owner can read (via owner permission)
+        assert!(can_read_with_group(&node, Some(&"alice".to_string()), alice_group.as_ref(), owner_group.as_ref()));
+        
+        // Bob (same group) can read via group permission
+        assert!(can_read_with_group(&node, Some(&"bob".to_string()), bob_group.as_ref(), owner_group.as_ref()));
+        
+        // Charlie (different group) cannot read (no world permission)
+        assert!(!can_read_with_group(&node, Some(&"charlie".to_string()), charlie_group.as_ref(), owner_group.as_ref()));
+        
+        // World (None user) cannot read
+        assert!(!can_read_with_group(&node, None, None, owner_group.as_ref()));
+
+        // Group write permissions (group has r-- only)
+        assert!(!can_write_with_group(&node, Some(&"bob".to_string()), bob_group.as_ref(), owner_group.as_ref()));
     }
 
     #[test]
