@@ -43,7 +43,8 @@ async fn test_scan_command() {
         dir: false, 
         u: 7, g: 7, o: 7, 
         children: vec![], 
-        encrypted_name: file_name.into()
+        encrypted_name: file_name.into(),
+        size: 0, created_at: 0, modified_at: 0
     };
     
     dao::add_file(pg_client.clone(), file_node).await.expect("create file");

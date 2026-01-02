@@ -284,6 +284,7 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                                 match dao::create_user(pg_client.clone(), user_name.clone(), pass, Some(group.clone()), false).await {
                                     Ok(_) => {
                                         let user_home = format!("/home/{}", user_name);
+                                        let now = current_timestamp();
                                         let new_dir = securefs_model::protocol::FNode {
                                             id: -1,
                                             name: user_name.clone(),
@@ -297,6 +298,9 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                                             o: 0,
                                             children: vec![],
                                             encrypted_name: user_name.clone(),
+                                            size: 0,
+                                            created_at: now,
+                                            modified_at: now,
                                         };
                                         let _ = dao::add_file(pg_client.clone(), new_dir).await;
                                         let _ = dao::add_file_to_parent(pg_client.clone(), "/home".to_string(), user_name.clone()).await;
@@ -396,6 +400,7 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                         let parent_path = current_path.clone();
                         let owner = current_user.clone().unwrap_or_default();
 
+                        let now = current_timestamp();
                         let new_dir = securefs_model::protocol::FNode {
                             id: -1,
                             name: dir_name.clone(),
@@ -409,6 +414,9 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                             o: 7,
                             children: vec![],
                             encrypted_name: dir_name.clone(),
+                            size: 0,
+                            created_at: now,
+                            modified_at: now,
                         };
 
                         let res = dao::add_file(pg_client.clone(), new_dir).await;
@@ -604,6 +612,7 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                         let parent_path = current_path.clone();
                         let owner = current_user.clone().unwrap_or_default();
 
+                        let now = current_timestamp();
                         let new_file = securefs_model::protocol::FNode {
                             id: -1,
                             name: file_name.clone(),
@@ -617,6 +626,9 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                             o: 4,
                             children: vec![],
                             encrypted_name: file_name.clone(),
+                            size: 0,
+                            created_at: now,
+                            modified_at: now,
                         };
 
                         let res = dao::add_file(pg_client.clone(), new_file).await;
@@ -1265,6 +1277,14 @@ fn is_owner(node: &FNode, user: Option<&String>) -> bool {
     false
 }
 
+/// Get the current Unix timestamp in seconds.
+fn current_timestamp() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
 /// Validate file or directory name (no path separators or special chars).
 fn is_valid_name(name: &str) -> bool {
     !name.is_empty()
@@ -1356,6 +1376,9 @@ mod tests {
             o: 4, // r--
             children: vec![],
             encrypted_name: "".to_string(),
+            size: 0,
+            created_at: 0,
+            modified_at: 0,
         };
 
         // Test can_read
@@ -1396,6 +1419,9 @@ mod tests {
             o: 0, // --- (no world access)
             children: vec![],
             encrypted_name: "".to_string(),
+            size: 0,
+            created_at: 0,
+            modified_at: 0,
         };
 
         let owner_group = Some("devs".to_string());

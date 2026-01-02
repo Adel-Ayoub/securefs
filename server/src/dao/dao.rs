@@ -188,6 +188,10 @@ pub async fn get_f_node(client: Arc<Mutex<Client>>, path: String) -> Result<Opti
                 o: row.get(9),
                 children: row.try_get(10).unwrap_or(vec![]),
                 encrypted_name: row.get(11),
+                // NOTE: These fields are not yet in DB schema; use defaults.
+                size: 0,
+                created_at: 0,
+                modified_at: 0,
             };
             Ok(Some(fnode))
         }
@@ -404,7 +408,10 @@ pub async fn init_db(client: Arc<Mutex<Client>>) -> Result<(), ()> {
                 g: 4,
                 o: 4,
                 children: vec![],
-                encrypted_name: "".to_string()
+                encrypted_name: "".to_string(),
+                size: 0,
+                created_at: 0,
+                modified_at: 0,
             }).await.unwrap();
     }
     Ok(())
@@ -429,6 +436,10 @@ pub async fn copy_recursive(
                 Some(p) => p.to_string(),
             };
             
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
             let new_node = FNode {
                 id: -1,
                 name: name.clone(),
@@ -442,6 +453,9 @@ pub async fn copy_recursive(
                 o: node.o,
                 children: vec![],
                 encrypted_name: name.clone(),
+                size: node.size,
+                created_at: now,
+                modified_at: now,
             };
 
             if let Err(e) = add_file(pg_client.clone(), new_node).await {

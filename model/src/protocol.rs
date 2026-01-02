@@ -120,6 +120,12 @@ pub struct FNode {
     pub children: Vec<String>,
     /// Encrypted name stored on disk.
     pub encrypted_name: String,
+    /// File size in bytes (0 for directories).
+    pub size: i64,
+    /// Unix timestamp when the node was created.
+    pub created_at: i64,
+    /// Unix timestamp when the node was last modified.
+    pub modified_at: i64,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
