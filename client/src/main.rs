@@ -79,7 +79,7 @@ async fn run() -> Result<(), String> {
     let shared_secret_key: Option<Key<Aes256Gcm>> = Some(Key::<Aes256Gcm>::from(_shared_secret.as_bytes().clone()));
 
     println!("Connected to {}. Login with: login <username> <password>", server_addr);
-    println!("Commands: login <u> <p>, logout, pwd, ls, cd <path>, mkdir <dir>, touch <file>, mv <src> <dst>, delete <name>, cat <file>, echo <data> <file>, chmod <mode> <name>");
+    println!("Commands: login <u> <p>, logout, pwd, ls, cd, mkdir, touch, mv, delete, cat, echo, chmod, chown, chgrp, cp, find");
     let stdin = io::stdin();
     loop {
         // Simple REPL: read a line, parse it into an AppMessage, send, and print the reply.
@@ -319,6 +319,24 @@ async fn run() -> Result<(), String> {
                         }
                     }
                     Cmd::Failure => println!("{}", reply.data.get(0).unwrap_or(&"find failed".into())),
+                    _ => println!("unexpected reply"),
+                }
+            }
+            Cmd::Chown => {
+                send(&mut ws_stream, &app_message, shared_secret_key.as_ref()).await?;
+                let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
+                match reply.cmd {
+                    Cmd::Chown => println!("{}", reply.data.get(0).unwrap_or(&"ok".into())),
+                    Cmd::Failure => println!("{}", reply.data.get(0).unwrap_or(&"chown failed".into())),
+                    _ => println!("unexpected reply"),
+                }
+            }
+            Cmd::Chgrp => {
+                send(&mut ws_stream, &app_message, shared_secret_key.as_ref()).await?;
+                let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
+                match reply.cmd {
+                    Cmd::Chgrp => println!("{}", reply.data.get(0).unwrap_or(&"ok".into())),
+                    Cmd::Failure => println!("{}", reply.data.get(0).unwrap_or(&"chgrp failed".into())),
                     _ => println!("unexpected reply"),
                 }
             }

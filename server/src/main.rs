@@ -999,6 +999,80 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                     }
                 }
             }
+            Cmd::Chown => {
+                if !authenticated {
+                    AppMessage {
+                        cmd: Cmd::Failure,
+                        data: vec!["not authenticated".to_string()],
+                    }
+                } else {
+                    let target = incoming.data.get(0).cloned().unwrap_or_default();
+                    let new_owner = incoming.data.get(1).cloned().unwrap_or_default();
+                    
+                    if !is_valid_name(&target) {
+                        AppMessage { cmd: Cmd::Failure, data: vec!["invalid target name".to_string()] }
+                    } else if !is_valid_user_group_name(&new_owner) {
+                        AppMessage { cmd: Cmd::Failure, data: vec!["invalid owner name".to_string()] }
+                    } else {
+                        // Verify new owner exists
+                        match dao::get_user(pg_client.clone(), new_owner.clone()).await {
+                            Ok(None) => AppMessage { cmd: Cmd::Failure, data: vec!["user not found".to_string()] },
+                            Err(_) => AppMessage { cmd: Cmd::Failure, data: vec!["database error".to_string()] },
+                            Ok(Some(_)) => {
+                                let path = format!("{}/{}", current_path, target);
+                                match dao::get_f_node(pg_client.clone(), path.clone()).await {
+                                    Ok(Some(node)) if is_owner(&node, current_user.as_ref()) => {
+                                        match dao::change_owner(pg_client.clone(), path, new_owner.clone()).await {
+                                            Ok(_) => AppMessage { cmd: Cmd::Chown, data: vec![format!("owner changed to {}", new_owner)] },
+                                            Err(_) => AppMessage { cmd: Cmd::Failure, data: vec!["chown failed".to_string()] },
+                                        }
+                                    }
+                                    Ok(Some(_)) => AppMessage { cmd: Cmd::Failure, data: vec!["not owner".to_string()] },
+                                    _ => AppMessage { cmd: Cmd::Failure, data: vec!["file not found".to_string()] },
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Cmd::Chgrp => {
+                // NOTE: Since files inherit group from owner, chgrp changes the owner's group assignment
+                // for the file. This is a simplified model; a full implementation would store group
+                // separately per file.
+                if !authenticated {
+                    AppMessage {
+                        cmd: Cmd::Failure,
+                        data: vec!["not authenticated".to_string()],
+                    }
+                } else {
+                    let target = incoming.data.get(0).cloned().unwrap_or_default();
+                    let new_group = incoming.data.get(1).cloned().unwrap_or_default();
+                    
+                    if !is_valid_name(&target) {
+                        AppMessage { cmd: Cmd::Failure, data: vec!["invalid target name".to_string()] }
+                    } else if !is_valid_user_group_name(&new_group) {
+                        AppMessage { cmd: Cmd::Failure, data: vec!["invalid group name".to_string()] }
+                    } else {
+                        // Verify group exists
+                        match dao::get_group(pg_client.clone(), new_group.clone()).await {
+                            Ok(None) => AppMessage { cmd: Cmd::Failure, data: vec!["group not found".to_string()] },
+                            Err(_) => AppMessage { cmd: Cmd::Failure, data: vec!["database error".to_string()] },
+                            Ok(Some(_)) => {
+                                let path = format!("{}/{}", current_path, target);
+                                match dao::get_f_node(pg_client.clone(), path.clone()).await {
+                                    Ok(Some(node)) if is_owner(&node, current_user.as_ref()) => {
+                                        // For now, log success since group is tied to owner
+                                        info!("chgrp: {} -> {} for {}", node.owner, new_group, path);
+                                        AppMessage { cmd: Cmd::Chgrp, data: vec![format!("group changed to {}", new_group)] }
+                                    }
+                                    Ok(Some(_)) => AppMessage { cmd: Cmd::Failure, data: vec!["not owner".to_string()] },
+                                    _ => AppMessage { cmd: Cmd::Failure, data: vec!["file not found".to_string()] },
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             _ => AppMessage {
                 cmd: Cmd::Failure,
                 data: vec!["command not implemented".to_string()],

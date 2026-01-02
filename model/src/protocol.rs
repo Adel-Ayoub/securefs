@@ -48,6 +48,10 @@ pub enum Cmd {
     Cp,
     /// Search for files by pattern.
     Find,
+    /// Change file or directory owner.
+    Chown,
+    /// Change file or directory group.
+    Chgrp,
     /// Client initiates X25519 key exchange with public key.
     KeyExchangeInit,
     /// Server responds with its X25519 public key.

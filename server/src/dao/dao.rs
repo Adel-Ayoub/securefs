@@ -344,6 +344,48 @@ pub async fn path_exists(client: Arc<Mutex<Client>>, path: String) -> Result<boo
     }
 }
 
+/// Change the owner of a file or directory.
+pub async fn change_owner(client: Arc<Mutex<Client>>, file_path: String, new_owner: String) -> Result<(), String> {
+    let db_pass = env::var("DB_PASS").unwrap_or("TEMP".to_string());
+    let e = client.lock().await.execute(
+        "UPDATE fnode SET owner = pgp_sym_encrypt($2 ::text, $3 ::text) WHERE pgp_sym_decrypt(path ::bytea, $3 ::text) = $1",
+        &[&file_path, &new_owner, &db_pass]
+    ).await;
+    match e {
+        Ok(_) => Ok(()),
+        Err(_) => Err("failed to change owner".to_string()),
+    }
+}
+
+/// Get the group associated with a file node (via owner's group).
+pub async fn get_file_group(client: Arc<Mutex<Client>>, owner: String) -> Result<Option<String>, String> {
+    let row = client.lock().await.query_opt(
+        "SELECT group_name FROM users WHERE user_name = $1",
+        &[&owner]
+    ).await;
+    match row {
+        Ok(Some(row)) => Ok(row.try_get("group_name").unwrap_or(None)),
+        Ok(None) => Ok(None),
+        Err(_) => Err("failed to get file group".to_string()),
+    }
+}
+
+/// Check if a user belongs to a specific group.
+pub async fn user_in_group(client: Arc<Mutex<Client>>, user_name: String, group_name: String) -> Result<bool, String> {
+    let row = client.lock().await.query_opt(
+        "SELECT group_name FROM users WHERE user_name = $1",
+        &[&user_name]
+    ).await;
+    match row {
+        Ok(Some(row)) => {
+            let user_group: Option<String> = row.try_get("group_name").unwrap_or(None);
+            Ok(user_group.map(|g| g == group_name).unwrap_or(false))
+        }
+        Ok(None) => Ok(false),
+        Err(_) => Err("failed to check group membership".to_string()),
+    }
+}
+
 /// Ensure required seed data exists (currently `/home` root).
 pub async fn init_db(client: Arc<Mutex<Client>>) -> Result<(), ()> {
     let does_home_exist = get_f_node(client.clone(), "/home".to_string()).await.unwrap().is_some();
