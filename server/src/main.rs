@@ -924,10 +924,10 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                                     Ok(Some(dst_node)) => {
                                         if dst_node.dir {
                                             // Copy INTO directory
-                                            let src_name = Path::new(&src_path).file_name().unwrap().to_str().unwrap();
-                                            // Logic: dst_path_orig is the directory we are copying into.
-                                            // The new path is dst_path_orig/src_name
-                                            (format!("{}/{}", dst_path_orig, src_name), true)
+                                            match Path::new(&src_path).file_name().and_then(|n| n.to_str()) {
+                                                Some(src_name) => (format!("{}/{}", dst_path_orig, src_name), true),
+                                                None => (String::new(), false), // Invalid source path
+                                            }
                                         } else {
                                             // Destination exists and is a file -> Error (no overwrite support yet)
                                             (String::new(), false)
