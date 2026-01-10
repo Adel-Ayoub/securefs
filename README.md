@@ -62,11 +62,9 @@ cargo run --bin securefs
 - **Authentication**: Secure login/logout with session management
 
 ### Planned Features
-- Group Permission Checks: Group-based access control
-- File Metadata: Size and timestamp support
 - Large File Streaming: Efficient handling of large files
-- Command History: Up/down arrow navigation
 - Tab Completion: Path auto-completion
+- Advanced Shell Features: Piping, variables, background jobs
 
 ---
 
@@ -91,7 +89,10 @@ cargo run --bin securefs
 | Command | Description |
 |---------|-------------|
 | `chmod <mode> <name>` | Change file permissions |
+| `chown <user> <name>` | Change file owner |
+| `chgrp <group> <name>` | Change file group |
 | `scan <file>` | Verify file integrity |
+| `get_encrypted_filename <file>` | Get encrypted filename |
 
 ### User Management (Admin)
 | Command | Description |
@@ -100,6 +101,8 @@ cargo run --bin securefs
 | `newgroup <name>` | Create new group |
 | `lsusers` | List all users |
 | `lsgroups` | List all groups |
+| `add_user_to_group <user> <group>` | Add user to group |
+| `remove_user_from_group <user> <group>` | Remove user from group |
 
 ### Session
 | Command | Description |
@@ -160,6 +163,14 @@ Hello SecureFS
 # Check integrity
 > scan README.md
 Ensured integrity of README.md!
+
+# Change ownership
+> chown admin README.md
+owner changed to admin
+
+# Change group
+> chgrp developers README.md
+group changed to developers
 
 # Permission management
 > chmod 750 README.md
@@ -290,9 +301,10 @@ cargo test --package securefs-server --test scan_test
 - [x] Recursive copy and search
 - [x] Integrity verification
 - [x] Integration test suite
-- [ ] Group permission checks
-- [ ] File metadata (size, timestamps)
-- [ ] chown/chgrp commands
+- [x] Group permission checks
+- [x] File metadata (size, timestamps)
+- [x] chown/chgrp commands
+- [x] Connection retry logic
 - [ ] Large file streaming
 - [ ] Command history & tab completion
 
