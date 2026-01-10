@@ -80,7 +80,9 @@ async fn run() -> Result<(), String> {
     let shared_secret_key: Option<Key<Aes256Gcm>> = Some(Key::<Aes256Gcm>::from(_shared_secret.as_bytes().clone()));
 
     println!("Connected to {}. Login with: login <username> <password>", server_addr);
-    println!("Commands: login <u> <p>, logout, pwd, ls, cd, mkdir, touch, mv, delete, cat, echo, chmod, chown, chgrp, cp, find");
+    println!("Commands: login, logout, pwd, ls, cd, mkdir, touch, mv, delete, cat, echo");
+    println!("          chmod, chown, chgrp, cp, find, scan, get_encrypted_filename");
+    println!("          new_user, new_group, lsusers, lsgroups, add_user_to_group, remove_user_from_group");
     println!("Use up/down arrows for command history. Ctrl+C or 'logout' to exit.");
     
     // Initialize rustyline editor for command history and line editing
@@ -352,6 +354,24 @@ async fn run() -> Result<(), String> {
                 match reply.cmd {
                     Cmd::Chgrp => println!("{}", reply.data.get(0).unwrap_or(&"ok".into())),
                     Cmd::Failure => println!("{}", reply.data.get(0).unwrap_or(&"chgrp failed".into())),
+                    _ => println!("unexpected reply"),
+                }
+            }
+            Cmd::AddUserToGroup => {
+                send(&mut ws_stream, &app_message, shared_secret_key.as_ref()).await?;
+                let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
+                match reply.cmd {
+                    Cmd::AddUserToGroup => println!("{}", reply.data.get(0).unwrap_or(&"ok".into())),
+                    Cmd::Failure => println!("{}", reply.data.get(0).unwrap_or(&"failed".into())),
+                    _ => println!("unexpected reply"),
+                }
+            }
+            Cmd::RemoveUserFromGroup => {
+                send(&mut ws_stream, &app_message, shared_secret_key.as_ref()).await?;
+                let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
+                match reply.cmd {
+                    Cmd::RemoveUserFromGroup => println!("{}", reply.data.get(0).unwrap_or(&"ok".into())),
+                    Cmd::Failure => println!("{}", reply.data.get(0).unwrap_or(&"failed".into())),
                     _ => println!("unexpected reply"),
                 }
             }

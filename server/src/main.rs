@@ -333,6 +333,48 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                     }
                 }
             }
+            Cmd::AddUserToGroup => {
+                if !authenticated {
+                    AppMessage { cmd: Cmd::Failure, data: vec!["not authenticated".to_string()] }
+                } else {
+                    match dao::is_admin(pg_client.clone(), current_user.clone().unwrap()).await {
+                        Ok(true) => {
+                            let user_name = incoming.data.get(0).cloned().unwrap_or_default();
+                            let group_name = incoming.data.get(1).cloned().unwrap_or_default();
+                            if user_name.is_empty() || group_name.is_empty() {
+                                AppMessage { cmd: Cmd::Failure, data: vec!["missing arguments".to_string()] }
+                            } else {
+                                match dao::add_user_to_group(pg_client.clone(), user_name.clone(), group_name.clone()).await {
+                                    Ok(_) => AppMessage { cmd: Cmd::AddUserToGroup, data: vec![format!("User {} added to group {}", user_name, group_name)] },
+                                    Err(e) => AppMessage { cmd: Cmd::Failure, data: vec![e] },
+                                }
+                            }
+                        }
+                        _ => AppMessage { cmd: Cmd::Failure, data: vec!["admin privileges required".to_string()] },
+                    }
+                }
+            }
+            Cmd::RemoveUserFromGroup => {
+                if !authenticated {
+                    AppMessage { cmd: Cmd::Failure, data: vec!["not authenticated".to_string()] }
+                } else {
+                    match dao::is_admin(pg_client.clone(), current_user.clone().unwrap()).await {
+                        Ok(true) => {
+                            let user_name = incoming.data.get(0).cloned().unwrap_or_default();
+                            let group_name = incoming.data.get(1).cloned().unwrap_or_default();
+                            if user_name.is_empty() || group_name.is_empty() {
+                                AppMessage { cmd: Cmd::Failure, data: vec!["missing arguments".to_string()] }
+                            } else {
+                                match dao::remove_user_from_group(pg_client.clone(), user_name.clone(), group_name.clone()).await {
+                                    Ok(_) => AppMessage { cmd: Cmd::RemoveUserFromGroup, data: vec![format!("User {} removed from group {}", user_name, group_name)] },
+                                    Err(e) => AppMessage { cmd: Cmd::Failure, data: vec![e] },
+                                }
+                            }
+                        }
+                        _ => AppMessage { cmd: Cmd::Failure, data: vec!["admin privileges required".to_string()] },
+                    }
+                }
+            }
             Cmd::Pwd => {
                 if !authenticated {
                     AppMessage {

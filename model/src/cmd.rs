@@ -36,6 +36,8 @@ impl MapStr for Cmd {
             "chgrp" => Ok(Cmd::Chgrp),
             "key_exchange_init" => Ok(Cmd::KeyExchangeInit),
             "key_exchange_response" => Ok(Cmd::KeyExchangeResponse),
+            "add_user_to_group" => Ok(Cmd::AddUserToGroup),
+            "remove_user_from_group" => Ok(Cmd::RemoveUserFromGroup),
             _ => Err(()),
         }
     }
@@ -75,6 +77,8 @@ impl NumArgs for Cmd {
             "chgrp" => Ok(3),
             "key_exchange_init" => Ok(2),
             "key_exchange_response" => Ok(2),
+            "add_user_to_group" => Ok(3),
+            "remove_user_from_group" => Ok(3),
             _ => Err(()),
         }
     }

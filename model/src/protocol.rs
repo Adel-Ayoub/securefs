@@ -56,6 +56,10 @@ pub enum Cmd {
     KeyExchangeInit,
     /// Server responds with its X25519 public key.
     KeyExchangeResponse,
+    /// Add a user to a group (admin only).
+    AddUserToGroup,
+    /// Remove a user from a group (admin only).
+    RemoveUserFromGroup,
     #[default]
     /// Placeholder for unknown commands.
     Invalid,

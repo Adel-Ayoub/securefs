@@ -376,17 +376,64 @@ pub async fn get_file_group(client: Arc<Mutex<Client>>, owner: String) -> Result
 
 /// Check if a user belongs to a specific group.
 pub async fn user_in_group(client: Arc<Mutex<Client>>, user_name: String, group_name: String) -> Result<bool, String> {
+    // Check primary group first
     let row = client.lock().await.query_opt(
         "SELECT group_name FROM users WHERE user_name = $1",
         &[&user_name]
     ).await;
-    match row {
+    
+    let primary_group_match = match row {
         Ok(Some(row)) => {
             let user_group: Option<String> = row.try_get("group_name").unwrap_or(None);
-            Ok(user_group.map(|g| g == group_name).unwrap_or(false))
+            user_group.map(|g| g == group_name).unwrap_or(false)
         }
+        _ => false,
+    };
+
+    if primary_group_match {
+        return Ok(true);
+    }
+
+    // Check secondary groups in groups table
+    let row = client.lock().await.query_opt(
+        "SELECT 1 FROM groups WHERE g_name = $2 AND $1 = ANY(users)",
+        &[&user_name, &group_name]
+    ).await;
+
+    match row {
+        Ok(Some(_)) => Ok(true),
         Ok(None) => Ok(false),
         Err(_) => Err("failed to check group membership".to_string()),
+    }
+}
+
+/// Add a user to a group (secondary membership).
+pub async fn add_user_to_group(client: Arc<Mutex<Client>>, user_name: String, group_name: String) -> Result<(), String> {
+    // Check if group exists
+    let group_exists = get_group(client.clone(), group_name.clone()).await?.is_some();
+    if !group_exists {
+        return Err(format!("Group {} does not exist", group_name));
+    }
+    // Update groups table to append user to users array
+    let e = client.lock().await.execute(
+        "UPDATE groups SET users = array_append(users, $1) WHERE g_name = $2 AND NOT ($1 = ANY(users))",
+        &[&user_name, &group_name]
+    ).await;
+    match e {
+        Ok(_) => Ok(()),
+        Err(e) => Err(format!("Failed to add user to group: {}", e)),
+    }
+}
+
+/// Remove a user from a group (secondary membership).
+pub async fn remove_user_from_group(client: Arc<Mutex<Client>>, user_name: String, group_name: String) -> Result<(), String> {
+    let e = client.lock().await.execute(
+        "UPDATE groups SET users = array_remove(users, $1) WHERE g_name = $2",
+        &[&user_name, &group_name]
+    ).await;
+    match e {
+        Ok(_) => Ok(()),
+        Err(e) => Err(format!("Failed to remove user from group: {}", e)),
     }
 }
 
