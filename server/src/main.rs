@@ -397,14 +397,19 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                 } else {
                     let children = match dao::get_f_node(pg_client.clone(), current_path.clone()).await {
                         Ok(Some(fnode)) => {
-                            let mut names = Vec::new();
-                            for child in fnode.children.iter() {
-                                let child_path = format!("{}/{}", current_path, child);
-                                if let Ok(Some(node)) = dao::get_f_node(pg_client.clone(), child_path).await {
-                                    names.push(format_ls_entry(&node));
+                            let owner_group = dao::get_file_group(pg_client.clone(), fnode.owner.clone()).await.unwrap_or(None);
+                            if can_read_with_group(&fnode, current_user.as_ref(), current_user_group.as_ref(), owner_group.as_ref()) {
+                                let mut names = Vec::new();
+                                for child in fnode.children.iter() {
+                                    let child_path = format!("{}/{}", current_path, child);
+                                    if let Ok(Some(node)) = dao::get_f_node(pg_client.clone(), child_path).await {
+                                        names.push(format_ls_entry(&node));
+                                    }
                                 }
+                                names
+                            } else {
+                                vec![]
                             }
-                            names
                         }
                         _ => vec![],
                     };
@@ -426,7 +431,10 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                         }
                     } else {
                         let has_perm = match dao::get_f_node(pg_client.clone(), current_path.clone()).await {
-                            Ok(Some(parent)) if can_write(&parent, current_user.as_ref()) => true,
+                            Ok(Some(parent)) => {
+                                let owner_group = dao::get_file_group(pg_client.clone(), parent.owner.clone()).await.unwrap_or(None);
+                                can_write_with_group(&parent, current_user.as_ref(), current_user_group.as_ref(), owner_group.as_ref())
+                            },
                             _ => false,
                         };
                         if !has_perm {
@@ -508,22 +516,27 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                         } else {
                             // Require write on parent
                             match dao::get_f_node(pg_client.clone(), current_path.clone()).await {
-                                Ok(Some(parent)) if can_write(&parent, current_user.as_ref()) => {
-                                    let res = dao::update_path(pg_client.clone(), old_path.clone(), new_path.clone()).await;
-                                    let name_res = dao::update_fnode_name_if_path_is_already_updated(pg_client.clone(), new_path.clone(), dst.clone()).await;
-                                    let enc_res = dao::update_fnode_enc_name(pg_client.clone(), new_path.clone(), dst.clone()).await;
-                                    let parent_remove = dao::remove_file_from_parent(pg_client.clone(), current_path.clone(), src.clone()).await;
-                                    let parent_add = dao::add_file_to_parent(pg_client.clone(), current_path.clone(), dst.clone()).await;
-                                    if res.is_ok() && name_res.is_ok() && enc_res.is_ok() && parent_remove.is_ok() && parent_add.is_ok() {
-                                        AppMessage {
-                                            cmd: Cmd::Mv,
-                                            data: vec!["ok".to_string()],
+                                Ok(Some(parent)) => {
+                                    let owner_group = dao::get_file_group(pg_client.clone(), parent.owner.clone()).await.unwrap_or(None);
+                                    if can_write_with_group(&parent, current_user.as_ref(), current_user_group.as_ref(), owner_group.as_ref()) {
+                                        let res = dao::update_path(pg_client.clone(), old_path.clone(), new_path.clone()).await;
+                                        let name_res = dao::update_fnode_name_if_path_is_already_updated(pg_client.clone(), new_path.clone(), dst.clone()).await;
+                                        let enc_res = dao::update_fnode_enc_name(pg_client.clone(), new_path.clone(), dst.clone()).await;
+                                        let parent_remove = dao::remove_file_from_parent(pg_client.clone(), current_path.clone(), src.clone()).await;
+                                        let parent_add = dao::add_file_to_parent(pg_client.clone(), current_path.clone(), dst.clone()).await;
+                                        if res.is_ok() && name_res.is_ok() && enc_res.is_ok() && parent_remove.is_ok() && parent_add.is_ok() {
+                                            AppMessage {
+                                                cmd: Cmd::Mv,
+                                                data: vec!["ok".to_string()],
+                                            }
+                                        } else {
+                                            AppMessage {
+                                                cmd: Cmd::Failure,
+                                                data: vec!["mv failed".to_string()],
+                                            }
                                         }
                                     } else {
-                                        AppMessage {
-                                            cmd: Cmd::Failure,
-                                            data: vec!["mv failed".to_string()],
-                                        }
+                                        AppMessage { cmd: Cmd::Failure, data: vec!["no write permission".into()] }
                                     }
                                 }
                                 _ => AppMessage { cmd: Cmd::Failure, data: vec!["no write permission".into()] }
@@ -549,7 +562,10 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                         let path = format!("{}/{}", current_path, target);
                         // Require write on parent
                         let has_perm = match dao::get_f_node(pg_client.clone(), current_path.clone()).await {
-                            Ok(Some(parent)) if can_write(&parent, current_user.as_ref()) => true,
+                            Ok(Some(parent)) => {
+                                let owner_group = dao::get_file_group(pg_client.clone(), parent.owner.clone()).await.unwrap_or(None);
+                                can_write_with_group(&parent, current_user.as_ref(), current_user_group.as_ref(), owner_group.as_ref())
+                            },
                             _ => false,
                         };
                         if !has_perm {
@@ -610,9 +626,17 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                         }
                     } else {
                         match dao::get_f_node(pg_client.clone(), new_path.clone()).await {
-                            Ok(Some(node)) if node.dir && can_read(&node, current_user.as_ref()) => {
-                                current_path = new_path.clone();
-                                AppMessage { cmd: Cmd::Cd, data: vec![new_path] }
+                            Ok(Some(node)) if node.dir => {
+                                let owner_group = dao::get_file_group(pg_client.clone(), node.owner.clone()).await.unwrap_or(None);
+                                if can_read_with_group(&node, current_user.as_ref(), current_user_group.as_ref(), owner_group.as_ref()) {
+                                    current_path = new_path.clone();
+                                    AppMessage { cmd: Cmd::Cd, data: vec![new_path] }
+                                } else {
+                                    AppMessage {
+                                        cmd: Cmd::Failure,
+                                        data: vec!["no read permission".to_string()],
+                                    }
+                                }
                             }
                             _ => AppMessage {
                                 cmd: Cmd::Failure,
@@ -638,7 +662,10 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                         }
                     } else {
                         let has_perm = match dao::get_f_node(pg_client.clone(), current_path.clone()).await {
-                            Ok(Some(parent)) if can_write(&parent, current_user.as_ref()) => true,
+                            Ok(Some(parent)) => {
+                                let owner_group = dao::get_file_group(pg_client.clone(), parent.owner.clone()).await.unwrap_or(None);
+                                can_write_with_group(&parent, current_user.as_ref(), current_user_group.as_ref(), owner_group.as_ref())
+                            },
                             _ => false,
                         };
                         if !has_perm {
@@ -713,15 +740,20 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                         let file_path = format!("{}/{}", target_path, file_name);
                         match dao::get_f_node(pg_client.clone(), format!("{}/{}", current_path, file_name)).await {
                             Ok(Some(node)) if node.dir => AppMessage { cmd: Cmd::Failure, data: vec!["cannot cat dir".into()] },
-                            Ok(Some(node)) if can_read(&node, current_user.as_ref()) => {
-                                let mut buf = String::new();
-                                let read_res = fs::File::open(&file_path).await;
-                                match read_res {
-                                    Ok(mut f) => {
-                                        let _ = f.read_to_string(&mut buf).await;
-                                        AppMessage { cmd: Cmd::Cat, data: vec![buf] }
+                            Ok(Some(node)) => {
+                                let owner_group = dao::get_file_group(pg_client.clone(), node.owner.clone()).await.unwrap_or(None);
+                                if can_read_with_group(&node, current_user.as_ref(), current_user_group.as_ref(), owner_group.as_ref()) {
+                                    let mut buf = String::new();
+                                    let read_res = fs::File::open(&file_path).await;
+                                    match read_res {
+                                        Ok(mut f) => {
+                                            let _ = f.read_to_string(&mut buf).await;
+                                            AppMessage { cmd: Cmd::Cat, data: vec![buf] }
+                                        }
+                                        Err(_) => AppMessage { cmd: Cmd::Failure, data: vec!["cat failed".to_string()] },
                                     }
-                                    Err(_) => AppMessage { cmd: Cmd::Failure, data: vec!["cat failed".to_string()] },
+                                } else {
+                                    AppMessage { cmd: Cmd::Failure, data: vec!["no read permission".into()] }
                                 }
                             }
                             _ => AppMessage { cmd: Cmd::Failure, data: vec!["no read permission".into()] },
@@ -745,25 +777,30 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                         }
                     } else {
                         match dao::get_f_node(pg_client.clone(), current_path.clone()).await {
-                            Ok(Some(parent)) if can_write(&parent, current_user.as_ref()) => {
-                                let target_path = format!("storage{}", current_path);
-                                let file_path = format!("{}/{}", target_path, file_name);
-                                if fs::create_dir_all(&target_path).await.is_err() {
-                                    AppMessage { cmd: Cmd::Failure, data: vec!["echo failed".to_string()] }
-                                } else {
-                                    match fs::File::create(&file_path).await {
-                                        Ok(mut f) => match f.write_all(content.as_bytes()).await {
-                                            Ok(_) => {
-                                                // Update hash in DB after successful write
-                                                let hash = hash_content(content.as_bytes());
-                                                let node_path = format!("{}/{}", current_path, file_name);
-                                                let _ = dao::update_hash(pg_client.clone(), node_path, file_name.clone(), hash).await;
-                                                AppMessage { cmd: Cmd::Echo, data: vec!["ok".to_string()] }
+                            Ok(Some(parent)) => {
+                                let owner_group = dao::get_file_group(pg_client.clone(), parent.owner.clone()).await.unwrap_or(None);
+                                if can_write_with_group(&parent, current_user.as_ref(), current_user_group.as_ref(), owner_group.as_ref()) {
+                                    let target_path = format!("storage{}", current_path);
+                                    let file_path = format!("{}/{}", target_path, file_name);
+                                    if fs::create_dir_all(&target_path).await.is_err() {
+                                        AppMessage { cmd: Cmd::Failure, data: vec!["echo failed".to_string()] }
+                                    } else {
+                                        match fs::File::create(&file_path).await {
+                                            Ok(mut f) => match f.write_all(content.as_bytes()).await {
+                                                Ok(_) => {
+                                                    // Update hash in DB after successful write
+                                                    let hash = hash_content(content.as_bytes());
+                                                    let node_path = format!("{}/{}", current_path, file_name);
+                                                    let _ = dao::update_hash(pg_client.clone(), node_path, file_name.clone(), hash).await;
+                                                    AppMessage { cmd: Cmd::Echo, data: vec!["ok".to_string()] }
+                                                }
+                                                Err(_) => AppMessage { cmd: Cmd::Failure, data: vec!["echo failed".to_string()] },
                                             }
                                             Err(_) => AppMessage { cmd: Cmd::Failure, data: vec!["echo failed".to_string()] },
                                         }
-                                        Err(_) => AppMessage { cmd: Cmd::Failure, data: vec!["echo failed".to_string()] },
                                     }
+                                } else {
+                                    AppMessage { cmd: Cmd::Failure, data: vec!["no write permission".into()] }
                                 }
                             }
                             _ => AppMessage { cmd: Cmd::Failure, data: vec!["no write permission".into()] }
@@ -830,27 +867,35 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                                     data: vec!["cannot scan directory".to_string()],
                                 }
                             }
-                            Ok(Some(node)) if can_read(&node, current_user.as_ref()) => {
-                                let target_path = format!("storage{}/{}", current_path, file_name);
-                                match fs::read(&target_path).await {
-                                    Ok(content) => {
-                                        let new_hash = hash_content(&content);
-                                        if new_hash == node.hash {
-                                            AppMessage {
-                                                cmd: Cmd::Scan,
-                                                data: vec![format!("Ensured integrity of {}!", file_name)],
-                                            }
-                                        } else {
-                                            AppMessage {
-                                                cmd: Cmd::Failure,
-                                                data: vec![format!("Integrity of file {} compromised!", file_name)],
+                            Ok(Some(node)) => {
+                                let owner_group = dao::get_file_group(pg_client.clone(), node.owner.clone()).await.unwrap_or(None);
+                                if can_read_with_group(&node, current_user.as_ref(), current_user_group.as_ref(), owner_group.as_ref()) {
+                                    let target_path = format!("storage{}/{}", current_path, file_name);
+                                    match fs::read(&target_path).await {
+                                        Ok(content) => {
+                                            let new_hash = hash_content(&content);
+                                            if new_hash == node.hash {
+                                                AppMessage {
+                                                    cmd: Cmd::Scan,
+                                                    data: vec![format!("Ensured integrity of {}!", file_name)],
+                                                }
+                                            } else {
+                                                AppMessage {
+                                                    cmd: Cmd::Failure,
+                                                    data: vec![format!("Integrity of file {} compromised!", file_name)],
+                                                }
                                             }
                                         }
+                                        Err(_) => AppMessage {
+                                            cmd: Cmd::Failure,
+                                            data: vec!["scan failed: file not found".to_string()],
+                                        },
                                     }
-                                    Err(_) => AppMessage {
+                                } else {
+                                    AppMessage {
                                         cmd: Cmd::Failure,
-                                        data: vec!["scan failed: file not found".to_string()],
-                                    },
+                                        data: vec!["no read permission".to_string()],
+                                    }
                                 }
                             }
                             _ => AppMessage {
@@ -877,24 +922,28 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                     } else {
                         let file_path = format!("{}/{}", current_path, file_name);
                         match dao::get_f_node(pg_client.clone(), file_path).await {
-                            Ok(Some(node)) if can_read(&node, current_user.as_ref()) => {
-                                let path_parts: Vec<String> = current_path
-                                    .split('/')
-                                    .filter(|s| !s.is_empty())
-                                    .map(|s| s.to_string())
-                                    .collect();
-                                let mut result = vec!["/".to_string()];
-                                result.extend(path_parts);
-                                result.push(node.encrypted_name);
-                                AppMessage {
-                                    cmd: Cmd::GetEncryptedFile,
-                                    data: result,
+                            Ok(Some(node)) => {
+                                let owner_group = dao::get_file_group(pg_client.clone(), node.owner.clone()).await.unwrap_or(None);
+                                if can_read_with_group(&node, current_user.as_ref(), current_user_group.as_ref(), owner_group.as_ref()) {
+                                    let path_parts: Vec<String> = current_path
+                                        .split('/')
+                                        .filter(|s| !s.is_empty())
+                                        .map(|s| s.to_string())
+                                        .collect();
+                                    let mut result = vec!["/".to_string()];
+                                    result.extend(path_parts);
+                                    result.push(node.encrypted_name);
+                                    AppMessage {
+                                        cmd: Cmd::GetEncryptedFile,
+                                        data: result,
+                                    }
+                                } else {
+                                    AppMessage {
+                                        cmd: Cmd::Failure,
+                                        data: vec!["no read permission".to_string()],
+                                    }
                                 }
                             }
-                            Ok(Some(_)) => AppMessage {
-                                cmd: Cmd::Failure,
-                                data: vec!["no read permission".to_string()],
-                            },
                             _ => AppMessage {
                                 cmd: Cmd::Failure,
                                 data: vec!["file not found".to_string()],
@@ -960,54 +1009,64 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                         
                         // Check source exists and we can read it
                         match dao::get_f_node(pg_client.clone(), src_path.clone()).await {
-                            Ok(Some(src_node)) if can_read(&src_node, current_user.as_ref()) => {
-                                // Check destination
-                                let (final_dst_path, valid_dst) = match dao::get_f_node(pg_client.clone(), dst_path_orig.clone()).await {
-                                    Ok(Some(dst_node)) => {
-                                        if dst_node.dir {
-                                            // Copy INTO directory
-                                            match Path::new(&src_path).file_name().and_then(|n| n.to_str()) {
-                                                Some(src_name) => (format!("{}/{}", dst_path_orig, src_name), true),
-                                                None => (String::new(), false), // Invalid source path
+                            Ok(Some(src_node)) => {
+                                let src_owner_group = dao::get_file_group(pg_client.clone(), src_node.owner.clone()).await.unwrap_or(None);
+                                if can_read_with_group(&src_node, current_user.as_ref(), current_user_group.as_ref(), src_owner_group.as_ref()) {
+                                    // Check destination
+                                    let (final_dst_path, valid_dst) = match dao::get_f_node(pg_client.clone(), dst_path_orig.clone()).await {
+                                        Ok(Some(dst_node)) => {
+                                            if dst_node.dir {
+                                                // Copy INTO directory
+                                                match Path::new(&src_path).file_name().and_then(|n| n.to_str()) {
+                                                    Some(src_name) => (format!("{}/{}", dst_path_orig, src_name), true),
+                                                    None => (String::new(), false), // Invalid source path
+                                                }
+                                            } else {
+                                                // Destination exists and is a file -> Error (no overwrite support yet)
+                                                (String::new(), false)
                                             }
-                                        } else {
-                                            // Destination exists and is a file -> Error (no overwrite support yet)
-                                            (String::new(), false)
                                         }
-                                    }
-                                    Ok(None) => (dst_path_orig, true), // Copy AS new name
-                                    Err(_) => (String::new(), false),
-                                };
+                                        Ok(None) => (dst_path_orig, true), // Copy AS new name
+                                        Err(_) => (String::new(), false),
+                                    };
 
-                                if !valid_dst || final_dst_path.is_empty() {
-                                    AppMessage { cmd: Cmd::Failure, data: vec!["destination exists as file or error".to_string()] }
-                                } else {
-                                    // Check if final destination already exists (to avoid overwrite/collision in the copy-into case)
-                                     match dao::get_f_node(pg_client.clone(), final_dst_path.clone()).await {
-                                         Ok(Some(_)) => AppMessage { cmd: Cmd::Failure, data: vec!["destination already exists".to_string()] },
-                                         _ => {
-                                             // Check write permission on PARENT of final_dst_path
-                                             let path_obj = Path::new(&final_dst_path);
-                                             let parent_opt = path_obj.parent().map(|p| p.to_str().unwrap_or("/"));
-                                             let parent_str = match parent_opt {
-                                                 Some("") | None => "/".to_string(),
-                                                 Some(p) => p.to_string(),
-                                             };
+                                    if !valid_dst || final_dst_path.is_empty() {
+                                        AppMessage { cmd: Cmd::Failure, data: vec!["destination exists as file or error".to_string()] }
+                                    } else {
+                                        // Check if final destination already exists (to avoid overwrite/collision in the copy-into case)
+                                         match dao::get_f_node(pg_client.clone(), final_dst_path.clone()).await {
+                                             Ok(Some(_)) => AppMessage { cmd: Cmd::Failure, data: vec!["destination already exists".to_string()] },
+                                             _ => {
+                                                 // Check write permission on PARENT of final_dst_path
+                                                 let path_obj = Path::new(&final_dst_path);
+                                                 let parent_opt = path_obj.parent().map(|p| p.to_str().unwrap_or("/"));
+                                                 let parent_str = match parent_opt {
+                                                     Some("") | None => "/".to_string(),
+                                                     Some(p) => p.to_string(),
+                                                 };
 
-                                             match dao::get_f_node(pg_client.clone(), parent_str).await {
-                                                 Ok(Some(parent_node)) if can_write(&parent_node, current_user.as_ref()) => {
-                                                     match dao::copy_recursive(pg_client.clone(), src_path, final_dst_path, current_user.clone().unwrap()).await {
-                                                         Ok(_) => AppMessage { cmd: Cmd::Cp, data: vec!["ok".to_string()] },
-                                                         Err(e) => AppMessage { cmd: Cmd::Failure, data: vec![e] }
+                                                 match dao::get_f_node(pg_client.clone(), parent_str).await {
+                                                     Ok(Some(parent_node)) => {
+                                                         let parent_owner_group = dao::get_file_group(pg_client.clone(), parent_node.owner.clone()).await.unwrap_or(None);
+                                                         if can_write_with_group(&parent_node, current_user.as_ref(), current_user_group.as_ref(), parent_owner_group.as_ref()) {
+                                                             match dao::copy_recursive(pg_client.clone(), src_path, final_dst_path, current_user.clone().unwrap()).await {
+                                                                 Ok(_) => AppMessage { cmd: Cmd::Cp, data: vec!["ok".to_string()] },
+                                                                 Err(e) => AppMessage { cmd: Cmd::Failure, data: vec![e] }
+                                                             }
+                                                         } else {
+                                                             AppMessage { cmd: Cmd::Failure, data: vec!["no write permission on target directory".to_string()] }
+                                                         }
                                                      }
+                                                     _ => AppMessage { cmd: Cmd::Failure, data: vec!["target directory not found".to_string()] }
                                                  }
-                                                 _ => AppMessage { cmd: Cmd::Failure, data: vec!["no write permission on target directory".to_string()] }
                                              }
                                          }
-                                     }
+                                    }
+                                } else {
+                                    AppMessage { cmd: Cmd::Failure, data: vec!["no read permission on source".to_string()] }
                                 }
                             }
-                            _ => AppMessage { cmd: Cmd::Failure, data: vec!["source not found or no read permission".to_string()] }
+                            _ => AppMessage { cmd: Cmd::Failure, data: vec!["source not found".to_string()] }
                         }
                     }
                 }
@@ -1029,7 +1088,8 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                         
                         while let Some(search_path) = to_search.pop() {
                             if let Ok(Some(node)) = dao::get_f_node(pg_client.clone(), search_path.clone()).await {
-                                if can_read(&node, current_user.as_ref()) {
+                                let owner_group = dao::get_file_group(pg_client.clone(), node.owner.clone()).await.unwrap_or(None);
+                                if can_read_with_group(&node, current_user.as_ref(), current_user_group.as_ref(), owner_group.as_ref()) {
                                     // Check if name matches pattern (simple contains match)
                                     if node.name.contains(&pattern) {
                                         results.push(node.path.clone());
@@ -1212,20 +1272,6 @@ fn format_permissions(u: i16, g: i16, o: i16) -> String {
     perms
 }
 
-/// Check if the current user can read the node.
-/// Permission hierarchy: owner -> group -> other (world).
-/// NOTE: This basic version doesn't check group membership; use `can_read_with_group` for full checks.
-fn can_read(node: &FNode, user: Option<&String>) -> bool {
-    if let Some(u) = user {
-        // Owner check
-        if node.owner == *u && (node.u & 0b100) != 0 {
-            return true;
-        }
-    }
-    // World/other check
-    (node.o & 0b100) != 0
-}
-
 /// Check if the current user can read the node with full group permission support.
 #[allow(dead_code)]
 fn can_read_with_group(node: &FNode, user: Option<&String>, user_group: Option<&String>, owner_group: Option<&String>) -> bool {
@@ -1243,20 +1289,6 @@ fn can_read_with_group(node: &FNode, user: Option<&String>, user_group: Option<&
     }
     // World/other check
     (node.o & 0b100) != 0
-}
-
-/// Check if the current user can write the node.
-/// Permission hierarchy: owner -> group -> other (world).
-/// NOTE: This basic version doesn't check group membership; use `can_write_with_group` for full checks.
-fn can_write(node: &FNode, user: Option<&String>) -> bool {
-    if let Some(u) = user {
-        // Owner check
-        if node.owner == *u && (node.u & 0b010) != 0 {
-            return true;
-        }
-    }
-    // World/other check
-    (node.o & 0b010) != 0
 }
 
 /// Check if the current user can write the node with full group permission support.
