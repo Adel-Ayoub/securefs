@@ -38,7 +38,33 @@ async fn run() -> Result<(), String> {
     let server_addr = args.get(1).cloned().unwrap_or(bind);
     let url = format!("ws://{}", server_addr);
 
-    let (mut ws_stream, _) = connect_async(&url)
+    // Initialize rustyline editor for command history and line editing
+    let mut rl = DefaultEditor::new().map_err(|e| format!("failed to init readline: {}", e))?;
+    
+    let mut reconnect_delay = 1;
+    let max_delay = 30;
+
+    loop {
+        // Connection loop
+        match connect_and_run(&url, &mut rl).await {
+            Ok(_) => {
+                // Normal exit (logout)
+                break;
+            }
+            Err(e) => {
+                eprintln!("Connection error: {}", e);
+                eprintln!("Reconnecting in {} seconds...", reconnect_delay);
+                tokio::time::sleep(tokio::time::Duration::from_secs(reconnect_delay)).await;
+                reconnect_delay = std::cmp::min(reconnect_delay * 2, max_delay);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn connect_and_run(url: &str, rl: &mut DefaultEditor) -> Result<(), String> {
+    let (mut ws_stream, _) = connect_async(url)
         .await
         .map_err(|e| format!("connect failed: {}", e))?;
 
@@ -79,14 +105,13 @@ async fn run() -> Result<(), String> {
     
     let shared_secret_key: Option<Key<Aes256Gcm>> = Some(Key::<Aes256Gcm>::from(_shared_secret.as_bytes().clone()));
 
-    println!("Connected to {}. Login with: login <username> <password>", server_addr);
+    // Use environment variable for server address in prompt or default
+    let server_addr_display = env::var("SERVER_ADDR").unwrap_or_else(|_| "127.0.0.1:8080".to_string());
+    println!("Connected to {}. Login with: login <username> <password>", server_addr_display);
     println!("Commands: login, logout, pwd, ls, cd, mkdir, touch, mv, delete, cat, echo");
     println!("          chmod, chown, chgrp, cp, find, scan, get_encrypted_filename");
     println!("          new_user, new_group, lsusers, lsgroups, add_user_to_group, remove_user_from_group");
     println!("Use up/down arrows for command history. Ctrl+C or 'logout' to exit.");
-    
-    // Initialize rustyline editor for command history and line editing
-    let mut rl = DefaultEditor::new().map_err(|e| format!("failed to init readline: {}", e))?;
     
     loop {
         // REPL with command history support
@@ -97,7 +122,7 @@ async fn run() -> Result<(), String> {
                 println!("Use 'logout' to exit");
                 continue;
             }
-            Err(ReadlineError::Eof) => break,
+            Err(ReadlineError::Eof) => return Ok(()), // treat EOF as logout/exit
             Err(e) => return Err(format!("readline error: {}", e)),
         };
         
@@ -170,7 +195,7 @@ async fn run() -> Result<(), String> {
             }
             Cmd::Logout => {
                 println!("bye");
-                break;
+                return Ok(());
             }
             Cmd::NewUser => {
                 send(&mut ws_stream, &app_message, shared_secret_key.as_ref()).await?;
@@ -380,8 +405,6 @@ async fn run() -> Result<(), String> {
             }
         }
     }
-
-    Ok(())
 }
 
 /// Parse user input into an `AppMessage` understood by the server.
