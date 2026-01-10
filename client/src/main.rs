@@ -15,6 +15,7 @@ use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
 use x25519_dalek::{EphemeralSecret, PublicKey};
 use rand_core::OsRng;
+use colored::Colorize;
 
 /// Initialize a Tokio runtime and run the async client loop.
 fn main() {
