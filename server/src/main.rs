@@ -130,11 +130,13 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
         
         // Decrypt if we have a shared secret, otherwise parse as plaintext
         let incoming: AppMessage = if let Some(key) = &shared_secret {
-            let enc_tuple: (String, [u8; 12]) = serde_json::from_str(msg.to_text().unwrap())
+            let text = msg.to_text().map_err(|e| format!("ws message error: {}", e))?;
+            let enc_tuple: (String, [u8; 12]) = serde_json::from_str(text)
                 .map_err(|e| format!("encrypted decode failed: {}", e))?;
             decrypt_app_message(key, &enc_tuple)?
         } else {
-            serde_json::from_str(msg.to_text().unwrap())
+            let text = msg.to_text().map_err(|e| format!("ws message error: {}", e))?;
+            serde_json::from_str(text)
                 .map_err(|e| format!("decode failed: {}", e))?
         };
 
@@ -190,14 +192,9 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                 }
             }
             Cmd::LsUsers => {
-                if !authenticated {
-                    AppMessage {
-                        cmd: Cmd::Failure,
-                        data: vec!["not authenticated".to_string()],
-                    }
-                } else {
+                if let Some(user) = &current_user {
                     // Check if current user is admin
-                    match dao::is_admin(pg_client.clone(), current_user.clone().unwrap()).await {
+                    match dao::is_admin(pg_client.clone(), user.clone()).await {
                         Ok(true) => {
                             match dao::get_all_users(pg_client.clone()).await {
                                 Ok(users) => AppMessage {
@@ -215,17 +212,17 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                             data: vec!["admin privileges required".to_string()],
                         },
                     }
-                }
-            }
-            Cmd::LsGroups => {
-                if !authenticated {
+                } else {
                     AppMessage {
                         cmd: Cmd::Failure,
                         data: vec!["not authenticated".to_string()],
                     }
-                } else {
+                }
+            }
+            Cmd::LsGroups => {
+                if let Some(user) = &current_user {
                     // Check if current user is admin
-                    match dao::is_admin(pg_client.clone(), current_user.clone().unwrap()).await {
+                    match dao::is_admin(pg_client.clone(), user.clone()).await {
                         Ok(true) => {
                             match dao::get_all_groups(pg_client.clone()).await {
                                 Ok(groups) => AppMessage {
@@ -242,6 +239,11 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                             cmd: Cmd::Failure,
                             data: vec!["admin privileges required".to_string()],
                         },
+                    }
+                } else {
+                    AppMessage {
+                        cmd: Cmd::Failure,
+                        data: vec!["not authenticated".to_string()],
                     }
                 }
             }
@@ -334,10 +336,8 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                 }
             }
             Cmd::AddUserToGroup => {
-                if !authenticated {
-                    AppMessage { cmd: Cmd::Failure, data: vec!["not authenticated".to_string()] }
-                } else {
-                    match dao::is_admin(pg_client.clone(), current_user.clone().unwrap()).await {
+                if let Some(user) = &current_user {
+                    match dao::is_admin(pg_client.clone(), user.clone()).await {
                         Ok(true) => {
                             let user_name = incoming.data.get(0).cloned().unwrap_or_default();
                             let group_name = incoming.data.get(1).cloned().unwrap_or_default();
@@ -352,13 +352,13 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                         }
                         _ => AppMessage { cmd: Cmd::Failure, data: vec!["admin privileges required".to_string()] },
                     }
+                } else {
+                    AppMessage { cmd: Cmd::Failure, data: vec!["not authenticated".to_string()] }
                 }
             }
             Cmd::RemoveUserFromGroup => {
-                if !authenticated {
-                    AppMessage { cmd: Cmd::Failure, data: vec!["not authenticated".to_string()] }
-                } else {
-                    match dao::is_admin(pg_client.clone(), current_user.clone().unwrap()).await {
+                if let Some(user) = &current_user {
+                    match dao::is_admin(pg_client.clone(), user.clone()).await {
                         Ok(true) => {
                             let user_name = incoming.data.get(0).cloned().unwrap_or_default();
                             let group_name = incoming.data.get(1).cloned().unwrap_or_default();
@@ -373,6 +373,8 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                         }
                         _ => AppMessage { cmd: Cmd::Failure, data: vec!["admin privileges required".to_string()] },
                     }
+                } else {
+                    AppMessage { cmd: Cmd::Failure, data: vec!["not authenticated".to_string()] }
                 }
             }
             Cmd::Pwd => {
@@ -1373,7 +1375,7 @@ fn is_valid_user_group_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 32
         && name.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-')
-        && name.chars().next().unwrap().is_alphabetic()
+        && name.chars().next().map_or(false, |c| c.is_alphabetic())
 }
 
 /// Validate password strength (minimum 8 characters).

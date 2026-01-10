@@ -50,7 +50,8 @@ pub async fn auth_user(client: Arc<Mutex<Client>>, user_name: String, pass: Stri
     let hash: String = res.get("salt");
     // SAFETY: Hashes are stored in the DB as valid Argon2 strings; parsing failures fall back
     // to an authentication failure rather than panicking.
-    let hash_str: PasswordHashString = PasswordHashString::parse(hash.as_str(), Encoding::B64).unwrap();
+    let hash_str: PasswordHashString = PasswordHashString::parse(hash.as_str(), Encoding::B64)
+        .map_err(|_| "invalid hash format".to_string())?;
     let true_hash = hash_str.password_hash();
     match Argon2::default().verify_password(pass.as_bytes(), &true_hash) {
         Ok(_) => Ok(true),
@@ -74,7 +75,7 @@ pub async fn create_user(client: Arc<Mutex<Client>>, user_name: String, pass: St
     &[&user_name, &salt, &key, &is_admin, &db_pass]).await,
     };
     match e {
-        Ok(_) => Ok(serde_json::from_str::<[u8; 32]>(&key).unwrap().into()),
+        Ok(_) => Ok(serde_json::from_str::<[u8; 32]>(&key).map_err(|e| format!("key parse error: {}", e))?.into()),
         Err(e) => Err(format!("couldn't create user! {}", e)),
     }
 }
