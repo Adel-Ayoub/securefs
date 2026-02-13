@@ -22,6 +22,38 @@ cargo run --bin securefs-server
 cargo run --bin securefs
 ```
 
+## Architecture
+
+### System Overview
+
+![System Architecture](assets/architecture.svg)
+
+SecureFS implements a client-server architecture with end-to-end encryption, separating the system into **untrusted** (Client, OS) and **trusted** (Server, Database, Docker) environments.
+
+### Class Diagram
+
+![Class Diagram](assets/class_diagram.svg)
+
+### Communication Flow
+
+![Sequence Diagram](assets/sequence_diagram.svg)
+
+### Client Connection States
+
+![State Diagram](assets/state_diagram.svg)
+
+### Database Schema
+
+![ER Diagram](assets/er_diagram.svg)
+
+### Commands Overview
+
+![File Operations](assets/file_operations.svg)
+
+### Security Architecture
+
+![Security Architecture](assets/security.svg)
+
 ---
 
 ## Requirements
@@ -182,46 +214,6 @@ group changed to developers
 ```
 
 ---
-
-## Architecture
-
-### System Overview
-
-![Architecture Overview](docs/Architecture.png)
-
-SecureFS implements a client-server architecture with end-to-end encryption, separating the system into **untrusted** (Client, OS) and **trusted** (Server, Database, Docker) environments.
-
-### UML Diagrams
-
-#### Class Diagram
-
-![Class Diagram](docs/class_diagram.png)
-
-Shows the complete system architecture including:
-- **Model Package**: Protocol classes (AppMessage, FNode, User, Group, Cmd enum)
-- **DAO Layer**: All 23 database operations
-- **Database Tables**: PostgreSQL schema (fnode, users, groups)
-- **Client & Server**: Communication components
-
-#### Sequence Diagram
-
-![Sequence Diagram](docs/sequence_diagram.png)
-
-Illustrates the high-level communication flow:
-- WebSocket connection establishment
-- X25519 Diffie-Hellman key exchange
-- Encrypted message loop between Client, Server, and Database
-
-#### Use Case Diagram
-
-![Use Case Diagram](docs/usecase_diagram.png)
-
-Documents all system capabilities:
-- **File System Operations**: ls, cd, pwd, mkdir, touch, cat, echo, mv, delete, cp, find
-- **Security Operations**: chmod, scan, encryption, key exchange
-- **User Management**: login, logout, user/group management
-- **Permission System**: Read/write/execute checks, access control
-
 
 ---
 
