@@ -204,22 +204,65 @@ Shows the complete system architecture including:
 
 ### Sequence Diagram
 
-![Sequence Diagram](assets/sequence_diagram.svg)
+![Sequence Diagram](docs/sequence_diagram.png)
 
-Illustrates the complete communication flow:
-- **Phase 1**: WebSocket connection and X25519 key exchange
-- **Phase 2**: Authentication with Argon2 password verification
-- **Phase 3**: Encrypted command execution loop (file ops, permissions, admin)
-- **Phase 4**: Session termination
+Illustrates the high-level communication flow:
+- WebSocket connection establishment
+- X25519 Diffie-Hellman key exchange
+- Encrypted message loop between Client, Server, and Database
 
 ### Use Case Diagram
 
-![Use Case Diagram](assets/usecase_diagram.svg)
+![Use Case Diagram](docs/usecase_diagram.png)
 
-Documents all system capabilities organized by actor:
-- **User Operations**: File system commands, security operations, session management
-- **Admin Operations**: User/group creation, membership management
-- **Encryption Layer**: X25519, AES-256-GCM, Argon2id, pgcrypto, BLAKE3
+Documents all system capabilities:
+- **File System Operations**: ls, cd, pwd, mkdir, touch, cat, echo, mv, delete, cp, find
+- **Security Operations**: chmod, scan, encryption, key exchange
+- **User Management**: login, logout, user/group management
+- **Permission System**: Read/write/execute checks, access control
+
+### Database Schema
+
+![ER Diagram](assets/er_diagram.svg)
+
+Entity-relationship diagram showing PostgreSQL tables with encryption details:
+- **users**: User accounts with Argon2 password hashes and encrypted AES keys
+- **groups**: Group definitions with member arrays
+- **fnode**: File/directory nodes with pgcrypto-encrypted metadata
+
+### Client State Machine
+
+![State Diagram](assets/state_diagram.svg)
+
+Connection lifecycle states from disconnected through authenticated command loop.
+
+### Security Architecture
+
+![Security Architecture](assets/security_architecture.svg)
+
+Comprehensive view of all security layers:
+- **Transport**: X25519 key exchange and AES-256-GCM encryption
+- **Authentication**: Argon2id password hashing with rate limiting
+- **Database**: pgcrypto symmetric encryption for all sensitive fields
+- **Integrity**: BLAKE3 file hashing for corruption detection
+
+### Command Processing Flow
+
+![File Operations](assets/file_operations.svg)
+
+End-to-end flow from user input through encryption, server processing, DAO operations, and response.
+
+### Permission Check Flow
+
+![Permission Flow](assets/permission_flow.svg)
+
+Unix-style permission evaluation: owner check, group membership, then other permissions.
+
+### Data Flow
+
+![Data Flow](assets/data_flow.svg)
+
+High-level data flow between client, encrypted transport, server session, and persistent storage.
 
 
 ---
