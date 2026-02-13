@@ -191,36 +191,35 @@ group changed to developers
 
 SecureFS implements a client-server architecture with end-to-end encryption, separating the system into **untrusted** (Client, OS) and **trusted** (Server, Database, Docker) environments.
 
-### UML Diagrams
+### Class Diagram
 
-#### Class Diagram
-
-![Class Diagram](docs/class_diagram.png)
+![Class Diagram](assets/class_diagram.svg)
 
 Shows the complete system architecture including:
-- **Model Package**: Protocol classes (AppMessage, FNode, User, Group, Cmd enum)
-- **DAO Layer**: All 23 database operations
-- **Database Tables**: PostgreSQL schema (fnode, users, groups)
-- **Client & Server**: Communication components
+- **Protocol**: AppMessage, Cmd enum, Path types
+- **Model**: FNode, User, Group data structures
+- **Server**: WebSocketHandler, DAO layer, Crypto utilities
+- **Client**: CLI with command parsing and encrypted communication
+- **Database**: PostgreSQL with pgcrypto extension
 
-#### Sequence Diagram
+### Sequence Diagram
 
-![Sequence Diagram](docs/sequence_diagram.png)
+![Sequence Diagram](assets/sequence_diagram.svg)
 
-Illustrates the high-level communication flow:
-- WebSocket connection establishment
-- X25519 Diffie-Hellman key exchange
-- Encrypted message loop between Client, Server, and Database
+Illustrates the complete communication flow:
+- **Phase 1**: WebSocket connection and X25519 key exchange
+- **Phase 2**: Authentication with Argon2 password verification
+- **Phase 3**: Encrypted command execution loop (file ops, permissions, admin)
+- **Phase 4**: Session termination
 
-#### Use Case Diagram
+### Use Case Diagram
 
-![Use Case Diagram](docs/usecase_diagram.png)
+![Use Case Diagram](assets/usecase_diagram.svg)
 
-Documents all system capabilities:
-- **File System Operations**: ls, cd, pwd, mkdir, touch, cat, echo, mv, delete, cp, find
-- **Security Operations**: chmod, scan, encryption, key exchange
-- **User Management**: login, logout, user/group management
-- **Permission System**: Read/write/execute checks, access control
+Documents all system capabilities organized by actor:
+- **User Operations**: File system commands, security operations, session management
+- **Admin Operations**: User/group creation, membership management
+- **Encryption Layer**: X25519, AES-256-GCM, Argon2id, pgcrypto, BLAKE3
 
 
 ---

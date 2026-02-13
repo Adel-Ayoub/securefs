@@ -1,0 +1,218 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 893.04 1984" width="893.04" height="1984" style="--bg:#FFFFFF;--fg:#27272A;background:var(--bg)">
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;display=swap');
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&amp;display=swap');
+  text { font-family: 'Inter', system-ui, sans-serif; }
+  .mono { font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', ui-monospace, monospace; }
+  svg {
+    /* Derived from --bg and --fg (overridable via --line, --accent, etc.) */
+    --_text:          var(--fg);
+    --_text-sec:      var(--muted, color-mix(in srgb, var(--fg) 60%, var(--bg)));
+    --_text-muted:    var(--muted, color-mix(in srgb, var(--fg) 40%, var(--bg)));
+    --_text-faint:    color-mix(in srgb, var(--fg) 25%, var(--bg));
+    --_line:          var(--line, color-mix(in srgb, var(--fg) 30%, var(--bg)));
+    --_arrow:         var(--accent, color-mix(in srgb, var(--fg) 50%, var(--bg)));
+    --_node-fill:     var(--surface, color-mix(in srgb, var(--fg) 3%, var(--bg)));
+    --_node-stroke:   var(--border, color-mix(in srgb, var(--fg) 20%, var(--bg)));
+    --_group-fill:    var(--bg);
+    --_group-hdr:     color-mix(in srgb, var(--fg) 5%, var(--bg));
+    --_inner-stroke:  color-mix(in srgb, var(--fg) 12%, var(--bg));
+    --_key-badge:     color-mix(in srgb, var(--fg) 10%, var(--bg));
+  }
+</style>
+<defs>
+  <marker id="cls-inherit" markerWidth="12" markerHeight="10" refX="12" refY="5" orient="auto-start-reverse">
+    <polygon points="0 0, 12 5, 0 10" fill="var(--bg)" stroke="var(--_arrow)" stroke-width="1.5" />
+  </marker>
+  <marker id="cls-composition" markerWidth="12" markerHeight="10" refX="0" refY="5" orient="auto-start-reverse">
+    <polygon points="6 0, 12 5, 6 10, 0 5" fill="var(--_arrow)" stroke="var(--_arrow)" stroke-width="1" />
+  </marker>
+  <marker id="cls-aggregation" markerWidth="12" markerHeight="10" refX="0" refY="5" orient="auto-start-reverse">
+    <polygon points="6 0, 12 5, 6 10, 0 5" fill="var(--bg)" stroke="var(--_arrow)" stroke-width="1.5" />
+  </marker>
+  <marker id="cls-arrow" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto-start-reverse">
+    <polyline points="0 0, 8 3, 0 6" fill="none" stroke="var(--_arrow)" stroke-width="1.5" />
+  </marker>
+</defs>
+<polyline points="130.5,838 130.5,1055" fill="none" stroke="var(--_line)" stroke-width="0.75" marker-end="url(#cls-arrow)" />
+<polyline points="533.63,493 533.63,531.5 219.96000000000004,531.5 219.96000000000004,774 221,774" fill="none" stroke="var(--_line)" stroke-width="0.75" marker-end="url(#cls-arrow)" />
+<polyline points="533.63,493 533.63,531.5 518.6099999999999,531.5 518.6099999999999,570" fill="none" stroke="var(--_line)" stroke-width="0.75" marker-end="url(#cls-arrow)" />
+<polyline points="533.63,493 533.63,531.5 752.81,531.5 752.81,720" fill="none" stroke="var(--_line)" stroke-width="0.75" marker-end="url(#cls-arrow)" />
+<polyline points="518.6099999999999,978 518.6099999999999,1016.5 328.4,1016.5 328.4,1203" fill="none" stroke="var(--_line)" stroke-width="0.75" marker-end="url(#cls-arrow)" />
+<polyline points="518.6099999999999,978 518.6099999999999,1016.5 469.62,1016.5 469.62,1860 563.42,1860" fill="none" stroke="var(--_line)" stroke-width="0.75" marker-end="url(#cls-arrow)" />
+<polyline points="518.6099999999999,978 518.6099999999999,1016.5 597.64,1016.5 597.64,1323" fill="none" stroke="var(--_line)" stroke-width="0.75" marker-end="url(#cls-arrow)" />
+<polyline points="518.6099999999999,978 518.6099999999999,1016.5 782.3399999999999,1016.5 782.3399999999999,1305" fill="none" stroke="var(--_line)" stroke-width="0.75" marker-end="url(#cls-arrow)" />
+<polyline points="364.06999999999994,228 364.06999999999994,266.5 105.63,266.5 105.63,774 40,774" fill="none" stroke="var(--_line)" stroke-width="0.75" marker-end="url(#cls-arrow)" />
+<polyline points="364.06999999999994,228 364.06999999999994,266.5 533.63,266.5 533.63,305" fill="none" stroke="var(--_line)" stroke-width="0.75" marker-end="url(#cls-arrow)" />
+<polyline points="463.02,1776 463.02,1737.5 637.38,1737.5 637.38,1377 671.64,1377" fill="none" stroke="var(--_line)" stroke-width="0.75" marker-end="url(#cls-arrow)" />
+<polyline points="328.4,1551 328.4,1860 362.62,1860" fill="none" stroke="var(--_line)" stroke-width="0.75" marker-end="url(#cls-arrow)" />
+<polyline points="597.64,1431 597.64,1737.5 557.0699999999999,1737.5 557.0699999999999,1860 563.42,1860" fill="none" stroke="var(--_line)" stroke-width="0.75" marker-start="url(#cls-aggregation)" />
+<rect x="40" y="710" width="181" height="128" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="1" />
+<rect x="40" y="710" width="181" height="32" rx="0" ry="0" fill="var(--_group-hdr)" stroke="var(--_node-stroke)" stroke-width="1" />
+<text x="130.5" y="726" text-anchor="middle" dy="0.35em" font-size="13" font-weight="700" fill="var(--_text)">AppMessage</text>
+<line x1="40" y1="742" x2="221" y2="742" stroke="var(--_node-stroke)" stroke-width="0.75" />
+<text x="48" y="756" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-faint)">+ </tspan><tspan fill="var(--_text-sec)">cmd</tspan><tspan fill="var(--_text-faint)">: </tspan><tspan fill="var(--_text-muted)">Cmd</tspan></text>
+<text x="48" y="776" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-faint)">+ </tspan><tspan fill="var(--_text-sec)">data</tspan><tspan fill="var(--_text-faint)">: </tspan><tspan fill="var(--_text-muted)">Vec~String~</tspan></text>
+<line x1="40" y1="790" x2="221" y2="790" stroke="var(--_node-stroke)" stroke-width="0.75" />
+<text x="48" y="804" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-faint)">+ </tspan><tspan fill="var(--_text-sec)">serialize</tspan><tspan fill="var(--_text-faint)">: </tspan><tspan fill="var(--_text-muted)">String</tspan></text>
+<text x="48" y="824" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-faint)">+ </tspan><tspan fill="var(--_text-sec)">deserialize</tspan><tspan fill="var(--_text-faint)">: </tspan><tspan fill="var(--_text-muted)">AppMessage</tspan></text>
+<rect x="59.80000000000001" y="1055" width="141.39999999999998" height="644" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="1" />
+<rect x="59.80000000000001" y="1055" width="141.39999999999998" height="48" rx="0" ry="0" fill="var(--_group-hdr)" stroke="var(--_node-stroke)" stroke-width="1" />
+<text x="130.5" y="1067" text-anchor="middle" dy="0.35em" font-size="10" font-weight="500" font-style="italic" fill="var(--_text-muted)">&lt;&lt;enumeration&gt;&gt;</text>
+<text x="130.5" y="1085" text-anchor="middle" dy="0.35em" font-size="13" font-weight="700" fill="var(--_text)">Cmd</text>
+<line x1="59.80000000000001" y1="1103" x2="201.2" y2="1103" stroke="var(--_node-stroke)" stroke-width="0.75" />
+<text x="67.80000000000001" y="1117" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-sec)">Cat</tspan></text>
+<text x="67.80000000000001" y="1137" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-sec)">Cd</tspan></text>
+<text x="67.80000000000001" y="1157" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-sec)">Delete</tspan></text>
+<text x="67.80000000000001" y="1177" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-sec)">Echo</tspan></text>
+<text x="67.80000000000001" y="1197" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-sec)">Login</tspan></text>
+<text x="67.80000000000001" y="1217" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-sec)">Logout</tspan></text>
+<text x="67.80000000000001" y="1237" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-sec)">Ls</tspan></text>
+<text x="67.80000000000001" y="1257" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-sec)">Mkdir</tspan></text>
+<text x="67.80000000000001" y="1277" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-sec)">Mv</tspan></text>
+<text x="67.80000000000001" y="1297" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-sec)">Touch</tspan></text>
+<text x="67.80000000000001" y="1317" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-sec)">Pwd</tspan></text>
+<text x="67.80000000000001" y="1337" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-sec)">Chmod</tspan></text>
+<text x="67.80000000000001" y="1357" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-sec)">Chown</tspan></text>
+<text x="67.80000000000001" y="1377" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-sec)">Chgrp</tspan></text>
+<text x="67.80000000000001" y="1397" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-sec)">Cp</tspan></text>
+<text x="67.80000000000001" y="1417" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-sec)">Find</tspan></text>
+<text x="67.80000000000001" y="1437" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-sec)">Scan</tspan></text>
+<text x="67.80000000000001" y="1457" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-sec)">NewUser</tspan></text>
+<text x="67.80000000000001" y="1477" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-sec)">NewGroup</tspan></text>
+<text x="67.80000000000001" y="1497" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-sec)">LsUsers</tspan></text>
+<text x="67.80000000000001" y="1517" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-sec)">LsGroups</tspan></text>
+<text x="67.80000000000001" y="1537" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-sec)">AddUserToGroup</tspan></text>
+<text x="67.80000000000001" y="1557" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-sec)">RemoveUserFromGroup</tspan></text>
+<text x="67.80000000000001" y="1577" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-sec)">GetEncryptedFile</tspan></text>
+<text x="67.80000000000001" y="1597" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-sec)">KeyExchangeInit</tspan></text>
+<text x="67.80000000000001" y="1617" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-sec)">KeyExchangeResponse</tspan></text>
+<text x="67.80000000000001" y="1637" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-sec)">NewConnection</tspan></text>
+<text x="67.80000000000001" y="1657" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-sec)">Failure</tspan></text>
+<text x="67.80000000000001" y="1677" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-sec)">Invalid</tspan></text>
+<line x1="59.80000000000001" y1="1691" x2="201.2" y2="1691" stroke="var(--_node-stroke)" stroke-width="0.75" />
+<rect x="88.86999999999998" y="90" width="134.8" height="88" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="1" />
+<rect x="88.86999999999998" y="90" width="134.8" height="32" rx="0" ry="0" fill="var(--_group-hdr)" stroke="var(--_node-stroke)" stroke-width="1" />
+<text x="156.26999999999998" y="106" text-anchor="middle" dy="0.35em" font-size="13" font-weight="700" fill="var(--_text)">Path</text>
+<line x1="88.86999999999998" y1="122" x2="223.67" y2="122" stroke="var(--_node-stroke)" stroke-width="0.75" />
+<text x="96.86999999999998" y="136" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-faint)">+ </tspan><tspan fill="var(--_text-sec)">path</tspan><tspan fill="var(--_text-faint)">: </tspan><tspan fill="var(--_text-muted)">Vec~Tuple~</tspan></text>
+<line x1="88.86999999999998" y1="150" x2="223.67" y2="150" stroke="var(--_node-stroke)" stroke-width="0.75" />
+<text x="96.86999999999998" y="164" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-faint)">+ </tspan><tspan fill="var(--_text-sec)">fmt</tspan><tspan fill="var(--_text-faint)">: </tspan><tspan fill="var(--_text-muted)">String</tspan></text>
+<rect x="241.2" y="1203" width="174.4" height="348" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="1" />
+<rect x="241.2" y="1203" width="174.4" height="32" rx="0" ry="0" fill="var(--_group-hdr)" stroke="var(--_node-stroke)" stroke-width="1" />
+<text x="328.4" y="1219" text-anchor="middle" dy="0.35em" font-size="13" font-weight="700" fill="var(--_text)">FNode</text>
+<line x1="241.2" y1="1235" x2="415.6" y2="1235" stroke="var(--_node-stroke)" stroke-width="0.75" />
+<text x="249.2" y="1249" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-faint)">+ </tspan><tspan fill="var(--_text-sec)">id</tspan><tspan fill="var(--_text-faint)">: </tspan><tspan fill="var(--_text-muted)">i64</tspan></text>
+<text x="249.2" y="1269" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-faint)">+ </tspan><tspan fill="var(--_text-sec)">name</tspan><tspan fill="var(--_text-faint)">: </tspan><tspan fill="var(--_text-muted)">String</tspan></text>
+<text x="249.2" y="1289" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-faint)">+ </tspan><tspan fill="var(--_text-sec)">path</tspan><tspan fill="var(--_text-faint)">: </tspan><tspan fill="var(--_text-muted)">String</tspan></text>
+<text x="249.2" y="1309" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-faint)">+ </tspan><tspan fill="var(--_text-sec)">owner</tspan><tspan fill="var(--_text-faint)">: </tspan><tspan fill="var(--_text-muted)">String</tspan></text>
+<text x="249.2" y="1329" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-faint)">+ </tspan><tspan fill="var(--_text-sec)">hash</tspan><tspan fill="var(--_text-faint)">: </tspan><tspan fill="var(--_text-muted)">String</tspan></text>
+<text x="249.2" y="1349" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-faint)">+ </tspan><tspan fill="var(--_text-sec)">parent</tspan><tspan fill="var(--_text-faint)">: </tspan><tspan fill="var(--_text-muted)">String</tspan></text>
+<text x="249.2" y="1369" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-faint)">+ </tspan><tspan fill="var(--_text-sec)">dir</tspan><tspan fill="var(--_text-faint)">: </tspan><tspan fill="var(--_text-muted)">bool</tspan></text>
+<text x="249.2" y="1389" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-faint)">+ </tspan><tspan fill="var(--_text-sec)">u</tspan><tspan fill="var(--_text-faint)">: </tspan><tspan fill="var(--_text-muted)">i16</tspan></text>
+<text x="249.2" y="1409" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-faint)">+ </tspan><tspan fill="var(--_text-sec)">g</tspan><tspan fill="var(--_text-faint)">: </tspan><tspan fill="var(--_text-muted)">i16</tspan></text>
+<text x="249.2" y="1429" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-faint)">+ </tspan><tspan fill="var(--_text-sec)">o</tspan><tspan fill="var(--_text-faint)">: </tspan><tspan fill="var(--_text-muted)">i16</tspan></text>
+<text x="249.2" y="1449" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-faint)">+ </tspan><tspan fill="var(--_text-sec)">children</tspan><tspan fill="var(--_text-faint)">: </tspan><tspan fill="var(--_text-muted)">Vec~String~</tspan></text>
+<text x="249.2" y="1469" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-faint)">+ </tspan><tspan fill="var(--_text-sec)">encrypted_name</tspan><tspan fill="var(--_text-faint)">: </tspan><tspan fill="var(--_text-muted)">String</tspan></text>
+<text x="249.2" y="1489" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-faint)">+ </tspan><tspan fill="var(--_text-sec)">size</tspan><tspan fill="var(--_text-faint)">: </tspan><tspan fill="var(--_text-muted)">i64</tspan></text>
+<text x="249.2" y="1509" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-faint)">+ </tspan><tspan fill="var(--_text-sec)">created_at</tspan><tspan fill="var(--_text-faint)">: </tspan><tspan fill="var(--_text-muted)">i64</tspan></text>
+<text x="249.2" y="1529" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-faint)">+ </tspan><tspan fill="var(--_text-sec)">modified_at</tspan><tspan fill="var(--_text-faint)">: </tspan><tspan fill="var(--_text-muted)">i64</tspan></text>
+<line x1="241.2" y1="1543" x2="415.6" y2="1543" stroke="var(--_node-stroke)" stroke-width="0.75" />
+<rect x="362.62" y="1776" width="200.79999999999998" height="168" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="1" />
+<rect x="362.62" y="1776" width="200.79999999999998" height="32" rx="0" ry="0" fill="var(--_group-hdr)" stroke="var(--_node-stroke)" stroke-width="1" />
+<text x="463.02" y="1792" text-anchor="middle" dy="0.35em" font-size="13" font-weight="700" fill="var(--_text)">User</text>
+<line x1="362.62" y1="1808" x2="563.42" y2="1808" stroke="var(--_node-stroke)" stroke-width="0.75" />
+<text x="370.62" y="1822" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-faint)">+ </tspan><tspan fill="var(--_text-sec)">id</tspan><tspan fill="var(--_text-faint)">: </tspan><tspan fill="var(--_text-muted)">i64</tspan></text>
+<text x="370.62" y="1842" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-faint)">+ </tspan><tspan fill="var(--_text-sec)">user_name</tspan><tspan fill="var(--_text-faint)">: </tspan><tspan fill="var(--_text-muted)">String</tspan></text>
+<text x="370.62" y="1862" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-faint)">+ </tspan><tspan fill="var(--_text-sec)">group_name</tspan><tspan fill="var(--_text-faint)">: </tspan><tspan fill="var(--_text-muted)">Option~String~</tspan></text>
+<text x="370.62" y="1882" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-faint)">+ </tspan><tspan fill="var(--_text-sec)">key</tspan><tspan fill="var(--_text-faint)">: </tspan><tspan fill="var(--_text-muted)">String</tspan></text>
+<text x="370.62" y="1902" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-faint)">+ </tspan><tspan fill="var(--_text-sec)">salt</tspan><tspan fill="var(--_text-faint)">: </tspan><tspan fill="var(--_text-muted)">String</tspan></text>
+<text x="370.62" y="1922" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-faint)">+ </tspan><tspan fill="var(--_text-sec)">is_admin</tspan><tspan fill="var(--_text-faint)">: </tspan><tspan fill="var(--_text-muted)">bool</tspan></text>
+<line x1="362.62" y1="1936" x2="563.42" y2="1936" stroke="var(--_node-stroke)" stroke-width="0.75" />
+<rect x="523.64" y="1323" width="148" height="108" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="1" />
+<rect x="523.64" y="1323" width="148" height="32" rx="0" ry="0" fill="var(--_group-hdr)" stroke="var(--_node-stroke)" stroke-width="1" />
+<text x="597.64" y="1339" text-anchor="middle" dy="0.35em" font-size="13" font-weight="700" fill="var(--_text)">Group</text>
+<line x1="523.64" y1="1355" x2="671.64" y2="1355" stroke="var(--_node-stroke)" stroke-width="0.75" />
+<text x="531.64" y="1369" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-faint)">+ </tspan><tspan fill="var(--_text-sec)">id</tspan><tspan fill="var(--_text-faint)">: </tspan><tspan fill="var(--_text-muted)">i64</tspan></text>
+<text x="531.64" y="1389" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-faint)">+ </tspan><tspan fill="var(--_text-sec)">g_name</tspan><tspan fill="var(--_text-faint)">: </tspan><tspan fill="var(--_text-muted)">String</tspan></text>
+<text x="531.64" y="1409" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-faint)">+ </tspan><tspan fill="var(--_text-sec)">users</tspan><tspan fill="var(--_text-faint)">: </tspan><tspan fill="var(--_text-muted)">Vec~String~</tspan></text>
+<line x1="523.64" y1="1423" x2="671.64" y2="1423" stroke="var(--_node-stroke)" stroke-width="0.75" />
+<rect x="416.73" y="305" width="233.79999999999998" height="188" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="1" />
+<rect x="416.73" y="305" width="233.79999999999998" height="32" rx="0" ry="0" fill="var(--_group-hdr)" stroke="var(--_node-stroke)" stroke-width="1" />
+<text x="533.63" y="321" text-anchor="middle" dy="0.35em" font-size="13" font-weight="700" fill="var(--_text)">WebSocketHandler</text>
+<line x1="416.73" y1="337" x2="650.53" y2="337" stroke="var(--_node-stroke)" stroke-width="0.75" />
+<text x="424.73" y="351" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-faint)">- </tspan><tspan fill="var(--_text-sec)">bool</tspan><tspan fill="var(--_text-faint)">: </tspan><tspan fill="var(--_text-muted)">authenticated</tspan></text>
+<text x="424.73" y="371" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-faint)">- </tspan><tspan fill="var(--_text-sec)">Option~String~</tspan><tspan fill="var(--_text-faint)">: </tspan><tspan fill="var(--_text-muted)">current_user</tspan></text>
+<text x="424.73" y="391" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-faint)">- </tspan><tspan fill="var(--_text-sec)">String</tspan><tspan fill="var(--_text-faint)">: </tspan><tspan fill="var(--_text-muted)">current_path</tspan></text>
+<text x="424.73" y="411" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-faint)">- </tspan><tspan fill="var(--_text-sec)">Option~Key~</tspan><tspan fill="var(--_text-faint)">: </tspan><tspan fill="var(--_text-muted)">shared_secret</tspan></text>
+<line x1="416.73" y1="425" x2="650.53" y2="425" stroke="var(--_node-stroke)" stroke-width="0.75" />
+<text x="424.73" y="439" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-faint)">+ </tspan><tspan fill="var(--_text-sec)">handle_connection</tspan></text>
+<text x="424.73" y="459" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-faint)">+ </tspan><tspan fill="var(--_text-sec)">encrypt_app_message</tspan><tspan fill="var(--_text-faint)">: </tspan><tspan fill="var(--_text-muted)">Tuple</tspan></text>
+<text x="424.73" y="479" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-faint)">+ </tspan><tspan fill="var(--_text-sec)">decrypt_app_message</tspan><tspan fill="var(--_text-faint)">: </tspan><tspan fill="var(--_text-muted)">AppMessage</tspan></text>
+<rect x="405.0099999999999" y="570" width="227.2" height="408" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="1" />
+<rect x="405.0099999999999" y="570" width="227.2" height="32" rx="0" ry="0" fill="var(--_group-hdr)" stroke="var(--_node-stroke)" stroke-width="1" />
+<text x="518.6099999999999" y="586" text-anchor="middle" dy="0.35em" font-size="13" font-weight="700" fill="var(--_text)">DAO</text>
+<line x1="405.0099999999999" y1="602" x2="632.2099999999998" y2="602" stroke="var(--_node-stroke)" stroke-width="0.75" />
+<line x1="405.0099999999999" y1="610" x2="632.2099999999998" y2="610" stroke="var(--_node-stroke)" stroke-width="0.75" />
+<text x="413.0099999999999" y="624" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-faint)">+ </tspan><tspan fill="var(--_text-sec)">auth_user</tspan><tspan fill="var(--_text-faint)">: </tspan><tspan fill="var(--_text-muted)">bool</tspan></text>
+<text x="413.0099999999999" y="644" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-faint)">+ </tspan><tspan fill="var(--_text-sec)">create_user</tspan><tspan fill="var(--_text-faint)">: </tspan><tspan fill="var(--_text-muted)">Key</tspan></text>
+<text x="413.0099999999999" y="664" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-faint)">+ </tspan><tspan fill="var(--_text-sec)">create_group</tspan><tspan fill="var(--_text-faint)">: </tspan><tspan fill="var(--_text-muted)">String</tspan></text>
+<text x="413.0099999999999" y="684" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-faint)">+ </tspan><tspan fill="var(--_text-sec)">add_file</tspan><tspan fill="var(--_text-faint)">: </tspan><tspan fill="var(--_text-muted)">String</tspan></text>
+<text x="413.0099999999999" y="704" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-faint)">+ </tspan><tspan fill="var(--_text-sec)">get_f_node</tspan><tspan fill="var(--_text-faint)">: </tspan><tspan fill="var(--_text-muted)">Option~FNode~</tspan></text>
+<text x="413.0099999999999" y="724" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-faint)">+ </tspan><tspan fill="var(--_text-sec)">update_hash</tspan><tspan fill="var(--_text-faint)">: </tspan><tspan fill="var(--_text-muted)">String</tspan></text>
+<text x="413.0099999999999" y="744" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-faint)">+ </tspan><tspan fill="var(--_text-sec)">change_file_perms</tspan></text>
+<text x="413.0099999999999" y="764" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-faint)">+ </tspan><tspan fill="var(--_text-sec)">update_path</tspan></text>
+<text x="413.0099999999999" y="784" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-faint)">+ </tspan><tspan fill="var(--_text-sec)">delete_path</tspan></text>
+<text x="413.0099999999999" y="804" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-faint)">+ </tspan><tspan fill="var(--_text-sec)">copy_recursive</tspan></text>
+<text x="413.0099999999999" y="824" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-faint)">+ </tspan><tspan fill="var(--_text-sec)">get_user</tspan><tspan fill="var(--_text-faint)">: </tspan><tspan fill="var(--_text-muted)">Option~User~</tspan></text>
+<text x="413.0099999999999" y="844" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-faint)">+ </tspan><tspan fill="var(--_text-sec)">get_group</tspan><tspan fill="var(--_text-faint)">: </tspan><tspan fill="var(--_text-muted)">Option~String~</tspan></text>
+<text x="413.0099999999999" y="864" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-faint)">+ </tspan><tspan fill="var(--_text-sec)">is_admin</tspan><tspan fill="var(--_text-faint)">: </tspan><tspan fill="var(--_text-muted)">bool</tspan></text>
+<text x="413.0099999999999" y="884" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-faint)">+ </tspan><tspan fill="var(--_text-sec)">change_owner</tspan></text>
+<text x="413.0099999999999" y="904" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-faint)">+ </tspan><tspan fill="var(--_text-sec)">get_file_group</tspan><tspan fill="var(--_text-faint)">: </tspan><tspan fill="var(--_text-muted)">Option~String~</tspan></text>
+<text x="413.0099999999999" y="924" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-faint)">+ </tspan><tspan fill="var(--_text-sec)">user_in_group</tspan><tspan fill="var(--_text-faint)">: </tspan><tspan fill="var(--_text-muted)">bool</tspan></text>
+<text x="413.0099999999999" y="944" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-faint)">+ </tspan><tspan fill="var(--_text-sec)">add_user_to_group</tspan></text>
+<text x="413.0099999999999" y="964" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-faint)">+ </tspan><tspan fill="var(--_text-sec)">remove_user_from_group</tspan></text>
+<rect x="672.2099999999999" y="720" width="161.2" height="108" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="1" />
+<rect x="672.2099999999999" y="720" width="161.2" height="32" rx="0" ry="0" fill="var(--_group-hdr)" stroke="var(--_node-stroke)" stroke-width="1" />
+<text x="752.81" y="736" text-anchor="middle" dy="0.35em" font-size="13" font-weight="700" fill="var(--_text)">Crypto</text>
+<line x1="672.2099999999999" y1="752" x2="833.4099999999999" y2="752" stroke="var(--_node-stroke)" stroke-width="0.75" />
+<line x1="672.2099999999999" y1="760" x2="833.4099999999999" y2="760" stroke="var(--_node-stroke)" stroke-width="0.75" />
+<text x="680.2099999999999" y="774" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-faint)">+ </tspan><tspan fill="var(--_text-sec)">salt_pass</tspan><tspan fill="var(--_text-faint)">: </tspan><tspan fill="var(--_text-muted)">String</tspan></text>
+<text x="680.2099999999999" y="794" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-faint)">+ </tspan><tspan fill="var(--_text-sec)">key_gen</tspan><tspan fill="var(--_text-faint)">: </tspan><tspan fill="var(--_text-muted)">String</tspan></text>
+<text x="680.2099999999999" y="814" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-faint)">+ </tspan><tspan fill="var(--_text-sec)">hash_content</tspan><tspan fill="var(--_text-faint)">: </tspan><tspan fill="var(--_text-muted)">String</tspan></text>
+<rect x="263.66999999999996" y="40" width="200.79999999999998" height="188" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="1" />
+<rect x="263.66999999999996" y="40" width="200.79999999999998" height="32" rx="0" ry="0" fill="var(--_group-hdr)" stroke="var(--_node-stroke)" stroke-width="1" />
+<text x="364.06999999999994" y="56" text-anchor="middle" dy="0.35em" font-size="13" font-weight="700" fill="var(--_text)">CLI</text>
+<line x1="263.66999999999996" y1="72" x2="464.4699999999999" y2="72" stroke="var(--_node-stroke)" stroke-width="0.75" />
+<line x1="263.66999999999996" y1="80" x2="464.4699999999999" y2="80" stroke="var(--_node-stroke)" stroke-width="0.75" />
+<text x="271.66999999999996" y="94" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-faint)">+ </tspan><tspan fill="var(--_text-sec)">main</tspan></text>
+<text x="271.66999999999996" y="114" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-faint)">+ </tspan><tspan fill="var(--_text-sec)">run</tspan><tspan fill="var(--_text-faint)">: </tspan><tspan fill="var(--_text-muted)">Result</tspan></text>
+<text x="271.66999999999996" y="134" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-faint)">+ </tspan><tspan fill="var(--_text-sec)">connect_and_run</tspan></text>
+<text x="271.66999999999996" y="154" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-faint)">+ </tspan><tspan fill="var(--_text-sec)">command_parser</tspan><tspan fill="var(--_text-faint)">: </tspan><tspan fill="var(--_text-muted)">AppMessage</tspan></text>
+<text x="271.66999999999996" y="174" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-faint)">+ </tspan><tspan fill="var(--_text-sec)">send</tspan></text>
+<text x="271.66999999999996" y="194" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-faint)">+ </tspan><tspan fill="var(--_text-sec)">recv</tspan><tspan fill="var(--_text-faint)">: </tspan><tspan fill="var(--_text-muted)">AppMessage</tspan></text>
+<text x="271.66999999999996" y="214" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-faint)">+ </tspan><tspan fill="var(--_text-sec)">print_help</tspan></text>
+<rect x="711.6399999999999" y="1305" width="141.39999999999998" height="144" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="1" />
+<rect x="711.6399999999999" y="1305" width="141.39999999999998" height="48" rx="0" ry="0" fill="var(--_group-hdr)" stroke="var(--_node-stroke)" stroke-width="1" />
+<text x="782.3399999999999" y="1317" text-anchor="middle" dy="0.35em" font-size="10" font-weight="500" font-style="italic" fill="var(--_text-muted)">&lt;&lt;database&gt;&gt;</text>
+<text x="782.3399999999999" y="1335" text-anchor="middle" dy="0.35em" font-size="13" font-weight="700" fill="var(--_text)">PostgreSQL</text>
+<line x1="711.6399999999999" y1="1353" x2="853.0399999999998" y2="1353" stroke="var(--_node-stroke)" stroke-width="0.75" />
+<text x="719.6399999999999" y="1367" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-sec)">table</tspan><tspan fill="var(--_text-faint)">: </tspan><tspan fill="var(--_text-muted)">fnode</tspan></text>
+<text x="719.6399999999999" y="1387" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-sec)">table</tspan><tspan fill="var(--_text-faint)">: </tspan><tspan fill="var(--_text-muted)">users</tspan></text>
+<text x="719.6399999999999" y="1407" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-sec)">table</tspan><tspan fill="var(--_text-faint)">: </tspan><tspan fill="var(--_text-muted)">groups</tspan></text>
+<text x="719.6399999999999" y="1427" class="mono" dy="0.35em" font-size="11" font-weight="400"><tspan fill="var(--_text-sec)">extension</tspan><tspan fill="var(--_text-faint)">: </tspan><tspan fill="var(--_text-muted)">pgcrypto</tspan></text>
+<line x1="711.6399999999999" y1="1441" x2="853.0399999999998" y2="1441" stroke="var(--_node-stroke)" stroke-width="0.75" />
+<text x="130.5" y="1008.5" text-anchor="middle" font-size="11" font-weight="400" fill="var(--_text-muted)">contains</text>
+<text x="219.96000000000004" y="523.5" text-anchor="middle" font-size="11" font-weight="400" fill="var(--_text-muted)">processes</text>
+<text x="518.6099999999999" y="523.5" text-anchor="middle" font-size="11" font-weight="400" fill="var(--_text-muted)">uses</text>
+<text x="752.81" y="523.5" text-anchor="middle" font-size="11" font-weight="400" fill="var(--_text-muted)">uses</text>
+<text x="328.4" y="1008.5" text-anchor="middle" font-size="11" font-weight="400" fill="var(--_text-muted)">manages</text>
+<text x="469.62" y="1369" text-anchor="middle" font-size="11" font-weight="400" fill="var(--_text-muted)">manages</text>
+<text x="597.64" y="1008.5" text-anchor="middle" font-size="11" font-weight="400" fill="var(--_text-muted)">manages</text>
+<text x="782.3399999999999" y="1008.5" text-anchor="middle" font-size="11" font-weight="400" fill="var(--_text-muted)">queries</text>
+<text x="105.63" y="391" text-anchor="middle" font-size="11" font-weight="400" fill="var(--_text-muted)">creates</text>
+<text x="533.63" y="258.5" text-anchor="middle" font-size="11" font-weight="400" fill="var(--_text-muted)">connects to</text>
+<text x="637.38" y="1729.5" text-anchor="middle" font-size="11" font-weight="400" fill="var(--_text-muted)">belongs to</text>
+<text x="328.4" y="1729.5" text-anchor="middle" font-size="11" font-weight="400" fill="var(--_text-muted)">owned by</text>
+<text x="557.0699999999999" y="1729.5" text-anchor="middle" font-size="11" font-weight="400" fill="var(--_text-muted)">contains</text>
+</svg>
