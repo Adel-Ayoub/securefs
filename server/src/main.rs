@@ -123,6 +123,8 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
     let mut failed_login_attempts: u8 = 0;
     const MAX_LOGIN_ATTEMPTS: u8 = 5;
     let mut shared_secret: Option<Key<Aes256Gcm>> = None;
+    let mut last_activity = std::time::Instant::now();
+    const SESSION_TIMEOUT_SECS: u64 = 1800; // 30 minutes
 
     while let Some(msg) = ws_stream.next().await {
         let msg = msg.map_err(|e| format!("ws read failed: {}", e))?;
@@ -141,6 +143,19 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
             serde_json::from_str(text)
                 .map_err(|e| format!("decode failed: {}", e))?
         };
+
+        // Check session timeout for authenticated sessions
+        if authenticated && last_activity.elapsed().as_secs() > SESSION_TIMEOUT_SECS {
+            warn!("Session expired for user {:?} after {} seconds of inactivity",
+                  current_user, last_activity.elapsed().as_secs());
+            authenticated = false;
+            current_user = None;
+            current_user_group = None;
+            current_path = "/home".to_string();
+        }
+
+        // Update last activity timestamp
+        last_activity = std::time::Instant::now();
 
         let mut next_secret = None;
 
