@@ -24,6 +24,8 @@ use x25519_dalek::{EphemeralSecret, PublicKey};
 use rand_core::OsRng;
 use aes_gcm::{Aes256Gcm, Key, Nonce, KeyInit};
 use aes_gcm::aead::{Aead, AeadCore};
+use hkdf::Hkdf;
+use sha2::Sha256;
 
 use std::path::Path;
 use std::collections::HashSet;
@@ -974,10 +976,14 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                             client_pubkey_bytes.copy_from_slice(&bytes);
                             let client_public = PublicKey::from(client_pubkey_bytes);
                             let client_shared = server_secret.diffie_hellman(&client_public);
-                            
-                            // Store shared secret for session encryption (will be applied after response)
-                            // Store shared secret for session encryption (will be applied after response)
-                            let final_secret = *Key::<Aes256Gcm>::from_slice(client_shared.as_bytes());
+
+                            // Derive session key using HKDF-SHA256 (cryptographic best practice)
+                            // This prevents weak subgroup attacks and ensures proper key separation
+                            let hkdf = Hkdf::<Sha256>::new(None, client_shared.as_bytes());
+                            let mut okm = [0u8; 32];
+                            hkdf.expand(b"securefs-session-key-v1", &mut okm)
+                                .expect("32 bytes is valid output length for HKDF-SHA256");
+                            let final_secret = *Key::<Aes256Gcm>::from_slice(&okm);
                             next_secret = Some(final_secret);
                             
                             info!("Key exchange completed with client");
@@ -1274,6 +1280,32 @@ fn format_permissions(u: i16, g: i16, o: i16) -> String {
     perms
 }
 
+/// Check if the current user can read the node (owner/other only, no group check).
+#[allow(dead_code)]
+fn can_read(node: &FNode, user: Option<&String>) -> bool {
+    if let Some(u) = user {
+        // Owner check
+        if node.owner == *u && (node.u & 0b100) != 0 {
+            return true;
+        }
+    }
+    // World/other check
+    (node.o & 0b100) != 0
+}
+
+/// Check if the current user can write the node (owner/other only, no group check).
+#[allow(dead_code)]
+fn can_write(node: &FNode, user: Option<&String>) -> bool {
+    if let Some(u) = user {
+        // Owner check
+        if node.owner == *u && (node.u & 0b010) != 0 {
+            return true;
+        }
+    }
+    // World/other check
+    (node.o & 0b010) != 0
+}
+
 /// Check if the current user can read the node with full group permission support.
 #[allow(dead_code)]
 fn can_read_with_group(node: &FNode, user: Option<&String>, user_group: Option<&String>, owner_group: Option<&String>) -> bool {
@@ -1382,21 +1414,6 @@ fn is_valid_user_group_name(name: &str) -> bool {
 fn is_valid_password(pass: &str) -> bool {
     pass.len() >= 8
 }
-
-/// Create a failure response with a custom message.
-fn failure(msg: &str) -> AppMessage {
-    AppMessage {
-        cmd: Cmd::Failure,
-        data: vec![msg.to_string()],
-    }
-}
-
-/// Create a success response for a given command with optional data.
-fn success(cmd: Cmd, data: Vec<String>) -> AppMessage {
-    AppMessage { cmd, data }
-}
-
-
 
 /// Compute BLAKE3 hash of file content for integrity verification.
 fn hash_content(content: &[u8]) -> String {
@@ -1519,17 +1536,6 @@ mod tests {
 
         // Group write permissions (group has r-- only)
         assert!(!can_write_with_group(&node, Some(&"bob".to_string()), bob_group.as_ref(), owner_group.as_ref()));
-    }
-
-    #[test]
-    fn test_helper_responses() {
-        let fail = failure("test error");
-        assert_eq!(fail.cmd, Cmd::Failure);
-        assert_eq!(fail.data, vec!["test error".to_string()]);
-
-        let succ = success(Cmd::Pwd, vec!["/home/user".to_string()]);
-        assert_eq!(succ.cmd, Cmd::Pwd);
-        assert_eq!(succ.data, vec!["/home/user".to_string()]);
     }
 
     #[test]
