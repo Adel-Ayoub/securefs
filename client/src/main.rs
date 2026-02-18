@@ -38,20 +38,28 @@ async fn run() -> Result<(), String> {
     // Check for flags
     let mut verbose = false;
     let mut quiet = false;
+    let mut use_tls = false;
     let mut server_addr_arg = None;
 
     for arg in args.iter().skip(1) {
         match arg.as_str() {
             "-v" | "--verbose" => verbose = true,
             "-q" | "--quiet" => quiet = true,
+            "-t" | "--tls" => use_tls = true,
             s if !s.starts_with("-") => server_addr_arg = Some(s.to_string()),
             _ => {}
         }
     }
 
+    // Check env var for TLS
+    if env::var("USE_TLS").map(|v| v == "1" || v.to_lowercase() == "true").unwrap_or(false) {
+        use_tls = true;
+    }
+
     let bind = env::var("SERVER_ADDR").unwrap_or_else(|_| "127.0.0.1:8080".to_string());
     let server_addr = server_addr_arg.unwrap_or(bind);
-    let url = format!("ws://{}", server_addr);
+    let scheme = if use_tls { "wss" } else { "ws" };
+    let url = format!("{}://{}", scheme, server_addr);
 
     if verbose {
         println!("{}", format!("Connecting to {}", url).cyan());
@@ -532,7 +540,9 @@ fn print_help() {
     println!("    -h, --help          Print help information");
     println!("    -v, --verbose       Enable verbose output");
     println!("    -q, --quiet         Suppress non-essential output");
+    println!("    -t, --tls           Use TLS (wss://) connection");
     println!();
     println!("ENVIRONMENT:");
     println!("    SERVER_ADDR         Default server address");
+    println!("    USE_TLS             Enable TLS (set to 1 or true)");
 }

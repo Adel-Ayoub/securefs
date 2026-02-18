@@ -31,12 +31,44 @@ use std::path::Path;
 use std::collections::{HashSet, HashMap};
 use std::net::IpAddr;
 use std::time::Instant;
+use std::io::BufReader;
+use tokio_rustls::TlsAcceptor;
+use tokio_rustls::rustls::{self, pki_types::CertificateDer};
 
 /// Rate limiter tracking failed login attempts per IP address.
 /// Stores (attempt_count, first_attempt_time) per IP.
 type RateLimiter = Arc<Mutex<HashMap<IpAddr, (u8, Instant)>>>;
 
 mod dao;
+
+/// Load TLS configuration from certificate and key files.
+fn load_tls_config(cert_path: &str, key_path: &str) -> Result<TlsAcceptor, String> {
+    let cert_file = stdfs::File::open(cert_path)
+        .map_err(|e| format!("failed to open cert file: {}", e))?;
+    let key_file = stdfs::File::open(key_path)
+        .map_err(|e| format!("failed to open key file: {}", e))?;
+
+    let mut cert_reader = BufReader::new(cert_file);
+    let mut key_reader = BufReader::new(key_file);
+
+    let certs: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut cert_reader)
+        .filter_map(|r| r.ok())
+        .collect();
+    if certs.is_empty() {
+        return Err("no certificates found in cert file".to_string());
+    }
+
+    let key = rustls_pemfile::private_key(&mut key_reader)
+        .map_err(|e| format!("failed to parse key: {}", e))?
+        .ok_or("no private key found in key file")?;
+
+    let config = rustls::ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(certs, key)
+        .map_err(|e| format!("invalid TLS config: {}", e))?;
+
+    Ok(TlsAcceptor::from(Arc::new(config)))
+}
 
 /// Audit log for security-relevant events.
 /// Format: [AUDIT] timestamp | event | user | resource | result
@@ -86,6 +118,21 @@ async fn main() -> Result<(), String> {
     let listener = TcpListener::bind(&bind_addr)
         .await
         .map_err(|e| format!("bind failed: {}", e))?;
+
+    // Optional TLS configuration
+    let tls_acceptor: Option<TlsAcceptor> = match (env::var("TLS_CERT"), env::var("TLS_KEY")) {
+        (Ok(cert_path), Ok(key_path)) => {
+            let acceptor = load_tls_config(&cert_path, &key_path)?;
+            info!("TLS enabled (wss://)");
+            Some(acceptor)
+        }
+        _ => {
+            warn!("[SECURITY WARNING] TLS not configured, using unencrypted WebSocket (ws://)");
+            warn!("[SECURITY WARNING] Set TLS_CERT and TLS_KEY for production use");
+            None
+        }
+    };
+
     info!("Listening on: {}", bind_addr);
 
     // Shared rate limiter for IP-based tracking
@@ -96,14 +143,49 @@ async fn main() -> Result<(), String> {
         let pg = pg_client.clone();
         let rl = rate_limiter.clone();
         let ip = addr.ip();
+        let tls = tls_acceptor.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_connection(stream, pg, rl, ip).await {
+            let result = if let Some(acceptor) = tls {
+                match acceptor.accept(stream).await {
+                    Ok(tls_stream) => handle_tls_connection(tls_stream, pg, rl, ip).await,
+                    Err(e) => Err(format!("TLS handshake failed: {}", e)),
+                }
+            } else {
+                handle_connection(stream, pg, rl, ip).await
+            };
+            if let Err(e) = result {
                 warn!("Connection error: {}", e);
             }
         });
     }
 
     Ok(())
+}
+
+/// Handle a TLS WebSocket connection lifecycle.
+async fn handle_tls_connection(
+    stream: tokio_rustls::server::TlsStream<TcpStream>,
+    pg_client: Arc<Mutex<tokio_postgres::Client>>,
+    rate_limiter: RateLimiter,
+    client_ip: IpAddr,
+) -> Result<(), String> {
+    let ws_stream = accept_async(stream)
+        .await
+        .map_err(|e| format!("TLS handshake failed: {}", e))?;
+    handle_ws_stream(ws_stream, pg_client, rate_limiter, client_ip).await
+}
+
+/// Handle a plain TCP WebSocket connection lifecycle.
+async fn handle_connection(
+    stream: TcpStream,
+    pg_client: Arc<Mutex<tokio_postgres::Client>>,
+    rate_limiter: RateLimiter,
+    client_ip: IpAddr,
+) -> Result<(), String> {
+    let ws_stream = accept_async(stream)
+        .await
+        .map_err(|e| format!("handshake failed: {}", e))?;
+    handle_ws_stream(ws_stream, pg_client, rate_limiter, client_ip).await
 }
 
 /// Encrypt an AppMessage using AES-256-GCM (Reference Implementation Style)
@@ -138,17 +220,16 @@ const RATE_LIMIT_WINDOW_SECS: u64 = 900;
 /// Maximum failed login attempts per IP before blocking.
 const MAX_LOGIN_ATTEMPTS: u8 = 5;
 
-/// Handle a single WebSocket connection lifecycle.
-async fn handle_connection(
-    stream: TcpStream,
+/// Handle WebSocket stream logic (shared between TLS and plain TCP).
+async fn handle_ws_stream<S>(
+    mut ws_stream: WebSocketStream<S>,
     pg_client: Arc<Mutex<tokio_postgres::Client>>,
     rate_limiter: RateLimiter,
     client_ip: IpAddr,
-) -> Result<(), String> {
-    let mut ws_stream = accept_async(stream)
-        .await
-        .map_err(|e| format!("handshake failed: {}", e))?;
-
+) -> Result<(), String>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
     let mut authenticated = false;
     let mut current_user: Option<String> = None;
     let mut current_user_group: Option<String> = None;
@@ -1324,7 +1405,10 @@ async fn handle_connection(
 }
 
 /// Serialize and send an application message over the websocket.
-async fn send_app_message(ws_stream: &mut WebSocketStream<TcpStream>, resp: AppMessage, key: Option<&Key<Aes256Gcm>>) -> Result<(), String> {
+async fn send_app_message<S>(ws_stream: &mut WebSocketStream<S>, resp: AppMessage, key: Option<&Key<Aes256Gcm>>) -> Result<(), String>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
     let payload = if let Some(k) = key {
         let enc_tuple = encrypt_app_message(k, &resp)?;
         serde_json::to_string(&enc_tuple).map_err(|e| e.to_string())?
