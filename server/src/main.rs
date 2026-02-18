@@ -28,7 +28,13 @@ use hkdf::Hkdf;
 use sha2::Sha256;
 
 use std::path::Path;
-use std::collections::HashSet;
+use std::collections::{HashSet, HashMap};
+use std::net::IpAddr;
+use std::time::Instant;
+
+/// Rate limiter tracking failed login attempts per IP address.
+/// Stores (attempt_count, first_attempt_time) per IP.
+type RateLimiter = Arc<Mutex<HashMap<IpAddr, (u8, Instant)>>>;
 
 mod dao;
 
@@ -82,11 +88,16 @@ async fn main() -> Result<(), String> {
         .map_err(|e| format!("bind failed: {}", e))?;
     info!("Listening on: {}", bind_addr);
 
+    // Shared rate limiter for IP-based tracking
+    let rate_limiter: RateLimiter = Arc::new(Mutex::new(HashMap::new()));
+
     while let Ok((stream, addr)) = listener.accept().await {
         info!("New connection from: {}", addr);
         let pg = pg_client.clone();
+        let rl = rate_limiter.clone();
+        let ip = addr.ip();
         tokio::spawn(async move {
-            if let Err(e) = handle_connection(stream, pg).await {
+            if let Err(e) = handle_connection(stream, pg, rl, ip).await {
                 warn!("Connection error: {}", e);
             }
         });
@@ -122,8 +133,18 @@ fn decrypt_app_message(key: &Key<Aes256Gcm>, msg_tuple: &(String, [u8; 12])) -> 
     serde_json::from_str(&plaintext_str).map_err(|e| format!("json decode failed: {}", e))
 }
 
+/// Rate limit window in seconds (15 minutes).
+const RATE_LIMIT_WINDOW_SECS: u64 = 900;
+/// Maximum failed login attempts per IP before blocking.
+const MAX_LOGIN_ATTEMPTS: u8 = 5;
+
 /// Handle a single WebSocket connection lifecycle.
-async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgres::Client>>) -> Result<(), String> {
+async fn handle_connection(
+    stream: TcpStream,
+    pg_client: Arc<Mutex<tokio_postgres::Client>>,
+    rate_limiter: RateLimiter,
+    client_ip: IpAddr,
+) -> Result<(), String> {
     let mut ws_stream = accept_async(stream)
         .await
         .map_err(|e| format!("handshake failed: {}", e))?;
@@ -132,8 +153,6 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
     let mut current_user: Option<String> = None;
     let mut current_user_group: Option<String> = None;
     let mut current_path: String = "/home".to_string();
-    let mut failed_login_attempts: u8 = 0;
-    const MAX_LOGIN_ATTEMPTS: u8 = 5;
     let mut shared_secret: Option<Key<Aes256Gcm>> = None;
     let mut last_activity = std::time::Instant::now();
     const SESSION_TIMEOUT_SECS: u64 = 1800; // 30 minutes
@@ -177,12 +196,28 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                 data: vec![],
             },
             Cmd::Login => {
-                // Rate limiting: block after MAX_LOGIN_ATTEMPTS failed attempts
-                if failed_login_attempts >= MAX_LOGIN_ATTEMPTS {
-                    warn!("Connection blocked due to too many failed login attempts");
+                // IP-based rate limiting with expiration window
+                let (_attempts, blocked) = {
+                    let mut rl = rate_limiter.lock().await;
+                    if let Some((count, first_time)) = rl.get(&client_ip) {
+                        let elapsed = first_time.elapsed().as_secs();
+                        if elapsed > RATE_LIMIT_WINDOW_SECS {
+                            // Window expired, reset
+                            rl.remove(&client_ip);
+                            (0u8, false)
+                        } else {
+                            (*count, *count >= MAX_LOGIN_ATTEMPTS)
+                        }
+                    } else {
+                        (0u8, false)
+                    }
+                };
+
+                if blocked {
+                    warn!("IP {} blocked due to too many failed login attempts", client_ip);
                     AppMessage {
                         cmd: Cmd::Failure,
-                        data: vec!["too many failed login attempts".to_string()],
+                        data: vec!["too many failed login attempts, try again later".to_string()],
                     }
                 } else {
                     let user_name = incoming.data.get(0).cloned().unwrap_or_default();
@@ -191,15 +226,25 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                         .await
                         .unwrap_or(false);
                     if !is_ok {
-                        failed_login_attempts += 1;
-                        audit!("LOGIN_FAIL", &user_name, "-", "invalid credentials");
+                        // Increment failed attempts for this IP
+                        let new_count = {
+                            let mut rl = rate_limiter.lock().await;
+                            let entry = rl.entry(client_ip).or_insert((0, Instant::now()));
+                            entry.0 += 1;
+                            entry.0
+                        };
+                        audit!("LOGIN_FAIL", &user_name, &client_ip.to_string(), "invalid credentials");
+                        let remaining = MAX_LOGIN_ATTEMPTS.saturating_sub(new_count);
                         AppMessage {
                             cmd: Cmd::Failure,
-                            data: vec!["failed to login!".to_string(), format!("{} attempts remaining", MAX_LOGIN_ATTEMPTS - failed_login_attempts)],
+                            data: vec!["failed to login!".to_string(), format!("{} attempts remaining", remaining)],
                         }
                     } else {
-                        // Reset counter on successful login
-                        failed_login_attempts = 0;
+                        // Successful login, clear attempts for this IP
+                        {
+                            let mut rl = rate_limiter.lock().await;
+                            rl.remove(&client_ip);
+                        }
                         authenticated = true;
                         current_user = Some(user_name.clone());
                         let user_home = format!("/home/{}", user_name);
