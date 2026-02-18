@@ -747,12 +747,25 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                             Ok(Some(node)) => {
                                 let owner_group = dao::get_file_group(pg_client.clone(), node.owner.clone()).await.unwrap_or(None);
                                 if can_read_with_group(&node, current_user.as_ref(), current_user_group.as_ref(), owner_group.as_ref()) {
-                                    let mut buf = String::new();
                                     let read_res = fs::File::open(&file_path).await;
                                     match read_res {
                                         Ok(mut f) => {
-                                            let _ = f.read_to_string(&mut buf).await;
-                                            AppMessage { cmd: Cmd::Cat, data: vec![buf] }
+                                            let mut encrypted = Vec::new();
+                                            match f.read_to_end(&mut encrypted).await {
+                                                Ok(_) => {
+                                                    // Decrypt file content
+                                                    match decrypt_file_content(&encrypted) {
+                                                        Ok(decrypted) => {
+                                                            match String::from_utf8(decrypted) {
+                                                                Ok(content) => AppMessage { cmd: Cmd::Cat, data: vec![content] },
+                                                                Err(_) => AppMessage { cmd: Cmd::Failure, data: vec!["invalid utf-8".to_string()] },
+                                                            }
+                                                        }
+                                                        Err(e) => AppMessage { cmd: Cmd::Failure, data: vec![e.to_string()] },
+                                                    }
+                                                }
+                                                Err(_) => AppMessage { cmd: Cmd::Failure, data: vec!["cat failed".to_string()] },
+                                            }
                                         }
                                         Err(_) => AppMessage { cmd: Cmd::Failure, data: vec!["cat failed".to_string()] },
                                     }
@@ -790,15 +803,19 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                                         AppMessage { cmd: Cmd::Failure, data: vec!["echo failed".to_string()] }
                                     } else {
                                         match fs::File::create(&file_path).await {
-                                            Ok(mut f) => match f.write_all(content.as_bytes()).await {
-                                                Ok(_) => {
-                                                    // Update hash in DB after successful write
-                                                    let hash = hash_content(content.as_bytes());
-                                                    let node_path = format!("{}/{}", current_path, file_name);
-                                                    let _ = dao::update_hash(pg_client.clone(), node_path, file_name.clone(), hash).await;
-                                                    AppMessage { cmd: Cmd::Echo, data: vec!["ok".to_string()] }
+                                            Ok(mut f) => {
+                                                // Encrypt content before writing to disk
+                                                let encrypted = encrypt_file_content(content.as_bytes());
+                                                match f.write_all(&encrypted).await {
+                                                    Ok(_) => {
+                                                        // Hash plaintext for integrity verification
+                                                        let hash = hash_content(content.as_bytes());
+                                                        let node_path = format!("{}/{}", current_path, file_name);
+                                                        let _ = dao::update_hash(pg_client.clone(), node_path, file_name.clone(), hash).await;
+                                                        AppMessage { cmd: Cmd::Echo, data: vec!["ok".to_string()] }
+                                                    }
+                                                    Err(_) => AppMessage { cmd: Cmd::Failure, data: vec!["echo failed".to_string()] },
                                                 }
-                                                Err(_) => AppMessage { cmd: Cmd::Failure, data: vec!["echo failed".to_string()] },
                                             }
                                             Err(_) => AppMessage { cmd: Cmd::Failure, data: vec!["echo failed".to_string()] },
                                         }
@@ -876,18 +893,27 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                                 if can_read_with_group(&node, current_user.as_ref(), current_user_group.as_ref(), owner_group.as_ref()) {
                                     let target_path = format!("storage{}/{}", current_path, file_name);
                                     match fs::read(&target_path).await {
-                                        Ok(content) => {
-                                            let new_hash = hash_content(&content);
-                                            if new_hash == node.hash {
-                                                AppMessage {
-                                                    cmd: Cmd::Scan,
-                                                    data: vec![format!("Ensured integrity of {}!", file_name)],
+                                        Ok(encrypted) => {
+                                            // Decrypt before hashing (hash is computed from plaintext)
+                                            match decrypt_file_content(&encrypted) {
+                                                Ok(content) => {
+                                                    let new_hash = hash_content(&content);
+                                                    if new_hash == node.hash {
+                                                        AppMessage {
+                                                            cmd: Cmd::Scan,
+                                                            data: vec![format!("Ensured integrity of {}!", file_name)],
+                                                        }
+                                                    } else {
+                                                        AppMessage {
+                                                            cmd: Cmd::Failure,
+                                                            data: vec![format!("Integrity of file {} compromised!", file_name)],
+                                                        }
+                                                    }
                                                 }
-                                            } else {
-                                                AppMessage {
+                                                Err(_) => AppMessage {
                                                     cmd: Cmd::Failure,
-                                                    data: vec![format!("Integrity of file {} compromised!", file_name)],
-                                                }
+                                                    data: vec!["scan failed: decryption error".to_string()],
+                                                },
                                             }
                                         }
                                         Err(_) => AppMessage {
@@ -1413,6 +1439,43 @@ fn is_valid_user_group_name(name: &str) -> bool {
 /// Validate password strength (minimum 8 characters).
 fn is_valid_password(pass: &str) -> bool {
     pass.len() >= 8
+}
+
+/// Derive a key for file-at-rest encryption using HKDF.
+/// Key is derived from DB_PASS to ensure persistence across server restarts.
+fn get_file_encryption_key() -> Key<Aes256Gcm> {
+    let db_pass = env::var("DB_PASS").unwrap_or_else(|_| "TEMP".to_string());
+    let hkdf = Hkdf::<Sha256>::new(None, db_pass.as_bytes());
+    let mut okm = [0u8; 32];
+    hkdf.expand(b"securefs-file-encryption-key-v1", &mut okm)
+        .expect("32 bytes is valid output length for HKDF-SHA256");
+    *Key::<Aes256Gcm>::from_slice(&okm)
+}
+
+/// Encrypt file content with AES-256-GCM for at-rest storage.
+/// Returns: nonce (12 bytes) || ciphertext (content + 16 byte auth tag)
+fn encrypt_file_content(content: &[u8]) -> Vec<u8> {
+    let key = get_file_encryption_key();
+    let cipher = Aes256Gcm::new(&key);
+    let nonce = Aes256Gcm::generate_nonce(OsRng);
+    let ciphertext = cipher.encrypt(&nonce, content)
+        .expect("AES-GCM encryption should not fail with valid inputs");
+    let mut result = nonce.to_vec();
+    result.extend_from_slice(&ciphertext);
+    result
+}
+
+/// Decrypt file content that was encrypted with encrypt_file_content.
+/// Input format: nonce (12 bytes) || ciphertext
+fn decrypt_file_content(encrypted: &[u8]) -> Result<Vec<u8>, &'static str> {
+    if encrypted.len() < 12 + 16 { // nonce + minimum auth tag
+        return Err("encrypted data too short");
+    }
+    let key = get_file_encryption_key();
+    let cipher = Aes256Gcm::new(&key);
+    let nonce = Nonce::from_slice(&encrypted[..12]);
+    let ciphertext = &encrypted[12..];
+    cipher.decrypt(nonce, ciphertext).map_err(|_| "decryption failed")
 }
 
 /// Compute BLAKE3 hash of file content for integrity verification.
