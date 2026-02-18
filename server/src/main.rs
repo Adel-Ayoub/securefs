@@ -41,7 +41,7 @@ async fn main() -> Result<(), String> {
 
     // NOTE: Default env fallbacks are for local/dev usage; production
     // deployments should provide explicit values.
-    let db_pass = env::var("DB_PASS").unwrap_or_else(|_| "TEMP".to_string());
+    let db_pass = dao::get_db_pass();
     let db_host = env::var("DB_HOST").unwrap_or_else(|_| "localhost".to_string());
     let db_name = env::var("DB_NAME").unwrap_or_else(|_| "db".to_string());
     let db_user = env::var("DB_USER").unwrap_or_else(|_| "USER".to_string());
@@ -1459,7 +1459,7 @@ fn is_valid_password(pass: &str) -> bool {
 /// Derive a key for file-at-rest encryption using HKDF.
 /// Key is derived from DB_PASS to ensure persistence across server restarts.
 fn get_file_encryption_key() -> Key<Aes256Gcm> {
-    let db_pass = env::var("DB_PASS").unwrap_or_else(|_| "TEMP".to_string());
+    let db_pass = dao::get_db_pass();
     let hkdf = Hkdf::<Sha256>::new(None, db_pass.as_bytes());
     let mut okm = [0u8; 32];
     hkdf.expand(b"securefs-file-encryption-key-v1", &mut okm)

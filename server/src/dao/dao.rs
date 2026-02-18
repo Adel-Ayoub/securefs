@@ -5,6 +5,24 @@
 //! thin here so the server loop can stay focused on protocol flow.
 
 use std::{env, sync::Arc};
+use std::sync::Once;
+
+static WARN_DEFAULT_PASS: Once = Once::new();
+
+/// Get database encryption password from environment.
+/// Warns loudly if using default (insecure for production).
+pub fn get_db_pass() -> String {
+    match env::var("DB_PASS") {
+        Ok(pass) => pass,
+        Err(_) => {
+            WARN_DEFAULT_PASS.call_once(|| {
+                eprintln!("[SECURITY WARNING] DB_PASS not set, using insecure default!");
+                eprintln!("[SECURITY WARNING] Set DB_PASS environment variable for production.");
+            });
+            "TEMP".to_string()
+        }
+    }
+}
 use tokio::sync::Mutex;
 use tokio_postgres::Client;
 use argon2::{
@@ -62,7 +80,7 @@ pub async fn auth_user(client: Arc<Mutex<Client>>, user_name: String, pass: Stri
 /// Create a new user row and return the decrypted symmetric key for the caller.
 pub async fn create_user(client: Arc<Mutex<Client>>, user_name: String, pass: String, group: Option<String>, is_admin: bool) -> Result<Key<Aes256Gcm>, String>{
     // NOTE: DB_PASS default is a convenience for local dev only; deployments should set it.
-    let db_pass = env::var("DB_PASS").unwrap_or("TEMP".to_string());
+    let db_pass = get_db_pass();
     let salt = match salt_pass(pass){
         Ok(salt) => salt,
         Err(_) => return Err(format!("couldn't hash user pass while creating user!")),
@@ -92,7 +110,7 @@ pub async fn create_group(client: Arc<Mutex<Client>>, group_name: String) -> Res
 
 /// Persist a file or directory node.
 pub async fn add_file(client: Arc<Mutex<Client>>, file: FNode) -> Result<String, String> {
-    let db_pass = env::var("DB_PASS").unwrap_or("TEMP".to_string());
+    let db_pass = get_db_pass();
     let e = client.lock().await.execute("INSERT INTO
     fnode (name, path, owner, hash, parent, dir, u, g, o, children, encrypted_name)
     VALUES (
@@ -116,7 +134,7 @@ pub async fn add_file(client: Arc<Mutex<Client>>, file: FNode) -> Result<String,
 
 /// Update the stored hash for a file at `path`.
 pub async fn update_hash(client: Arc<Mutex<Client>>, path: String, _file_name: String, hash: String) -> Result<String, String>{
-    let db_pass = env::var("DB_PASS").unwrap_or("TEMP".to_string());
+    let db_pass = get_db_pass();
     let e = client.lock().await.execute("UPDATE fnode SET hash = $1 WHERE pgp_sym_decrypt(path ::bytea, $3 ::text)=$2",
     &[&hash, &path, &db_pass]).await;
     match e {
@@ -127,7 +145,7 @@ pub async fn update_hash(client: Arc<Mutex<Client>>, path: String, _file_name: S
 
 /// Append a child entry to the parent's `children` array.
 pub async fn add_file_to_parent(client: Arc<Mutex<Client>>, parent_path: String, new_f_node_name: String) -> Result<(), String>{
-    let db_pass = env::var("DB_PASS").unwrap_or("TEMP".to_string());
+    let db_pass = get_db_pass();
     let e = client.lock().await.execute("UPDATE fnode SET children =
         ARRAY_APPEND(children,
             pgp_sym_encrypt($1 ::text, $3 ::text)::text
@@ -142,7 +160,7 @@ pub async fn add_file_to_parent(client: Arc<Mutex<Client>>, parent_path: String,
 
 /// Remove a child entry from the parent's `children` array.
 pub async fn remove_file_from_parent(client: Arc<Mutex<Client>>, parent_path: String, f_node_name: String) -> Result<(), String>{
-    let db_pass = env::var("DB_PASS").unwrap_or("TEMP".to_string());
+    let db_pass = get_db_pass();
     let e = client.lock().await.execute("UPDATE fnode
         SET children =
             (SELECT array_agg(pgp_sym_encrypt(child1::text, $3::text)) FROM unnest
@@ -158,7 +176,7 @@ pub async fn remove_file_from_parent(client: Arc<Mutex<Client>>, parent_path: St
 
 /// Fetch a decrypted `FNode` by path.
 pub async fn get_f_node(client: Arc<Mutex<Client>>, path: String) -> Result<Option<FNode>, String> {
-    let db_pass = env::var("DB_PASS").unwrap_or("TEMP".to_string());
+    let db_pass = get_db_pass();
     let e = client.lock().await.query_opt("SELECT
         id,
         pgp_sym_decrypt(name ::bytea, $2 ::text) AS name,
@@ -203,7 +221,7 @@ pub async fn get_f_node(client: Arc<Mutex<Client>>, path: String) -> Result<Opti
 
 /// Update the numeric permissions on a file or directory.
 pub async fn change_file_perms(client: Arc<Mutex<Client>>, file_path: String, u: i16, g: i16, o: i16) -> Result<(), String>{
-    let db_pass = env::var("DB_PASS").unwrap_or("TEMP".to_string());
+    let db_pass = get_db_pass();
     let e = client.lock().await.execute("
         UPDATE fnode SET
             u=pgp_sym_encrypt($2 ::text, $5 ::text),
@@ -219,7 +237,7 @@ pub async fn change_file_perms(client: Arc<Mutex<Client>>, file_path: String, u:
 
 /// Rewrite stored paths for a subtree, replacing prefixes in bulk.
 pub async fn update_path(client: Arc<Mutex<Client>>, file_path: String, new_file_path: String) -> Result<(), String>{
-    let db_pass = env::var("DB_PASS").unwrap_or("TEMP".to_string());
+    let db_pass = get_db_pass();
     let e = client.lock().await.execute("UPDATE fnode SET path =
         pgp_sym_encrypt(
             regexp_replace(
@@ -237,7 +255,7 @@ pub async fn update_path(client: Arc<Mutex<Client>>, file_path: String, new_file
 
 /// Delete every `fnode` whose path matches the provided prefix.
 pub async fn delete_path(client: Arc<Mutex<Client>>, file_path: String) -> Result<(), String>{
-    let db_pass = env::var("DB_PASS").unwrap_or("TEMP".to_string());
+    let db_pass = get_db_pass();
     let e = client.lock().await.execute("
         DELETE FROM fnode WHERE pgp_sym_decrypt(path ::bytea, $2 ::text) ~ $1",
         &[&format!("^{}", file_path), &db_pass]
@@ -250,7 +268,7 @@ pub async fn delete_path(client: Arc<Mutex<Client>>, file_path: String) -> Resul
 
 /// Update only the display name after a path rename has occurred.
 pub async fn update_fnode_name_if_path_is_already_updated(client: Arc<Mutex<Client>>, path: String, new_name: String) -> Result<(), String>{
-    let db_pass = env::var("DB_PASS").unwrap_or("TEMP".to_string());
+    let db_pass = get_db_pass();
     let e = client.lock().await.execute("UPDATE fnode SET name =
         pgp_sym_encrypt($2 ::text, $3 ::text)
         WHERE pgp_sym_decrypt(path::bytea, $3::text) = $1",
@@ -263,7 +281,7 @@ pub async fn update_fnode_name_if_path_is_already_updated(client: Arc<Mutex<Clie
 
 /// Update the encrypted on-disk name for a node.
 pub async fn update_fnode_enc_name(client: Arc<Mutex<Client>>, path: String, new_enc_name: String) -> Result<(), String>{
-    let db_pass = env::var("DB_PASS").unwrap_or("TEMP".to_string());
+    let db_pass = get_db_pass();
     let e = client.lock().await.execute("UPDATE fnode SET encrypted_name = $2 WHERE pgp_sym_decrypt(path ::bytea, $3 ::text) = $1",
     &[&path, &new_enc_name, &db_pass]).await;
     match e {
@@ -274,7 +292,7 @@ pub async fn update_fnode_enc_name(client: Arc<Mutex<Client>>, path: String, new
 
 /// Fetch a user record; decrypt the key with `DB_PASS` unless the user is `admin`.
 pub async fn get_user(client: Arc<Mutex<Client>>, user_name: String) -> Result<Option<User>, String> {
-    let db_pass = env::var("DB_PASS").unwrap_or("TEMP".to_string());
+    let db_pass = get_db_pass();
     let e = if user_name == "admin" {
         client.lock().await.query_opt("SELECT id, user_name, group_name, pgp_sym_decrypt(key ::bytea, 'DOES_NOT_MATTER' ::text) AS key, salt, is_admin FROM users WHERE user_name = $1",
      &[&user_name]).await
@@ -342,7 +360,7 @@ pub async fn is_admin(client: Arc<Mutex<Client>>, user_name: String) -> Result<b
 
 /// Change the owner of a file or directory.
 pub async fn change_owner(client: Arc<Mutex<Client>>, file_path: String, new_owner: String) -> Result<(), String> {
-    let db_pass = env::var("DB_PASS").unwrap_or("TEMP".to_string());
+    let db_pass = get_db_pass();
     let e = client.lock().await.execute(
         "UPDATE fnode SET owner = pgp_sym_encrypt($2 ::text, $3 ::text) WHERE pgp_sym_decrypt(path ::bytea, $3 ::text) = $1",
         &[&file_path, &new_owner, &db_pass]
