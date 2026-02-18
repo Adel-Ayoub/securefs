@@ -340,15 +340,6 @@ pub async fn is_admin(client: Arc<Mutex<Client>>, user_name: String) -> Result<b
     }
 }
 
-/// Check if a file or directory exists at the given path.
-pub async fn path_exists(client: Arc<Mutex<Client>>, path: String) -> Result<bool, String> {
-    match get_f_node(client, path).await {
-        Ok(Some(_)) => Ok(true),
-        Ok(None) => Ok(false),
-        Err(e) => Err(e),
-    }
-}
-
 /// Change the owner of a file or directory.
 pub async fn change_owner(client: Arc<Mutex<Client>>, file_path: String, new_owner: String) -> Result<(), String> {
     let db_pass = env::var("DB_PASS").unwrap_or("TEMP".to_string());
