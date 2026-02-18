@@ -134,7 +134,12 @@ async fn connect_and_run(url: &str, rl: &mut DefaultEditor, verbose: bool, quiet
         _ => return Err("unexpected response to key exchange".into()),
     };
     
-    let shared_secret_key: Option<Key<Aes256Gcm>> = Some(Key::<Aes256Gcm>::from(_shared_secret.as_bytes().clone()));
+    // Derive session key using HKDF-SHA256 (must match server derivation)
+    let hkdf = Hkdf::<Sha256>::new(None, _shared_secret.as_bytes());
+    let mut okm = [0u8; 32];
+    hkdf.expand(b"securefs-session-key-v1", &mut okm)
+        .expect("32 bytes is valid output length for HKDF-SHA256");
+    let shared_secret_key: Option<Key<Aes256Gcm>> = Some(*Key::<Aes256Gcm>::from_slice(&okm));
 
     if !quiet {
         // Use environment variable for server address in prompt or default
@@ -468,6 +473,8 @@ fn command_parser(input: String) -> Result<AppMessage, String> {
 
 use aes_gcm::{Aes256Gcm, Key, Nonce, KeyInit};
 use aes_gcm::aead::{Aead, AeadCore};
+use hkdf::Hkdf;
+use sha2::Sha256;
 
 /// Encrypt and send message
 async fn send(ws: &mut tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>, msg: &AppMessage, key: Option<&Key<Aes256Gcm>>) -> Result<(), String> {
