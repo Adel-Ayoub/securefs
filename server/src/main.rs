@@ -32,6 +32,18 @@ use std::collections::HashSet;
 
 mod dao;
 
+/// Audit log for security-relevant events.
+/// Format: [AUDIT] timestamp | event | user | resource | result
+macro_rules! audit {
+    ($event:expr, $user:expr, $resource:expr, $result:expr) => {
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        info!("[AUDIT] {} | {} | {} | {} | {}",
+              timestamp, $event, $user, $resource, $result);
+    };
+}
 
 #[tokio::main]
 /// Launch the WebSocket server and connect to Postgres.
@@ -180,7 +192,7 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                         .unwrap_or(false);
                     if !is_ok {
                         failed_login_attempts += 1;
-                        warn!("Failed login attempt {} for user '{}'", failed_login_attempts, user_name);
+                        audit!("LOGIN_FAIL", &user_name, "-", "invalid credentials");
                         AppMessage {
                             cmd: Cmd::Failure,
                             data: vec!["failed to login!".to_string(), format!("{} attempts remaining", MAX_LOGIN_ATTEMPTS - failed_login_attempts)],
@@ -200,7 +212,7 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                         let user_opt = dao::get_user(pg_client.clone(), user_name.clone()).await.ok().flatten();
                         let is_admin = user_opt.as_ref().map(|u| u.is_admin).unwrap_or(false);
                         current_user_group = user_opt.and_then(|u| u.group_name);
-                        info!("User {} logged in, group: {:?}", user_name, current_user_group);
+                        audit!("LOGIN_OK", &user_name, &current_path, "success");
                         AppMessage {
                             cmd: Cmd::Login,
                             data: vec![user_name, is_admin.to_string()],
@@ -772,7 +784,10 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                                                     match decrypt_file_content(&encrypted) {
                                                         Ok(decrypted) => {
                                                             match String::from_utf8(decrypted) {
-                                                                Ok(content) => AppMessage { cmd: Cmd::Cat, data: vec![content] },
+                                                                Ok(content) => {
+                                                                    audit!("FILE_READ", current_user.as_deref().unwrap_or("-"), &file_path, "ok");
+                                                                    AppMessage { cmd: Cmd::Cat, data: vec![content] }
+                                                                }
                                                                 Err(_) => AppMessage { cmd: Cmd::Failure, data: vec!["invalid utf-8".to_string()] },
                                                             }
                                                         }
@@ -827,6 +842,7 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                                                         let hash = hash_content(content.as_bytes());
                                                         let node_path = format!("{}/{}", current_path, file_name);
                                                         let _ = dao::update_hash(pg_client.clone(), node_path, file_name.clone(), hash).await;
+                                                        audit!("FILE_WRITE", current_user.as_deref().unwrap_or("-"), &file_path, "ok");
                                                         AppMessage { cmd: Cmd::Echo, data: vec!["ok".to_string()] }
                                                     }
                                                     Err(_) => AppMessage { cmd: Cmd::Failure, data: vec!["echo failed".to_string()] },
@@ -869,9 +885,13 @@ async fn handle_connection(stream: TcpStream, pg_client: Arc<Mutex<tokio_postgre
                         } else {
                             match dao::get_f_node(pg_client.clone(), path.clone()).await {
                                 Ok(Some(node)) if is_owner(&node, current_user.as_ref()) => {
+                                    let path_for_log = path.clone();
                                     let res = dao::change_file_perms(pg_client.clone(), path, ugo[0], ugo[1], ugo[2]).await;
                                     match res {
-                                        Ok(_) => AppMessage { cmd: Cmd::Chmod, data: vec!["ok".to_string()] },
+                                        Ok(_) => {
+                                            audit!("CHMOD", current_user.as_deref().unwrap_or("-"), &path_for_log, &mode);
+                                            AppMessage { cmd: Cmd::Chmod, data: vec!["ok".to_string()] }
+                                        }
                                         Err(_) => AppMessage { cmd: Cmd::Failure, data: vec!["chmod failed".to_string()] },
                                     }
                                 }
