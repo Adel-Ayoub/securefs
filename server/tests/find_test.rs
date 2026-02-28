@@ -1,9 +1,8 @@
 use std::sync::Arc;
 use securefs_server::dao;
-use securefs_model::protocol::{FNode, AppMessage, Cmd};
+use securefs_model::protocol::FNode;
 use tokio::sync::Mutex;
 use tokio_postgres::NoTls;
-use uuid::Uuid;
 
 #[tokio::test]
 async fn test_find_command() {
@@ -39,7 +38,7 @@ async fn test_find_command() {
     let dir1 = FNode {
         id: -1, name: "dir1".into(), path: "/home/dir1".into(), owner: "admin".into(),
         hash: "".into(), parent: "/home".into(), dir: true, u: 7, g: 7, o: 7, children: vec![], encrypted_name: "dir1".into(),
-        size: 0, created_at: 0, modified_at: 0
+        size: 0, created_at: 0, modified_at: 0, file_group: None
     };
     dao::add_file(pg_client.clone(), dir1).await.expect("create dir1");
     dao::add_file_to_parent(pg_client.clone(), "/home".into(), "dir1".into()).await.expect("link dir1");
@@ -47,7 +46,7 @@ async fn test_find_command() {
     let match_target = FNode {
         id: -1, name: "match_target.txt".into(), path: "/home/dir1/match_target.txt".into(), owner: "admin".into(),
         hash: "".into(), parent: "/home/dir1".into(), dir: false, u: 7, g: 7, o: 7, children: vec![], encrypted_name: "match_target.txt".into(),
-        size: 0, created_at: 0, modified_at: 0
+        size: 0, created_at: 0, modified_at: 0, file_group: None
     };
     dao::add_file(pg_client.clone(), match_target).await.expect("create match_target");
     dao::add_file_to_parent(pg_client.clone(), "/home/dir1".into(), "match_target.txt".into()).await.expect("link match_target");
@@ -55,7 +54,7 @@ async fn test_find_command() {
     let other = FNode {
         id: -1, name: "other.txt".into(), path: "/home/dir1/other.txt".into(), owner: "admin".into(),
         hash: "".into(), parent: "/home/dir1".into(), dir: false, u: 7, g: 7, o: 7, children: vec![], encrypted_name: "other.txt".into(),
-        size: 0, created_at: 0, modified_at: 0
+        size: 0, created_at: 0, modified_at: 0, file_group: None
     };
     dao::add_file(pg_client.clone(), other).await.expect("create other");
     dao::add_file_to_parent(pg_client.clone(), "/home/dir1".into(), "other.txt".into()).await.expect("link other");

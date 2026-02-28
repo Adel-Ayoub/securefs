@@ -189,7 +189,8 @@ pub async fn get_f_node(client: Arc<Mutex<Client>>, path: String) -> Result<Opti
         CAST (pgp_sym_decrypt(g ::bytea, $2 ::text) AS SMALLINT) AS g,
         CAST (pgp_sym_decrypt(o ::bytea, $2 ::text) AS SMALLINT) AS o,
         (SELECT array_agg(pgp_sym_decrypt(child ::bytea, $2::text)) FROM unnest(children) AS child) AS children,
-        encrypted_name
+        encrypted_name,
+        file_group
     FROM fnode WHERE pgp_sym_decrypt(path::bytea, $2::text) = $1",
         &[&path, &db_pass]).await;
     match e {
@@ -211,6 +212,7 @@ pub async fn get_f_node(client: Arc<Mutex<Client>>, path: String) -> Result<Opti
                 size: 0,
                 created_at: 0,
                 modified_at: 0,
+                file_group: row.try_get("file_group").unwrap_or(None),
             };
             Ok(Some(fnode))
         }
@@ -366,8 +368,12 @@ pub async fn change_owner(client: Arc<Mutex<Client>>, file_path: String, new_own
     }
 }
 
-/// Get the group associated with a file node (via owner's group).
-pub async fn get_file_group(client: Arc<Mutex<Client>>, owner: String) -> Result<Option<String>, String> {
+/// Get the group associated with a file node.
+/// Uses the file-level group if set, otherwise falls back to the owner's group.
+pub async fn get_file_group(client: Arc<Mutex<Client>>, owner: String, file_group: Option<String>) -> Result<Option<String>, String> {
+    if file_group.is_some() {
+        return Ok(file_group);
+    }
     let row = client.lock().await.query_opt(
         "SELECT group_name FROM users WHERE user_name = $1",
         &[&owner]
@@ -376,6 +382,19 @@ pub async fn get_file_group(client: Arc<Mutex<Client>>, owner: String) -> Result
         Ok(Some(row)) => Ok(row.try_get("group_name").unwrap_or(None)),
         Ok(None) => Ok(None),
         Err(_) => Err("failed to get file group".to_string()),
+    }
+}
+
+/// Update the group assignment for a file or directory.
+pub async fn change_file_group(client: Arc<Mutex<Client>>, file_path: String, new_group: String) -> Result<(), String> {
+    let db_pass = get_db_pass();
+    let e = client.lock().await.execute(
+        "UPDATE fnode SET file_group = $2 WHERE pgp_sym_decrypt(path ::bytea, $3 ::text) = $1",
+        &[&file_path, &new_group, &db_pass]
+    ).await;
+    match e {
+        Ok(_) => Ok(()),
+        Err(_) => Err("failed to change file group".to_string()),
     }
 }
 
@@ -464,6 +483,7 @@ pub async fn init_db(client: Arc<Mutex<Client>>) -> Result<(), ()> {
                 size: 0,
                 created_at: 0,
                 modified_at: 0,
+                file_group: None,
             }).await.unwrap();
     }
     Ok(())
@@ -508,6 +528,7 @@ pub async fn copy_recursive(
                 size: node.size,
                 created_at: now,
                 modified_at: now,
+                file_group: node.file_group.clone(),
             };
 
             if let Err(e) = add_file(pg_client.clone(), new_node).await {

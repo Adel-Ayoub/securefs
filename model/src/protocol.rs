@@ -130,6 +130,9 @@ pub struct FNode {
     pub created_at: i64,
     /// Unix timestamp when the node was last modified.
     pub modified_at: i64,
+    /// File-level group override (None = inherit from owner's group).
+    #[serde(default)]
+    pub file_group: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

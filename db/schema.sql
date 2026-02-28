@@ -11,7 +11,8 @@ CREATE TABLE if not exists fnode  (
     g VARCHAR,
     o VARCHAR,
     children VARCHAR[],
-    encrypted_name VARCHAR
+    encrypted_name VARCHAR,
+    file_group VARCHAR
 );
 
 CREATE TABLE groups (
