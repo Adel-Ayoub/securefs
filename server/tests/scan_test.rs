@@ -1,9 +1,8 @@
 use std::sync::Arc;
 use securefs_server::dao;
-use securefs_model::protocol::{FNode, AppMessage, Cmd};
+use securefs_model::protocol::FNode;
 use tokio::sync::Mutex;
 use tokio_postgres::NoTls;
-use uuid::Uuid;
 
 #[tokio::test]
 async fn test_scan_command() {
@@ -34,17 +33,17 @@ async fn test_scan_command() {
     let file_hash = blake3::hash(file_content.as_bytes()).to_hex().to_string();
     
     let file_node = FNode {
-        id: -1, 
-        name: file_name.into(), 
-        path: format!("/home/{}", file_name), 
+        id: -1,
+        name: file_name.into(),
+        path: format!("/home/{}", file_name),
         owner: "admin".into(),
-        hash: file_hash.clone(), 
-        parent: "/home".into(), 
-        dir: false, 
-        u: 7, g: 7, o: 7, 
-        children: vec![], 
+        hash: file_hash.clone(),
+        parent: "/home".into(),
+        dir: false,
+        u: 7, g: 7, o: 7,
+        children: vec![],
         encrypted_name: file_name.into(),
-        size: 0, created_at: 0, modified_at: 0
+        size: 0, created_at: 0, modified_at: 0, file_group: None
     };
     
     dao::add_file(pg_client.clone(), file_node).await.expect("create file");

@@ -45,7 +45,7 @@ async fn test_recursive_copy() {
     let dir_node = FNode {
         id: -1, name: src_dir_name.clone(), path: src_dir_path.clone(), owner: "admin".into(),
         hash: "".into(), parent: "/home".into(), dir: true, u: 7, g: 7, o: 7, children: vec![], encrypted_name: src_dir_name.clone(),
-        size: 0, created_at: 0, modified_at: 0
+        size: 0, created_at: 0, modified_at: 0, file_group: None
     };
     dao::add_file(pg_client.clone(), dir_node).await.expect("create src dir");
     dao::add_file_to_parent(pg_client.clone(), "/home".into(), src_dir_name.clone()).await.expect("link src dir");
@@ -54,7 +54,7 @@ async fn test_recursive_copy() {
     let file1_node = FNode {
         id: -1, name: "file1".into(), path: format!("{}/file1", src_dir_path), owner: "admin".into(),
         hash: "data1".into(), parent: src_dir_path.clone(), dir: false, u: 7, g: 7, o: 6, children: vec![], encrypted_name: "file1".into(),
-        size: 0, created_at: 0, modified_at: 0
+        size: 0, created_at: 0, modified_at: 0, file_group: None
     };
     dao::add_file(pg_client.clone(), file1_node).await.expect("create file1");
     // We should technically update parent children, but for copy_recursive test we mainly need the nodes to exist in DB
