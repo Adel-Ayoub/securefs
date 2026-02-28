@@ -770,7 +770,7 @@ where
                 } else {
                     let target = incoming.data.get(0).cloned().unwrap_or_default();
                     let new_path = resolve_path(&current_path, &target);
-                    if !new_path.starts_with("/home") {
+                    if !is_safe_path(&new_path) {
                         AppMessage {
                             cmd: Cmd::Failure,
                             data: vec!["path not allowed".to_string()],
@@ -998,7 +998,7 @@ where
                 } else {
                     let target = incoming.data.get(0).cloned().unwrap_or_default();
                     let mode = incoming.data.get(1).cloned().unwrap_or_default();
-                    if target.is_empty() || mode.len() != 3 {
+                    if !is_valid_name(&target) || mode.len() != 3 {
                         AppMessage {
                             cmd: Cmd::Failure,
                             data: vec!["invalid args".to_string()],
@@ -1455,6 +1455,19 @@ fn normalize_path(path: String) -> String {
     }
 }
 
+/// Check that a resolved path is safely within /home and contains no dangerous bytes.
+fn is_safe_path(path: &str) -> bool {
+    // Must be under /home (not just prefix — "/homeevil" is not valid)
+    let under_home = path == "/home" || path.starts_with("/home/");
+    // No null bytes
+    let no_null = !path.contains('\0');
+    // Depth limit to prevent abuse
+    let depth = path.split('/').filter(|s| !s.is_empty()).count();
+    let sane_depth = depth <= 64;
+
+    under_home && no_null && sane_depth
+}
+
 /// Format ls entry with owner, group, permissions, and name.
 fn format_ls_entry(node: &FNode) -> String {
     let suffix = if node.dir { "/" } else { "" };
@@ -1805,6 +1818,56 @@ mod tests {
         let server_shared = server_secret.diffie_hellman(&client_public);
 
         assert_eq!(client_shared.as_bytes(), server_shared.as_bytes());
+    }
+
+    #[test]
+    fn test_is_safe_path() {
+        // Valid paths
+        assert!(is_safe_path("/home"));
+        assert!(is_safe_path("/home/user"));
+        assert!(is_safe_path("/home/user/docs"));
+        assert!(is_safe_path("/home/user/a/b/c"));
+
+        // Prefix attack: "/homeevil" must be rejected
+        assert!(!is_safe_path("/homeevil"));
+        assert!(!is_safe_path("/homedir"));
+
+        // Outside /home
+        assert!(!is_safe_path("/"));
+        assert!(!is_safe_path("/etc/passwd"));
+        assert!(!is_safe_path("/root"));
+        assert!(!is_safe_path("/tmp"));
+        assert!(!is_safe_path(""));
+
+        // Null byte injection
+        assert!(!is_safe_path("/home/user\0"));
+        assert!(!is_safe_path("/home/\0evil"));
+
+        // Depth limit (64 segments max)
+        let deep_ok = format!("/home/{}", (0..62).map(|i| format!("d{}", i)).collect::<Vec<_>>().join("/"));
+        assert!(is_safe_path(&deep_ok));
+        let deep_bad = format!("/home/{}", (0..64).map(|i| format!("d{}", i)).collect::<Vec<_>>().join("/"));
+        assert!(!is_safe_path(&deep_bad));
+    }
+
+    #[test]
+    fn test_path_traversal_attacks() {
+        // normalize_path + is_safe_path together prevent traversal
+        let attack1 = normalize_path("/home/user/../../etc/passwd".into());
+        assert!(!is_safe_path(&attack1)); // resolves to /etc/passwd
+
+        let attack2 = normalize_path("/home/../root".into());
+        assert!(!is_safe_path(&attack2)); // resolves to /root
+
+        let attack3 = normalize_path("/home/user/../../../".into());
+        assert!(!is_safe_path(&attack3)); // resolves to /
+
+        // These should remain safe after normalization
+        let safe1 = normalize_path("/home/user/../user2".into());
+        assert!(is_safe_path(&safe1)); // resolves to /home/user2
+
+        let safe2 = normalize_path("/home/user/./docs".into());
+        assert!(is_safe_path(&safe2)); // resolves to /home/user/docs
     }
 }
 
