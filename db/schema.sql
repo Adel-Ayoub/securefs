@@ -33,15 +33,15 @@ INSERT INTO groups (users, g_name) VALUES (ARRAY[]::VARCHAR[], 'admin_group');
 INSERT INTO users (id, user_name, key, salt, is_admin) VALUES (
     0,
     'admin',
-    pgp_sym_encrypt('[200,87,79,201,112,11,113,60,116,203,21,239,45,147,162,69,17,97,14,36,219,66,33,153,97,215,153,50,84,47,97,184]', 'DOES_NOT_MATTER'),
+    pgp_sym_encrypt('[200,87,79,201,112,11,113,60,116,203,21,239,45,147,162,69,17,97,14,36,219,66,33,153,97,215,153,50,84,47,97,184]', 'TEMP'),
     '$argon2id$v=19$m=19456,t=2,p=1$2x+D890DlNldiUEFWj6osA$xCXFoO12ImKyfo9B9VNcMx+fJcexMcvQ7Z4f7BmF5do',
     true
 );
 
 INSERT INTO fnode (name, path, owner, hash, parent, dir, u, g, o, children, encrypted_name) VALUES (
-    pgp_sym_encrypt('home', 'DOES_NOT_MATTER'),
-    pgp_sym_encrypt('/home', 'DOES_NOT_MATTER'),
-    pgp_sym_encrypt('admin', 'DOES_NOT_MATTER'),
+    pgp_sym_encrypt('home', 'TEMP'),
+    pgp_sym_encrypt('/home', 'TEMP'),
+    pgp_sym_encrypt('admin', 'TEMP'),
     '',
     '/',
     true,

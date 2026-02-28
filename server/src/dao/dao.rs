@@ -290,16 +290,11 @@ pub async fn update_fnode_enc_name(client: Arc<Mutex<Client>>, path: String, new
     }
 }
 
-/// Fetch a user record; decrypt the key with `DB_PASS` unless the user is `admin`.
+/// Fetch a user record; decrypt the key with `DB_PASS`.
 pub async fn get_user(client: Arc<Mutex<Client>>, user_name: String) -> Result<Option<User>, String> {
     let db_pass = get_db_pass();
-    let e = if user_name == "admin" {
-        client.lock().await.query_opt("SELECT id, user_name, group_name, pgp_sym_decrypt(key ::bytea, 'DOES_NOT_MATTER' ::text) AS key, salt, is_admin FROM users WHERE user_name = $1",
-     &[&user_name]).await
-    } else {
-        client.lock().await.query_opt("SELECT id, user_name, group_name, pgp_sym_decrypt(key ::bytea, $2 ::text) AS key, salt, is_admin FROM users WHERE user_name = $1",
-     &[&user_name, &db_pass]).await
-    };
+    let e = client.lock().await.query_opt("SELECT id, user_name, group_name, pgp_sym_decrypt(key ::bytea, $2 ::text) AS key, salt, is_admin FROM users WHERE user_name = $1",
+     &[&user_name, &db_pass]).await;
     match e {
         Ok(Some(row)) => Ok(Some(User{
             id: row.get("id"),
