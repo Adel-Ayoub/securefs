@@ -119,17 +119,21 @@ async fn main() -> Result<(), String> {
         .await
         .map_err(|e| format!("bind failed: {}", e))?;
 
-    // Optional TLS configuration
+    // TLS configuration — required unless ALLOW_INSECURE=1 is set
+    let allow_insecure = env::var("ALLOW_INSECURE").unwrap_or_default() == "1";
     let tls_acceptor: Option<TlsAcceptor> = match (env::var("TLS_CERT"), env::var("TLS_KEY")) {
         (Ok(cert_path), Ok(key_path)) => {
             let acceptor = load_tls_config(&cert_path, &key_path)?;
             info!("TLS enabled (wss://)");
             Some(acceptor)
         }
-        _ => {
-            warn!("[SECURITY WARNING] TLS not configured, using unencrypted WebSocket (ws://)");
-            warn!("[SECURITY WARNING] Set TLS_CERT and TLS_KEY for production use");
+        _ if allow_insecure => {
+            warn!("[SECURITY WARNING] TLS disabled via ALLOW_INSECURE=1");
+            warn!("[SECURITY WARNING] Do NOT use this in production");
             None
+        }
+        _ => {
+            return Err("TLS_CERT and TLS_KEY are required. Set ALLOW_INSECURE=1 to bypass for development.".into());
         }
     };
 
