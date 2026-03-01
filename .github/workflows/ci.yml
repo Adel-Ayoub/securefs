@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_DB: securefs
+          POSTGRES_USER: securefs_user
+          POSTGRES_PASSWORD: securefs_password
+        ports:
+          - 5431:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Apply database schema
+        run: psql -h localhost -p 5431 -U securefs_user -d securefs -f db/schema.sql
+        env:
+          PGPASSWORD: securefs_password
+
+      - name: cargo check
+        run: cargo check --workspace
+
+      - name: cargo test
+        run: cargo test --workspace
+        env:
+          DB_PASS: securefs
+
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: cargo fmt
+        run: cargo fmt --all -- --check
