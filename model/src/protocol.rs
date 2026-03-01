@@ -60,6 +60,18 @@ pub enum Cmd {
     AddUserToGroup,
     /// Remove a user from a group (admin only).
     RemoveUserFromGroup,
+    /// Show current user and group.
+    Whoami,
+    /// Display recursive directory tree.
+    Tree,
+    /// Show detailed file/directory metadata.
+    Stat,
+    /// Show disk usage for current directory.
+    Du,
+    /// Display first N lines of a file.
+    Head,
+    /// Display last N lines of a file.
+    Tail,
     #[default]
     /// Placeholder for unknown commands.
     Invalid,

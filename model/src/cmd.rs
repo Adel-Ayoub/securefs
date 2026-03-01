@@ -39,6 +39,12 @@ impl MapStr for Cmd {
             "key_exchange_response" => Ok(Cmd::KeyExchangeResponse),
             "add_user_to_group" => Ok(Cmd::AddUserToGroup),
             "remove_user_from_group" => Ok(Cmd::RemoveUserFromGroup),
+            "whoami" => Ok(Cmd::Whoami),
+            "tree" => Ok(Cmd::Tree),
+            "stat" => Ok(Cmd::Stat),
+            "du" => Ok(Cmd::Du),
+            "head" => Ok(Cmd::Head),
+            "tail" => Ok(Cmd::Tail),
             _ => Err(()),
         }
     }
@@ -81,6 +87,12 @@ impl NumArgs for Cmd {
             "key_exchange_response" => Ok(2),
             "add_user_to_group" => Ok(3),
             "remove_user_from_group" => Ok(3),
+            "whoami" => Ok(1),
+            "tree" => Ok(1),
+            "stat" => Ok(2),
+            "du" => Ok(1),
+            "head" => Ok(usize::MAX),
+            "tail" => Ok(usize::MAX),
             _ => Err(()),
         }
     }
@@ -121,6 +133,12 @@ mod tests {
         assert!(Cmd::from_str("invalid_cmd".into()).is_err());
         assert!(Cmd::from_str("".into()).is_err());
         assert_eq!(Cmd::from_str("cp".into()).unwrap(), Cmd::Cp);
+        assert_eq!(Cmd::from_str("whoami".into()).unwrap(), Cmd::Whoami);
+        assert_eq!(Cmd::from_str("tree".into()).unwrap(), Cmd::Tree);
+        assert_eq!(Cmd::from_str("stat".into()).unwrap(), Cmd::Stat);
+        assert_eq!(Cmd::from_str("du".into()).unwrap(), Cmd::Du);
+        assert_eq!(Cmd::from_str("head".into()).unwrap(), Cmd::Head);
+        assert_eq!(Cmd::from_str("tail".into()).unwrap(), Cmd::Tail);
     }
 
     #[test]
@@ -132,5 +150,11 @@ mod tests {
         assert_eq!(Cmd::num_args("chmod".into()).unwrap(), 3);
         assert_eq!(Cmd::num_args("echo".into()).unwrap(), usize::MAX);
         assert!(Cmd::num_args("invalid".into()).is_err());
+        assert_eq!(Cmd::num_args("whoami".into()).unwrap(), 1);
+        assert_eq!(Cmd::num_args("tree".into()).unwrap(), 1);
+        assert_eq!(Cmd::num_args("stat".into()).unwrap(), 2);
+        assert_eq!(Cmd::num_args("du".into()).unwrap(), 1);
+        assert_eq!(Cmd::num_args("head".into()).unwrap(), usize::MAX);
+        assert_eq!(Cmd::num_args("tail".into()).unwrap(), usize::MAX);
     }
 }
