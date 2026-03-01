@@ -4,7 +4,10 @@
 //! commands to protocol messages.
 
 use std::env;
+use std::fs as stdfs;
+use std::io::Write as _;
 
+use base64::Engine;
 use colored::Colorize;
 use futures_util::{SinkExt, StreamExt};
 use rand_core::OsRng;
@@ -29,6 +32,7 @@ const COMMANDS: &[&str] = &[
     "chgrp",
     "cp",
     "delete",
+    "download",
     "du",
     "echo",
     "find",
@@ -51,6 +55,7 @@ const COMMANDS: &[&str] = &[
     "tail",
     "touch",
     "tree",
+    "upload",
     "whoami",
     "add_user_to_group",
     "remove_user_from_group",
@@ -268,7 +273,11 @@ async fn connect_and_run(
         );
         println!(
             "{}",
-            "          head, tail, grep, ln, new_user, new_group, lsusers, lsgroups".yellow()
+            "          head, tail, grep, ln, upload, download".yellow()
+        );
+        println!(
+            "{}",
+            "          new_user, new_group, lsusers, lsgroups".yellow()
         );
         println!(
             "{}",
@@ -795,6 +804,154 @@ async fn connect_and_run(
                         reply.data.first().unwrap_or(&"ln failed".into()).red()
                     ),
                     _ => println!("{}", "unexpected reply".red()),
+                }
+            }
+            Cmd::UploadStart => {
+                // upload <remote_name> — reads from stdin-like flow
+                // Client must have provided: upload <filename>
+                // We read the local file with same name from cwd
+                let file_name = app_message.data.first().cloned().unwrap_or_default();
+                let local_data = match stdfs::read(&file_name) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        println!("{}", format!("cannot read local file: {}", e).red());
+                        continue;
+                    }
+                };
+
+                // Send UploadStart
+                send(&mut ws_stream, &app_message, shared_secret_key.as_ref()).await?;
+                let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
+                if reply.cmd != Cmd::UploadStart {
+                    println!(
+                        "{}",
+                        reply
+                            .data
+                            .first()
+                            .unwrap_or(&"upload start failed".into())
+                            .red()
+                    );
+                    continue;
+                }
+
+                // Send chunks
+                let b64 = base64::engine::general_purpose::STANDARD;
+                let chunk_size = 64 * 1024;
+                let total_chunks = local_data.len().div_ceil(chunk_size);
+                for (i, chunk) in local_data.chunks(chunk_size).enumerate() {
+                    let chunk_msg = AppMessage {
+                        cmd: Cmd::UploadChunk,
+                        data: vec![b64.encode(chunk)],
+                    };
+                    send(&mut ws_stream, &chunk_msg, shared_secret_key.as_ref()).await?;
+                    let cr = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
+                    if cr.cmd != Cmd::UploadChunk {
+                        println!("{}", format!("chunk {} failed: {:?}", i, cr.data).red());
+                        break;
+                    }
+                    if !quiet {
+                        print!(
+                            "\r{}",
+                            format!("uploading {}/{}", i + 1, total_chunks).dimmed()
+                        );
+                        let _ = std::io::stdout().flush();
+                    }
+                }
+                if !quiet {
+                    println!();
+                }
+
+                // Send UploadEnd
+                let end_msg = AppMessage {
+                    cmd: Cmd::UploadEnd,
+                    data: vec![],
+                };
+                send(&mut ws_stream, &end_msg, shared_secret_key.as_ref()).await?;
+                let end_reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
+                match end_reply.cmd {
+                    Cmd::UploadEnd => {
+                        println!("{}", end_reply.data.first().unwrap_or(&"ok".into()).green())
+                    }
+                    Cmd::Failure => println!(
+                        "{}",
+                        end_reply
+                            .data
+                            .first()
+                            .unwrap_or(&"upload failed".into())
+                            .red()
+                    ),
+                    _ => println!("{}", "unexpected reply".red()),
+                }
+            }
+            Cmd::DownloadStart => {
+                let file_name = app_message.data.first().cloned().unwrap_or_default();
+
+                // Send DownloadStart
+                send(&mut ws_stream, &app_message, shared_secret_key.as_ref()).await?;
+                let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
+                if reply.cmd != Cmd::DownloadStart {
+                    println!(
+                        "{}",
+                        reply
+                            .data
+                            .first()
+                            .unwrap_or(&"download failed".into())
+                            .red()
+                    );
+                    continue;
+                }
+
+                let total_chunks: usize =
+                    reply.data.first().and_then(|s| s.parse().ok()).unwrap_or(0);
+                let total_bytes: usize =
+                    reply.data.get(1).and_then(|s| s.parse().ok()).unwrap_or(0);
+
+                // Fetch each chunk
+                let b64 = base64::engine::general_purpose::STANDARD;
+                let mut content = Vec::with_capacity(total_bytes);
+                for i in 0..total_chunks {
+                    let chunk_msg = AppMessage {
+                        cmd: Cmd::DownloadChunk,
+                        data: vec![i.to_string()],
+                    };
+                    send(&mut ws_stream, &chunk_msg, shared_secret_key.as_ref()).await?;
+                    let cr = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
+                    if cr.cmd != Cmd::DownloadChunk {
+                        println!("{}", format!("chunk {} failed: {:?}", i, cr.data).red());
+                        break;
+                    }
+                    if let Some(b64_data) = cr.data.get(1) {
+                        if let Ok(bytes) = b64.decode(b64_data) {
+                            content.extend_from_slice(&bytes);
+                        }
+                    }
+                    if !quiet {
+                        print!(
+                            "\r{}",
+                            format!("downloading {}/{}", i + 1, total_chunks).dimmed()
+                        );
+                        let _ = std::io::stdout().flush();
+                    }
+                }
+                if !quiet {
+                    println!();
+                }
+
+                // Send DownloadEnd
+                let end_msg = AppMessage {
+                    cmd: Cmd::DownloadEnd,
+                    data: vec![],
+                };
+                send(&mut ws_stream, &end_msg, shared_secret_key.as_ref()).await?;
+                let _ = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
+
+                // Write to local file
+                match stdfs::write(&file_name, &content) {
+                    Ok(_) => println!(
+                        "{}",
+                        format!("{} bytes saved to {}", content.len(), file_name).green()
+                    ),
+                    Err(e) => println!("{}", format!("write failed: {}", e).red()),
                 }
             }
             _ => {
