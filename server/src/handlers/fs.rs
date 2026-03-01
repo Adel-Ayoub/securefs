@@ -12,6 +12,29 @@ use crate::crypto::{decrypt_file_content, encrypt_file_content, hash_content};
 use crate::session::Session;
 use crate::util::*;
 
+// Helpers for reading and decrypting file content (shared by cat, head, tail)
+async fn read_file_content(file_path: &str) -> Result<String, AppMessage> {
+    let mut f = fs::File::open(file_path).await.map_err(|_| AppMessage {
+        cmd: Cmd::Failure,
+        data: vec!["file not found".into()],
+    })?;
+    let mut encrypted = Vec::new();
+    f.read_to_end(&mut encrypted)
+        .await
+        .map_err(|_| AppMessage {
+            cmd: Cmd::Failure,
+            data: vec!["read failed".into()],
+        })?;
+    let decrypted = decrypt_file_content(&encrypted).map_err(|e| AppMessage {
+        cmd: Cmd::Failure,
+        data: vec![e.to_string()],
+    })?;
+    String::from_utf8(decrypted).map_err(|_| AppMessage {
+        cmd: Cmd::Failure,
+        data: vec!["invalid utf-8".into()],
+    })
+}
+
 pub fn pwd(session: &Session) -> AppMessage {
     if !session.authenticated {
         return AppMessage {
@@ -811,6 +834,287 @@ pub async fn echo(data: Vec<String>, session: &Session, pool: &Pool) -> AppMessa
         _ => AppMessage {
             cmd: Cmd::Failure,
             data: vec!["no write permission".into()],
+        },
+    }
+}
+
+pub async fn tree(session: &Session, pool: &Pool) -> AppMessage {
+    if !session.authenticated {
+        return AppMessage {
+            cmd: Cmd::Failure,
+            data: vec!["not authenticated".into()],
+        };
+    }
+
+    match dao::get_subtree(pool, session.current_path.clone()).await {
+        Ok(mut nodes) => {
+            nodes.sort_by(|a, b| a.path.cmp(&b.path));
+            let base_depth = session
+                .current_path
+                .split('/')
+                .filter(|s| !s.is_empty())
+                .count();
+            let mut lines: Vec<String> = vec![".".into()];
+            for node in &nodes {
+                if !can_read_with_group(
+                    node,
+                    session.current_user.as_ref(),
+                    session.current_user_group.as_ref(),
+                    node.file_group.as_ref(),
+                ) {
+                    continue;
+                }
+                let depth = node.path.split('/').filter(|s| !s.is_empty()).count() - base_depth;
+                if depth == 0 {
+                    continue;
+                }
+                let indent = format!("{}-- ", "   ".repeat(depth - 1));
+                let suffix = if node.dir { "/" } else { "" };
+                lines.push(format!("{}{}{}", indent, node.name, suffix));
+            }
+            AppMessage {
+                cmd: Cmd::Tree,
+                data: lines,
+            }
+        }
+        Err(_) => AppMessage {
+            cmd: Cmd::Failure,
+            data: vec!["tree failed".into()],
+        },
+    }
+}
+
+pub async fn stat(data: Vec<String>, session: &Session, pool: &Pool) -> AppMessage {
+    if !session.authenticated {
+        return AppMessage {
+            cmd: Cmd::Failure,
+            data: vec!["not authenticated".into()],
+        };
+    }
+
+    let name = data.first().cloned().unwrap_or_default();
+    if !is_valid_name(&name) {
+        return AppMessage {
+            cmd: Cmd::Failure,
+            data: vec!["invalid name".into()],
+        };
+    }
+
+    let path = format!("{}/{}", session.current_path, name);
+    match dao::get_f_node(pool, path.clone()).await {
+        Ok(Some(node)) => {
+            let owner_group =
+                dao::get_file_group(pool, node.owner.clone(), node.file_group.clone())
+                    .await
+                    .unwrap_or(None);
+            if !can_read_with_group(
+                &node,
+                session.current_user.as_ref(),
+                session.current_user_group.as_ref(),
+                owner_group.as_ref(),
+            ) {
+                return AppMessage {
+                    cmd: Cmd::Failure,
+                    data: vec!["no read permission".into()],
+                };
+            }
+
+            let file_size = if !node.dir {
+                let storage_path = format!("storage{}", path);
+                tokio::fs::metadata(&storage_path)
+                    .await
+                    .map(|m| m.len() as i64)
+                    .unwrap_or(0)
+            } else {
+                0
+            };
+
+            let kind = if node.dir { "directory" } else { "file" };
+            let perms = format_permissions(node.u, node.g, node.o);
+            let group = node.file_group.as_deref().unwrap_or("(none)");
+            AppMessage {
+                cmd: Cmd::Stat,
+                data: vec![
+                    format!("  Name: {}", node.name),
+                    format!("  Path: {}", node.path),
+                    format!("  Type: {}", kind),
+                    format!(" Owner: {}", node.owner),
+                    format!(" Group: {}", group),
+                    format!(" Perms: {}", perms),
+                    format!("  Size: {} bytes", file_size),
+                    format!(
+                        "  Hash: {}",
+                        if node.hash.is_empty() {
+                            "-"
+                        } else {
+                            &node.hash
+                        }
+                    ),
+                    format!("  Created: {}", node.created_at),
+                    format!(" Modified: {}", node.modified_at),
+                ],
+            }
+        }
+        _ => AppMessage {
+            cmd: Cmd::Failure,
+            data: vec!["not found".into()],
+        },
+    }
+}
+
+pub async fn du(session: &Session, pool: &Pool) -> AppMessage {
+    if !session.authenticated {
+        return AppMessage {
+            cmd: Cmd::Failure,
+            data: vec!["not authenticated".into()],
+        };
+    }
+
+    match dao::get_subtree(pool, session.current_path.clone()).await {
+        Ok(nodes) => {
+            let mut total: u64 = 0;
+            for node in &nodes {
+                if node.dir {
+                    continue;
+                }
+                let storage_path = format!("storage{}", node.path);
+                if let Ok(meta) = tokio::fs::metadata(&storage_path).await {
+                    total += meta.len();
+                }
+            }
+            let human = if total >= 1_048_576 {
+                format!("{:.1} MB", total as f64 / 1_048_576.0)
+            } else if total >= 1024 {
+                format!("{:.1} KB", total as f64 / 1024.0)
+            } else {
+                format!("{} B", total)
+            };
+            AppMessage {
+                cmd: Cmd::Du,
+                data: vec![format!("{} ({})", human, session.current_path)],
+            }
+        }
+        Err(_) => AppMessage {
+            cmd: Cmd::Failure,
+            data: vec!["du failed".into()],
+        },
+    }
+}
+
+pub async fn head(data: Vec<String>, session: &Session, pool: &Pool) -> AppMessage {
+    if !session.authenticated {
+        return AppMessage {
+            cmd: Cmd::Failure,
+            data: vec!["not authenticated".into()],
+        };
+    }
+
+    let file_name = data.first().cloned().unwrap_or_default();
+    let n: usize = data.get(1).and_then(|s| s.parse().ok()).unwrap_or(10);
+    if !is_valid_name(&file_name) {
+        return AppMessage {
+            cmd: Cmd::Failure,
+            data: vec!["invalid file name".into()],
+        };
+    }
+
+    let node_path = format!("{}/{}", session.current_path, file_name);
+    match dao::get_f_node(pool, node_path).await {
+        Ok(Some(node)) if node.dir => AppMessage {
+            cmd: Cmd::Failure,
+            data: vec!["cannot read directory".into()],
+        },
+        Ok(Some(node)) => {
+            let owner_group =
+                dao::get_file_group(pool, node.owner.clone(), node.file_group.clone())
+                    .await
+                    .unwrap_or(None);
+            if !can_read_with_group(
+                &node,
+                session.current_user.as_ref(),
+                session.current_user_group.as_ref(),
+                owner_group.as_ref(),
+            ) {
+                return AppMessage {
+                    cmd: Cmd::Failure,
+                    data: vec!["no read permission".into()],
+                };
+            }
+            let file_path = format!("storage{}/{}", session.current_path, file_name);
+            match read_file_content(&file_path).await {
+                Ok(content) => {
+                    let lines: Vec<&str> = content.lines().take(n).collect();
+                    AppMessage {
+                        cmd: Cmd::Head,
+                        data: vec![lines.join("\n")],
+                    }
+                }
+                Err(e) => e,
+            }
+        }
+        _ => AppMessage {
+            cmd: Cmd::Failure,
+            data: vec!["file not found".into()],
+        },
+    }
+}
+
+pub async fn tail(data: Vec<String>, session: &Session, pool: &Pool) -> AppMessage {
+    if !session.authenticated {
+        return AppMessage {
+            cmd: Cmd::Failure,
+            data: vec!["not authenticated".into()],
+        };
+    }
+
+    let file_name = data.first().cloned().unwrap_or_default();
+    let n: usize = data.get(1).and_then(|s| s.parse().ok()).unwrap_or(10);
+    if !is_valid_name(&file_name) {
+        return AppMessage {
+            cmd: Cmd::Failure,
+            data: vec!["invalid file name".into()],
+        };
+    }
+
+    let node_path = format!("{}/{}", session.current_path, file_name);
+    match dao::get_f_node(pool, node_path).await {
+        Ok(Some(node)) if node.dir => AppMessage {
+            cmd: Cmd::Failure,
+            data: vec!["cannot read directory".into()],
+        },
+        Ok(Some(node)) => {
+            let owner_group =
+                dao::get_file_group(pool, node.owner.clone(), node.file_group.clone())
+                    .await
+                    .unwrap_or(None);
+            if !can_read_with_group(
+                &node,
+                session.current_user.as_ref(),
+                session.current_user_group.as_ref(),
+                owner_group.as_ref(),
+            ) {
+                return AppMessage {
+                    cmd: Cmd::Failure,
+                    data: vec!["no read permission".into()],
+                };
+            }
+            let file_path = format!("storage{}/{}", session.current_path, file_name);
+            match read_file_content(&file_path).await {
+                Ok(content) => {
+                    let all_lines: Vec<&str> = content.lines().collect();
+                    let start = all_lines.len().saturating_sub(n);
+                    let lines = &all_lines[start..];
+                    AppMessage {
+                        cmd: Cmd::Tail,
+                        data: vec![lines.join("\n")],
+                    }
+                }
+                Err(e) => e,
+            }
+        }
+        _ => AppMessage {
+            cmd: Cmd::Failure,
+            data: vec!["file not found".into()],
         },
     }
 }

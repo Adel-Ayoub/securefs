@@ -341,6 +341,21 @@ where
                 handlers::perms::get_encrypted_file(incoming.data, &session, &pool).await,
                 None,
             ),
+            Cmd::Whoami => (handlers::user::whoami(&session), None),
+            Cmd::Tree => (handlers::fs::tree(&session, &pool).await, None),
+            Cmd::Stat => (
+                handlers::fs::stat(incoming.data, &session, &pool).await,
+                None,
+            ),
+            Cmd::Du => (handlers::fs::du(&session, &pool).await, None),
+            Cmd::Head => (
+                handlers::fs::head(incoming.data, &session, &pool).await,
+                None,
+            ),
+            Cmd::Tail => (
+                handlers::fs::tail(incoming.data, &session, &pool).await,
+                None,
+            ),
             _ => (
                 AppMessage {
                     cmd: Cmd::Failure,

@@ -6,6 +6,24 @@ use securefs_server::dao;
 use crate::session::Session;
 use crate::util::{current_timestamp, is_valid_password};
 
+pub fn whoami(session: &Session) -> AppMessage {
+    if !session.authenticated {
+        return AppMessage {
+            cmd: Cmd::Failure,
+            data: vec!["not authenticated".into()],
+        };
+    }
+    let user = session.current_user.clone().unwrap_or_default();
+    let group = session
+        .current_user_group
+        .clone()
+        .unwrap_or_else(|| "(none)".into());
+    AppMessage {
+        cmd: Cmd::Whoami,
+        data: vec![user, group],
+    }
+}
+
 pub async fn ls_users(session: &Session, pool: &Pool) -> AppMessage {
     if let Some(user) = &session.current_user {
         match dao::is_admin(pool, user.clone()).await {
