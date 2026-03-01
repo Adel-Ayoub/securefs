@@ -8,7 +8,7 @@ use std::env;
 use std::sync::Arc;
 
 use futures_util::{SinkExt, StreamExt};
-use log::{info, warn, error};
+use log::{info, warn};
 use securefs_model::protocol::{AppMessage, Cmd, FNode};
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
@@ -26,6 +26,7 @@ use aes_gcm::{Aes256Gcm, Key, Nonce, KeyInit};
 use aes_gcm::aead::{Aead, AeadCore};
 use hkdf::Hkdf;
 use sha2::Sha256;
+use deadpool_postgres::{Config, ManagerConfig, RecyclingMethod, Runtime, Pool};
 
 use std::path::Path;
 use std::collections::{HashSet, HashMap};
@@ -97,22 +98,15 @@ async fn main() -> Result<(), String> {
     let db_user = env::var("DB_USER").unwrap_or_else(|_| "USER".to_string());
     let db_port = env::var("DB_PORT").unwrap_or_else(|_| "5431".to_string());
 
-    let (client, connection) = tokio_postgres::connect(
-        &format!(
-            "host={} dbname={} user={} password={} port={}",
-            db_host, db_name, db_user, db_pass, db_port
-        ),
-        NoTls,
-    )
-    .await
-    .map_err(|e| format!("db connect failed: {}", e))?;
-
-    let pg_client = Arc::new(Mutex::new(client));
-    tokio::spawn(async move {
-        if let Err(e) = connection.await {
-            error!("db connection error: {}", e);
-        }
-    });
+    let mut pool_cfg = Config::new();
+    pool_cfg.host = Some(db_host);
+    pool_cfg.dbname = Some(db_name);
+    pool_cfg.user = Some(db_user);
+    pool_cfg.password = Some(db_pass);
+    pool_cfg.port = Some(db_port.parse().unwrap_or(5431));
+    pool_cfg.manager = Some(ManagerConfig { recycling_method: RecyclingMethod::Fast });
+    let pool = pool_cfg.create_pool(Some(Runtime::Tokio1), NoTls)
+        .map_err(|e| format!("pool creation failed: {}", e))?;
 
     let bind_addr = env::var("SERVER_ADDR").unwrap_or_else(|_| "127.0.0.1:8080".to_string());
     let listener = TcpListener::bind(&bind_addr)
@@ -144,7 +138,7 @@ async fn main() -> Result<(), String> {
 
     while let Ok((stream, addr)) = listener.accept().await {
         info!("New connection from: {}", addr);
-        let pg = pg_client.clone();
+        let pg = pool.clone();
         let rl = rate_limiter.clone();
         let ip = addr.ip();
         let tls = tls_acceptor.clone();
@@ -169,27 +163,27 @@ async fn main() -> Result<(), String> {
 /// Handle a TLS WebSocket connection lifecycle.
 async fn handle_tls_connection(
     stream: tokio_rustls::server::TlsStream<TcpStream>,
-    pg_client: Arc<Mutex<tokio_postgres::Client>>,
+    pool: Pool,
     rate_limiter: RateLimiter,
     client_ip: IpAddr,
 ) -> Result<(), String> {
     let ws_stream = accept_async(stream)
         .await
         .map_err(|e| format!("TLS handshake failed: {}", e))?;
-    handle_ws_stream(ws_stream, pg_client, rate_limiter, client_ip).await
+    handle_ws_stream(ws_stream, pool, rate_limiter, client_ip).await
 }
 
 /// Handle a plain TCP WebSocket connection lifecycle.
 async fn handle_connection(
     stream: TcpStream,
-    pg_client: Arc<Mutex<tokio_postgres::Client>>,
+    pool: Pool,
     rate_limiter: RateLimiter,
     client_ip: IpAddr,
 ) -> Result<(), String> {
     let ws_stream = accept_async(stream)
         .await
         .map_err(|e| format!("handshake failed: {}", e))?;
-    handle_ws_stream(ws_stream, pg_client, rate_limiter, client_ip).await
+    handle_ws_stream(ws_stream, pool, rate_limiter, client_ip).await
 }
 
 /// Encrypt an AppMessage using AES-256-GCM (Reference Implementation Style)
@@ -227,7 +221,7 @@ const MAX_LOGIN_ATTEMPTS: u8 = 5;
 /// Handle WebSocket stream logic (shared between TLS and plain TCP).
 async fn handle_ws_stream<S>(
     mut ws_stream: WebSocketStream<S>,
-    pg_client: Arc<Mutex<tokio_postgres::Client>>,
+    pool: Pool,
     rate_limiter: RateLimiter,
     client_ip: IpAddr,
 ) -> Result<(), String>
@@ -307,7 +301,7 @@ where
                 } else {
                     let user_name = incoming.data.get(0).cloned().unwrap_or_default();
                     let pass = incoming.data.get(1).cloned().unwrap_or_default();
-                    let is_ok = dao::auth_user(pg_client.clone(), user_name.clone(), pass)
+                    let is_ok = dao::auth_user(&pool, user_name.clone(), pass)
                         .await
                         .unwrap_or(false);
                     if !is_ok {
@@ -333,13 +327,13 @@ where
                         authenticated = true;
                         current_user = Some(user_name.clone());
                         let user_home = format!("/home/{}", user_name);
-                        if dao::get_f_node(pg_client.clone(), user_home.clone()).await.ok().flatten().is_some() {
+                        if dao::get_f_node(&pool, user_home.clone()).await.ok().flatten().is_some() {
                             current_path = user_home;
                         } else {
                             current_path = "/home".into();
                         }
                         // Fetch user details including group membership
-                        let user_opt = dao::get_user(pg_client.clone(), user_name.clone()).await.ok().flatten();
+                        let user_opt = dao::get_user(&pool, user_name.clone()).await.ok().flatten();
                         let is_admin = user_opt.as_ref().map(|u| u.is_admin).unwrap_or(false);
                         current_user_group = user_opt.and_then(|u| u.group_name);
                         audit!("LOGIN_OK", &user_name, &current_path, "success");
@@ -353,9 +347,9 @@ where
             Cmd::LsUsers => {
                 if let Some(user) = &current_user {
                     // Check if current user is admin
-                    match dao::is_admin(pg_client.clone(), user.clone()).await {
+                    match dao::is_admin(&pool, user.clone()).await {
                         Ok(true) => {
-                            match dao::get_all_users(pg_client.clone()).await {
+                            match dao::get_all_users(&pool).await {
                                 Ok(users) => AppMessage {
                                     cmd: Cmd::LsUsers,
                                     data: users,
@@ -381,9 +375,9 @@ where
             Cmd::LsGroups => {
                 if let Some(user) = &current_user {
                     // Check if current user is admin
-                    match dao::is_admin(pg_client.clone(), user.clone()).await {
+                    match dao::is_admin(&pool, user.clone()).await {
                         Ok(true) => {
-                            match dao::get_all_groups(pg_client.clone()).await {
+                            match dao::get_all_groups(&pool).await {
                                 Ok(groups) => AppMessage {
                                     cmd: Cmd::LsGroups,
                                     data: groups,
@@ -434,15 +428,15 @@ where
                     } else if !is_valid_password(&pass) {
                         AppMessage { cmd: Cmd::Failure, data: vec!["password must be at least 8 characters".to_string()] }
                     } else {
-                        let exists = dao::get_user(pg_client.clone(), user_name.clone()).await.ok().flatten().is_some();
+                        let exists = dao::get_user(&pool, user_name.clone()).await.ok().flatten().is_some();
                         if exists {
                             AppMessage { cmd: Cmd::Failure, data: vec!["user already exists".to_string()] }
                         } else {
-                            let group_exists = dao::get_group(pg_client.clone(), group.clone()).await.ok().flatten().is_some();
+                            let group_exists = dao::get_group(&pool, group.clone()).await.ok().flatten().is_some();
                             if !group_exists {
                                 AppMessage { cmd: Cmd::Failure, data: vec!["group does not exist".to_string()] }
                             } else {
-                                match dao::create_user(pg_client.clone(), user_name.clone(), pass, Some(group.clone()), false).await {
+                                match dao::create_user(&pool, user_name.clone(), pass, Some(group.clone()), false).await {
                                     Ok(_) => {
                                         let user_home = format!("/home/{}", user_name);
                                         let now = current_timestamp();
@@ -464,8 +458,8 @@ where
                                             modified_at: now,
                                             file_group: Some(group.clone()),
                                         };
-                                        let _ = dao::add_file(pg_client.clone(), new_dir).await;
-                                        let _ = dao::add_file_to_parent(pg_client.clone(), "/home".to_string(), user_name.clone()).await;
+                                        let _ = dao::add_file(&pool, new_dir).await;
+                                        let _ = dao::add_file_to_parent(&pool, "/home".to_string(), user_name.clone()).await;
                                         AppMessage { cmd: Cmd::NewUser, data: vec![user_home] }
                                     }
                                     Err(_) => AppMessage { cmd: Cmd::Failure, data: vec!["failed to create user".to_string()] },
@@ -483,11 +477,11 @@ where
                     if group_name.is_empty() {
                         AppMessage { cmd: Cmd::Failure, data: vec!["missing group name".to_string()] }
                     } else {
-                        let exists = dao::get_group(pg_client.clone(), group_name.clone()).await.ok().flatten().is_some();
+                        let exists = dao::get_group(&pool, group_name.clone()).await.ok().flatten().is_some();
                         if exists {
                             AppMessage { cmd: Cmd::Failure, data: vec!["group already exists".to_string()] }
                         } else {
-                            match dao::create_group(pg_client.clone(), group_name.clone()).await {
+                            match dao::create_group(&pool, group_name.clone()).await {
                                 Ok(_) => AppMessage { cmd: Cmd::NewGroup, data: vec![group_name] },
                                 Err(_) => AppMessage { cmd: Cmd::Failure, data: vec!["failed to create group".to_string()] },
                             }
@@ -497,14 +491,14 @@ where
             }
             Cmd::AddUserToGroup => {
                 if let Some(user) = &current_user {
-                    match dao::is_admin(pg_client.clone(), user.clone()).await {
+                    match dao::is_admin(&pool, user.clone()).await {
                         Ok(true) => {
                             let user_name = incoming.data.get(0).cloned().unwrap_or_default();
                             let group_name = incoming.data.get(1).cloned().unwrap_or_default();
                             if user_name.is_empty() || group_name.is_empty() {
                                 AppMessage { cmd: Cmd::Failure, data: vec!["missing arguments".to_string()] }
                             } else {
-                                match dao::add_user_to_group(pg_client.clone(), user_name.clone(), group_name.clone()).await {
+                                match dao::add_user_to_group(&pool, user_name.clone(), group_name.clone()).await {
                                     Ok(_) => AppMessage { cmd: Cmd::AddUserToGroup, data: vec![format!("User {} added to group {}", user_name, group_name)] },
                                     Err(e) => AppMessage { cmd: Cmd::Failure, data: vec![e.to_string()] },
                                 }
@@ -518,14 +512,14 @@ where
             }
             Cmd::RemoveUserFromGroup => {
                 if let Some(user) = &current_user {
-                    match dao::is_admin(pg_client.clone(), user.clone()).await {
+                    match dao::is_admin(&pool, user.clone()).await {
                         Ok(true) => {
                             let user_name = incoming.data.get(0).cloned().unwrap_or_default();
                             let group_name = incoming.data.get(1).cloned().unwrap_or_default();
                             if user_name.is_empty() || group_name.is_empty() {
                                 AppMessage { cmd: Cmd::Failure, data: vec!["missing arguments".to_string()] }
                             } else {
-                                match dao::remove_user_from_group(pg_client.clone(), user_name.clone(), group_name.clone()).await {
+                                match dao::remove_user_from_group(&pool, user_name.clone(), group_name.clone()).await {
                                     Ok(_) => AppMessage { cmd: Cmd::RemoveUserFromGroup, data: vec![format!("User {} removed from group {}", user_name, group_name)] },
                                     Err(e) => AppMessage { cmd: Cmd::Failure, data: vec![e.to_string()] },
                                 }
@@ -557,18 +551,14 @@ where
                         data: vec!["not authenticated".to_string()],
                     }
                 } else {
-                    let children = match dao::get_f_node(pg_client.clone(), current_path.clone()).await {
+                    let children = match dao::get_f_node(&pool, current_path.clone()).await {
                         Ok(Some(fnode)) => {
-                            let owner_group = dao::get_file_group(pg_client.clone(), fnode.owner.clone(), fnode.file_group.clone()).await.unwrap_or(None);
+                            let owner_group = dao::get_file_group(&pool, fnode.owner.clone(), fnode.file_group.clone()).await.unwrap_or(None);
                             if can_read_with_group(&fnode, current_user.as_ref(), current_user_group.as_ref(), owner_group.as_ref()) {
-                                let mut names = Vec::new();
-                                for child in fnode.children.iter() {
-                                    let child_path = format!("{}/{}", current_path, child);
-                                    if let Ok(Some(node)) = dao::get_f_node(pg_client.clone(), child_path).await {
-                                        names.push(format_ls_entry(&node));
-                                    }
+                                match dao::get_children(&pool, current_path.clone()).await {
+                                    Ok(nodes) => nodes.iter().map(|n| format_ls_entry(n)).collect(),
+                                    Err(_) => vec![],
                                 }
-                                names
                             } else {
                                 vec![]
                             }
@@ -592,9 +582,9 @@ where
                             data: vec!["invalid directory name".to_string()],
                         }
                     } else {
-                        let has_perm = match dao::get_f_node(pg_client.clone(), current_path.clone()).await {
+                        let has_perm = match dao::get_f_node(&pool, current_path.clone()).await {
                             Ok(Some(parent)) => {
-                                let owner_group = dao::get_file_group(pg_client.clone(), parent.owner.clone(), parent.file_group.clone()).await.unwrap_or(None);
+                                let owner_group = dao::get_file_group(&pool, parent.owner.clone(), parent.file_group.clone()).await.unwrap_or(None);
                                 can_write_with_group(&parent, current_user.as_ref(), current_user_group.as_ref(), owner_group.as_ref())
                             },
                             _ => false,
@@ -605,7 +595,7 @@ where
                         let target_path = format!("{}/{}", current_path, dir_name);
                         
                         // Check if directory already exists
-                        let exists = dao::get_f_node(pg_client.clone(), target_path.clone()).await.ok().flatten().is_some();
+                        let exists = dao::get_f_node(&pool, target_path.clone()).await.ok().flatten().is_some();
                         if exists {
                             AppMessage { cmd: Cmd::Failure, data: vec!["directory already exists".to_string()] }
                         } else {
@@ -632,9 +622,9 @@ where
                             file_group: current_user_group.clone(),
                         };
 
-                        let res = dao::add_file(pg_client.clone(), new_dir).await;
+                        let res = dao::add_file(&pool, new_dir).await;
                         let parent_update = if res.is_ok() {
-                            dao::add_file_to_parent(pg_client.clone(), parent_path.clone(), dir_name.clone()).await
+                            dao::add_file_to_parent(&pool, parent_path.clone(), dir_name.clone()).await
                         } else {
                             Err(dao::DaoError::QueryFailed("parent not updated".into()))
                         };
@@ -673,20 +663,20 @@ where
                         let new_path = format!("{}/{}", current_path, dst);
                         
                         // Check source exists
-                        let src_exists = dao::get_f_node(pg_client.clone(), old_path.clone()).await.ok().flatten().is_some();
+                        let src_exists = dao::get_f_node(&pool, old_path.clone()).await.ok().flatten().is_some();
                         if !src_exists {
                             AppMessage { cmd: Cmd::Failure, data: vec!["source not found".to_string()] }
                         } else {
                             // Require write on parent
-                            match dao::get_f_node(pg_client.clone(), current_path.clone()).await {
+                            match dao::get_f_node(&pool, current_path.clone()).await {
                                 Ok(Some(parent)) => {
-                                    let owner_group = dao::get_file_group(pg_client.clone(), parent.owner.clone(), parent.file_group.clone()).await.unwrap_or(None);
+                                    let owner_group = dao::get_file_group(&pool, parent.owner.clone(), parent.file_group.clone()).await.unwrap_or(None);
                                     if can_write_with_group(&parent, current_user.as_ref(), current_user_group.as_ref(), owner_group.as_ref()) {
-                                        let res = dao::update_path(pg_client.clone(), old_path.clone(), new_path.clone()).await;
-                                        let name_res = dao::update_fnode_name_if_path_is_already_updated(pg_client.clone(), new_path.clone(), dst.clone()).await;
-                                        let enc_res = dao::update_fnode_enc_name(pg_client.clone(), new_path.clone(), dst.clone()).await;
-                                        let parent_remove = dao::remove_file_from_parent(pg_client.clone(), current_path.clone(), src.clone()).await;
-                                        let parent_add = dao::add_file_to_parent(pg_client.clone(), current_path.clone(), dst.clone()).await;
+                                        let res = dao::update_path(&pool, old_path.clone(), new_path.clone()).await;
+                                        let name_res = dao::update_fnode_name_if_path_is_already_updated(&pool, new_path.clone(), dst.clone()).await;
+                                        let enc_res = dao::update_fnode_enc_name(&pool, new_path.clone(), dst.clone()).await;
+                                        let parent_remove = dao::remove_file_from_parent(&pool, current_path.clone(), src.clone()).await;
+                                        let parent_add = dao::add_file_to_parent(&pool, current_path.clone(), dst.clone()).await;
                                         if res.is_ok() && name_res.is_ok() && enc_res.is_ok() && parent_remove.is_ok() && parent_add.is_ok() {
                                             AppMessage {
                                                 cmd: Cmd::Mv,
@@ -724,16 +714,16 @@ where
                     } else {
                         let path = format!("{}/{}", current_path, target);
                         // Require write on parent
-                        let has_perm = match dao::get_f_node(pg_client.clone(), current_path.clone()).await {
+                        let has_perm = match dao::get_f_node(&pool, current_path.clone()).await {
                             Ok(Some(parent)) => {
-                                let owner_group = dao::get_file_group(pg_client.clone(), parent.owner.clone(), parent.file_group.clone()).await.unwrap_or(None);
+                                let owner_group = dao::get_file_group(&pool, parent.owner.clone(), parent.file_group.clone()).await.unwrap_or(None);
                                 can_write_with_group(&parent, current_user.as_ref(), current_user_group.as_ref(), owner_group.as_ref())
                             },
                             _ => false,
                         };
                         if !has_perm {
                             AppMessage { cmd: Cmd::Failure, data: vec!["no write permission".into()] }
-                        } else if let Ok(Some(node)) = dao::get_f_node(pg_client.clone(), path.clone()).await {
+                        } else if let Ok(Some(node)) = dao::get_f_node(&pool, path.clone()).await {
                             if node.dir && !node.children.is_empty() {
                                 AppMessage { cmd: Cmd::Failure, data: vec!["directory not empty".into()] }
                             } else {
@@ -742,8 +732,8 @@ where
                         if Path::new(&storage_path).exists() {
                             let _ = stdfs::remove_file(&storage_path).or_else(|_| stdfs::remove_dir_all(&storage_path));
                         }
-                        let parent_remove = dao::remove_file_from_parent(pg_client.clone(), current_path.clone(), target.clone()).await;
-                        let del = dao::delete_path(pg_client.clone(), path.clone()).await;
+                        let parent_remove = dao::remove_file_from_parent(&pool, current_path.clone(), target.clone()).await;
+                        let del = dao::delete_path(&pool, path.clone()).await;
                         if parent_remove.is_ok() && del.is_ok() {
                             AppMessage {
                                 cmd: Cmd::Delete,
@@ -788,9 +778,9 @@ where
                             data: vec!["invalid path".to_string()],
                         }
                     } else {
-                        match dao::get_f_node(pg_client.clone(), new_path.clone()).await {
+                        match dao::get_f_node(&pool, new_path.clone()).await {
                             Ok(Some(node)) if node.dir => {
-                                let owner_group = dao::get_file_group(pg_client.clone(), node.owner.clone(), node.file_group.clone()).await.unwrap_or(None);
+                                let owner_group = dao::get_file_group(&pool, node.owner.clone(), node.file_group.clone()).await.unwrap_or(None);
                                 if can_read_with_group(&node, current_user.as_ref(), current_user_group.as_ref(), owner_group.as_ref()) {
                                     current_path = new_path.clone();
                                     AppMessage { cmd: Cmd::Cd, data: vec![new_path] }
@@ -824,9 +814,9 @@ where
                             data: vec!["invalid file name".to_string()],
                         }
                     } else {
-                        let has_perm = match dao::get_f_node(pg_client.clone(), current_path.clone()).await {
+                        let has_perm = match dao::get_f_node(&pool, current_path.clone()).await {
                             Ok(Some(parent)) => {
-                                let owner_group = dao::get_file_group(pg_client.clone(), parent.owner.clone(), parent.file_group.clone()).await.unwrap_or(None);
+                                let owner_group = dao::get_file_group(&pool, parent.owner.clone(), parent.file_group.clone()).await.unwrap_or(None);
                                 can_write_with_group(&parent, current_user.as_ref(), current_user_group.as_ref(), owner_group.as_ref())
                             },
                             _ => false,
@@ -837,7 +827,7 @@ where
                         let target_path = format!("{}/{}", current_path, file_name);
                         
                         // Check if file already exists
-                        let exists = dao::get_f_node(pg_client.clone(), target_path.clone()).await.ok().flatten().is_some();
+                        let exists = dao::get_f_node(&pool, target_path.clone()).await.ok().flatten().is_some();
                         if exists {
                             AppMessage { cmd: Cmd::Failure, data: vec!["file already exists".to_string()] }
                         } else {
@@ -864,9 +854,9 @@ where
                             file_group: current_user_group.clone(),
                         };
 
-                        let res = dao::add_file(pg_client.clone(), new_file).await;
+                        let res = dao::add_file(&pool, new_file).await;
                         let parent_update = if res.is_ok() {
-                            dao::add_file_to_parent(pg_client.clone(), parent_path.clone(), file_name.clone()).await
+                            dao::add_file_to_parent(&pool, parent_path.clone(), file_name.clone()).await
                         } else {
                             Err(dao::DaoError::QueryFailed("parent not updated".into()))
                         };
@@ -902,10 +892,10 @@ where
                     } else {
                         let target_path = format!("storage{}", current_path);
                         let file_path = format!("{}/{}", target_path, file_name);
-                        match dao::get_f_node(pg_client.clone(), format!("{}/{}", current_path, file_name)).await {
+                        match dao::get_f_node(&pool, format!("{}/{}", current_path, file_name)).await {
                             Ok(Some(node)) if node.dir => AppMessage { cmd: Cmd::Failure, data: vec!["cannot cat dir".into()] },
                             Ok(Some(node)) => {
-                                let owner_group = dao::get_file_group(pg_client.clone(), node.owner.clone(), node.file_group.clone()).await.unwrap_or(None);
+                                let owner_group = dao::get_file_group(&pool, node.owner.clone(), node.file_group.clone()).await.unwrap_or(None);
                                 if can_read_with_group(&node, current_user.as_ref(), current_user_group.as_ref(), owner_group.as_ref()) {
                                     let read_res = fs::File::open(&file_path).await;
                                     match read_res {
@@ -956,9 +946,9 @@ where
                             data: vec!["invalid file name".to_string()],
                         }
                     } else {
-                        match dao::get_f_node(pg_client.clone(), current_path.clone()).await {
+                        match dao::get_f_node(&pool, current_path.clone()).await {
                             Ok(Some(parent)) => {
-                                let owner_group = dao::get_file_group(pg_client.clone(), parent.owner.clone(), parent.file_group.clone()).await.unwrap_or(None);
+                                let owner_group = dao::get_file_group(&pool, parent.owner.clone(), parent.file_group.clone()).await.unwrap_or(None);
                                 if can_write_with_group(&parent, current_user.as_ref(), current_user_group.as_ref(), owner_group.as_ref()) {
                                     let target_path = format!("storage{}", current_path);
                                     let file_path = format!("{}/{}", target_path, file_name);
@@ -974,7 +964,7 @@ where
                                                         // Hash plaintext for integrity verification
                                                         let hash = hash_content(content.as_bytes());
                                                         let node_path = format!("{}/{}", current_path, file_name);
-                                                        let _ = dao::update_hash(pg_client.clone(), node_path, file_name.clone(), hash).await;
+                                                        let _ = dao::update_hash(&pool, node_path, file_name.clone(), hash).await;
                                                         audit!("FILE_WRITE", current_user.as_deref().unwrap_or("-"), &file_path, "ok");
                                                         AppMessage { cmd: Cmd::Echo, data: vec!["ok".to_string()] }
                                                     }
@@ -1016,10 +1006,10 @@ where
                                 data: vec!["invalid mode".to_string()],
                             }
                         } else {
-                            match dao::get_f_node(pg_client.clone(), path.clone()).await {
+                            match dao::get_f_node(&pool, path.clone()).await {
                                 Ok(Some(node)) if is_owner(&node, current_user.as_ref()) => {
                                     let path_for_log = path.clone();
-                                    let res = dao::change_file_perms(pg_client.clone(), path, ugo[0], ugo[1], ugo[2]).await;
+                                    let res = dao::change_file_perms(&pool, path, ugo[0], ugo[1], ugo[2]).await;
                                     match res {
                                         Ok(_) => {
                                             audit!("CHMOD", current_user.as_deref().unwrap_or("-"), &path_for_log, &mode);
@@ -1049,7 +1039,7 @@ where
                         }
                     } else {
                         let file_path = format!("{}/{}", current_path, file_name);
-                        match dao::get_f_node(pg_client.clone(), file_path.clone()).await {
+                        match dao::get_f_node(&pool, file_path.clone()).await {
                             Ok(Some(node)) if node.dir => {
                                 AppMessage {
                                     cmd: Cmd::Failure,
@@ -1057,7 +1047,7 @@ where
                                 }
                             }
                             Ok(Some(node)) => {
-                                let owner_group = dao::get_file_group(pg_client.clone(), node.owner.clone(), node.file_group.clone()).await.unwrap_or(None);
+                                let owner_group = dao::get_file_group(&pool, node.owner.clone(), node.file_group.clone()).await.unwrap_or(None);
                                 if can_read_with_group(&node, current_user.as_ref(), current_user_group.as_ref(), owner_group.as_ref()) {
                                     let target_path = format!("storage{}/{}", current_path, file_name);
                                     match fs::read(&target_path).await {
@@ -1119,9 +1109,9 @@ where
                         }
                     } else {
                         let file_path = format!("{}/{}", current_path, file_name);
-                        match dao::get_f_node(pg_client.clone(), file_path).await {
+                        match dao::get_f_node(&pool, file_path).await {
                             Ok(Some(node)) => {
-                                let owner_group = dao::get_file_group(pg_client.clone(), node.owner.clone(), node.file_group.clone()).await.unwrap_or(None);
+                                let owner_group = dao::get_file_group(&pool, node.owner.clone(), node.file_group.clone()).await.unwrap_or(None);
                                 if can_read_with_group(&node, current_user.as_ref(), current_user_group.as_ref(), owner_group.as_ref()) {
                                     let path_parts: Vec<String> = current_path
                                         .split('/')
@@ -1210,12 +1200,12 @@ where
                         let dst_path_orig = format!("{}/{}", current_path, dst);
                         
                         // Check source exists and we can read it
-                        match dao::get_f_node(pg_client.clone(), src_path.clone()).await {
+                        match dao::get_f_node(&pool, src_path.clone()).await {
                             Ok(Some(src_node)) => {
-                                let src_owner_group = dao::get_file_group(pg_client.clone(), src_node.owner.clone(), src_node.file_group.clone()).await.unwrap_or(None);
+                                let src_owner_group = dao::get_file_group(&pool, src_node.owner.clone(), src_node.file_group.clone()).await.unwrap_or(None);
                                 if can_read_with_group(&src_node, current_user.as_ref(), current_user_group.as_ref(), src_owner_group.as_ref()) {
                                     // Check destination
-                                    let (final_dst_path, valid_dst) = match dao::get_f_node(pg_client.clone(), dst_path_orig.clone()).await {
+                                    let (final_dst_path, valid_dst) = match dao::get_f_node(&pool, dst_path_orig.clone()).await {
                                         Ok(Some(dst_node)) => {
                                             if dst_node.dir {
                                                 // Copy INTO directory
@@ -1236,7 +1226,7 @@ where
                                         AppMessage { cmd: Cmd::Failure, data: vec!["destination exists as file or error".to_string()] }
                                     } else {
                                         // Check if final destination already exists (to avoid overwrite/collision in the copy-into case)
-                                         match dao::get_f_node(pg_client.clone(), final_dst_path.clone()).await {
+                                         match dao::get_f_node(&pool, final_dst_path.clone()).await {
                                              Ok(Some(_)) => AppMessage { cmd: Cmd::Failure, data: vec!["destination already exists".to_string()] },
                                              _ => {
                                                  // Check write permission on PARENT of final_dst_path
@@ -1247,11 +1237,11 @@ where
                                                      Some(p) => p.to_string(),
                                                  };
 
-                                                 match dao::get_f_node(pg_client.clone(), parent_str).await {
+                                                 match dao::get_f_node(&pool, parent_str).await {
                                                      Ok(Some(parent_node)) => {
-                                                         let parent_owner_group = dao::get_file_group(pg_client.clone(), parent_node.owner.clone(), parent_node.file_group.clone()).await.unwrap_or(None);
+                                                         let parent_owner_group = dao::get_file_group(&pool, parent_node.owner.clone(), parent_node.file_group.clone()).await.unwrap_or(None);
                                                          if can_write_with_group(&parent_node, current_user.as_ref(), current_user_group.as_ref(), parent_owner_group.as_ref()) {
-                                                             match dao::copy_recursive(pg_client.clone(), src_path, final_dst_path, current_user.clone().unwrap()).await {
+                                                             match dao::copy_recursive(&pool, src_path, final_dst_path, current_user.clone().unwrap()).await {
                                                                  Ok(_) => AppMessage { cmd: Cmd::Cp, data: vec!["ok".to_string()] },
                                                                  Err(e) => AppMessage { cmd: Cmd::Failure, data: vec![e.to_string()] }
                                                              }
@@ -1284,33 +1274,28 @@ where
                     if pattern.is_empty() {
                         AppMessage { cmd: Cmd::Failure, data: vec!["missing pattern".to_string()] }
                     } else {
-                        // Search recursively from current path
-                        let mut results: Vec<String> = Vec::new();
-                        let mut to_search = vec![current_path.clone()];
-                        
-                        while let Some(search_path) = to_search.pop() {
-                            if let Ok(Some(node)) = dao::get_f_node(pg_client.clone(), search_path.clone()).await {
-                                let owner_group = dao::get_file_group(pg_client.clone(), node.owner.clone(), node.file_group.clone()).await.unwrap_or(None);
-                                if can_read_with_group(&node, current_user.as_ref(), current_user_group.as_ref(), owner_group.as_ref()) {
-                                    // Check if name matches pattern (simple contains match)
-                                    if node.name.contains(&pattern) {
-                                        results.push(node.path.clone());
-                                    }
-                                    // If directory, add children to search queue
-                                    if node.dir {
-                                        for child in node.children.iter() {
-                                            let child_path = format!("{}/{}", search_path, child);
-                                            to_search.push(child_path);
-                                        }
-                                    }
+                        // Batch fetch entire subtree in one query
+                        match dao::get_subtree(&pool, current_path.clone()).await {
+                            Ok(nodes) => {
+                                let results: Vec<String> = nodes.iter()
+                                    .filter(|n| {
+                                        n.name.contains(&pattern) && can_read_with_group(
+                                            n,
+                                            current_user.as_ref(),
+                                            current_user_group.as_ref(),
+                                            // NOTE: uses file_group directly, skipping owner lookup for perf
+                                            n.file_group.as_ref(),
+                                        )
+                                    })
+                                    .map(|n| n.path.clone())
+                                    .collect();
+                                if results.is_empty() {
+                                    AppMessage { cmd: Cmd::Find, data: vec!["no matches found".to_string()] }
+                                } else {
+                                    AppMessage { cmd: Cmd::Find, data: results }
                                 }
                             }
-                        }
-                        
-                        if results.is_empty() {
-                            AppMessage { cmd: Cmd::Find, data: vec!["no matches found".to_string()] }
-                        } else {
-                            AppMessage { cmd: Cmd::Find, data: results }
+                            Err(_) => AppMessage { cmd: Cmd::Find, data: vec!["no matches found".to_string()] }
                         }
                     }
                 }
@@ -1331,14 +1316,14 @@ where
                         AppMessage { cmd: Cmd::Failure, data: vec!["invalid owner name".to_string()] }
                     } else {
                         // Verify new owner exists
-                        match dao::get_user(pg_client.clone(), new_owner.clone()).await {
+                        match dao::get_user(&pool, new_owner.clone()).await {
                             Ok(None) => AppMessage { cmd: Cmd::Failure, data: vec!["user not found".to_string()] },
                             Err(_) => AppMessage { cmd: Cmd::Failure, data: vec!["database error".to_string()] },
                             Ok(Some(_)) => {
                                 let path = format!("{}/{}", current_path, target);
-                                match dao::get_f_node(pg_client.clone(), path.clone()).await {
+                                match dao::get_f_node(&pool, path.clone()).await {
                                     Ok(Some(node)) if is_owner(&node, current_user.as_ref()) => {
-                                        match dao::change_owner(pg_client.clone(), path, new_owner.clone()).await {
+                                        match dao::change_owner(&pool, path, new_owner.clone()).await {
                                             Ok(_) => AppMessage { cmd: Cmd::Chown, data: vec![format!("owner changed to {}", new_owner)] },
                                             Err(_) => AppMessage { cmd: Cmd::Failure, data: vec!["chown failed".to_string()] },
                                         }
@@ -1370,14 +1355,14 @@ where
                         AppMessage { cmd: Cmd::Failure, data: vec!["invalid group name".to_string()] }
                     } else {
                         // Verify group exists
-                        match dao::get_group(pg_client.clone(), new_group.clone()).await {
+                        match dao::get_group(&pool, new_group.clone()).await {
                             Ok(None) => AppMessage { cmd: Cmd::Failure, data: vec!["group not found".to_string()] },
                             Err(_) => AppMessage { cmd: Cmd::Failure, data: vec!["database error".to_string()] },
                             Ok(Some(_)) => {
                                 let path = format!("{}/{}", current_path, target);
-                                match dao::get_f_node(pg_client.clone(), path.clone()).await {
+                                match dao::get_f_node(&pool, path.clone()).await {
                                     Ok(Some(node)) if is_owner(&node, current_user.as_ref()) => {
-                                        match dao::change_file_group(pg_client.clone(), path.clone(), new_group.clone()).await {
+                                        match dao::change_file_group(&pool, path.clone(), new_group.clone()).await {
                                             Ok(_) => {
                                                 info!("chgrp: {} -> {} for {}", node.owner, new_group, path);
                                                 AppMessage { cmd: Cmd::Chgrp, data: vec![format!("group changed to {}", new_group)] }
