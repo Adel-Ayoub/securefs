@@ -29,7 +29,9 @@ futures = "0.3"
 uuid = { version = "1", features = ["v4"] }
 log = "0.4"
 env_logger = "0.11"
+base64 = "0.22"
 globset = "0.4"
+zstd = "0.13"
 
 # Internal dependencies
 securefs-model = { path = "../model" }

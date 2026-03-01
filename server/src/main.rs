@@ -361,6 +361,21 @@ where
                 None,
             ),
             Cmd::Ln => (handlers::fs::ln(incoming.data, &session, &pool).await, None),
+            Cmd::UploadStart => (
+                handlers::fs::upload_start(incoming.data, &mut session, &pool).await,
+                None,
+            ),
+            Cmd::UploadChunk => (
+                handlers::fs::upload_chunk(incoming.data, &mut session),
+                None,
+            ),
+            Cmd::UploadEnd => (handlers::fs::upload_end(&mut session, &pool).await, None),
+            Cmd::DownloadStart => (
+                handlers::fs::download_start(incoming.data, &mut session, &pool).await,
+                None,
+            ),
+            Cmd::DownloadChunk => (handlers::fs::download_chunk(incoming.data, &session), None),
+            Cmd::DownloadEnd => (handlers::fs::download_end(&mut session), None),
             _ => (
                 AppMessage {
                     cmd: Cmd::Failure,

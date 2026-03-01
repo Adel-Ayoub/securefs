@@ -8,12 +8,25 @@ use tokio::sync::Mutex;
 /// Stores (attempt_count, first_attempt_time) per IP.
 pub type RateLimiter = Arc<Mutex<HashMap<IpAddr, (u8, Instant)>>>;
 
+/// Active upload state for chunked file transfers.
+pub struct UploadState {
+    pub file_name: String,
+    pub chunks: Vec<Vec<u8>>,
+}
+
+/// Active download state for chunked file transfers.
+pub struct DownloadState {
+    pub chunks: Vec<String>,
+}
+
 /// Per-connection session state for an authenticated user.
 pub struct Session {
     pub authenticated: bool,
     pub current_user: Option<String>,
     pub current_user_group: Option<String>,
     pub current_path: String,
+    pub upload: Option<UploadState>,
+    pub download: Option<DownloadState>,
 }
 
 impl Session {
@@ -23,6 +36,8 @@ impl Session {
             current_user: None,
             current_user_group: None,
             current_path: "/home".to_string(),
+            upload: None,
+            download: None,
         }
     }
 
@@ -31,5 +46,7 @@ impl Session {
         self.current_user = None;
         self.current_user_group = None;
         self.current_path = "/home".to_string();
+        self.upload = None;
+        self.download = None;
     }
 }
