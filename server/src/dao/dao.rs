@@ -4,8 +4,45 @@
 //! that persist `FNode`, `User`, and `Group` records. Queries are kept
 //! thin here so the server loop can stay focused on protocol flow.
 
-use std::{env, sync::Arc};
+use std::{env, fmt, sync::Arc};
 use std::sync::Once;
+
+use tokio::sync::Mutex;
+use tokio_postgres::Client;
+use argon2::{
+    password_hash::{
+        Encoding, PasswordHashString, PasswordHasher, PasswordVerifier, SaltString
+    },
+    Argon2
+};
+use securefs_model::protocol::{FNode, User};
+use aes_gcm::{Aes256Gcm, KeyInit, Key};
+use rand_core::OsRng;
+use serde_json;
+
+/// Typed error for all DAO operations.
+#[derive(Debug)]
+pub enum DaoError {
+    /// Row not found when one was expected.
+    NotFound,
+    /// Query or execute failed at the database level.
+    QueryFailed(String),
+    /// Data could not be parsed (hash, key, JSON, etc.).
+    ParseError(String),
+    /// A constraint was violated (duplicate, FK, etc.).
+    Conflict(String),
+}
+
+impl fmt::Display for DaoError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            DaoError::NotFound => write!(f, "not found"),
+            DaoError::QueryFailed(msg) => write!(f, "query failed: {}", msg),
+            DaoError::ParseError(msg) => write!(f, "parse error: {}", msg),
+            DaoError::Conflict(msg) => write!(f, "conflict: {}", msg),
+        }
+    }
+}
 
 static WARN_DEFAULT_PASS: Once = Once::new();
 
@@ -23,28 +60,15 @@ pub fn get_db_pass() -> String {
         }
     }
 }
-use tokio::sync::Mutex;
-use tokio_postgres::Client;
-use argon2::{
-    password_hash::{
-        Encoding, PasswordHashString, PasswordHasher, PasswordVerifier, SaltString
-    },
-    Argon2
-};
-use securefs_model::protocol::{FNode, User};
-use aes_gcm::{Aes256Gcm, KeyInit, Key};
-use rand_core::OsRng;
-use serde_json;
 
 /// Hash and salt a plaintext password using Argon2.
-pub fn salt_pass(pass: String) -> Result<String, String> {
+pub fn salt_pass(pass: String) -> Result<String, DaoError> {
     let b_pass = pass.as_bytes();
     let salt = SaltString::generate(&mut argon2::password_hash::rand_core::OsRng);
     let argon2 = Argon2::default();
-    match argon2.hash_password(b_pass, &salt) {
-        Ok(p) => Ok(p.serialize().as_str().to_string()),
-        Err(_) => Err("Error with salting pass".into()),
-    }
+    argon2.hash_password(b_pass, &salt)
+        .map(|p| p.serialize().as_str().to_string())
+        .map_err(|e| DaoError::ParseError(format!("argon2 hash failed: {}", e)))
 }
 
 /// Generate a random AES-256 key serialized to JSON for DB storage.
@@ -58,7 +82,7 @@ pub fn key_gen() -> Result<String, ()> {
 }
 
 /// Verify a user's password against the stored Argon2 hash.
-pub async fn auth_user(client: Arc<Mutex<Client>>, user_name: String, pass: String) -> Result<bool, String> {
+pub async fn auth_user(client: Arc<Mutex<Client>>, user_name: String, pass: String) -> Result<bool, DaoError> {
     let e = client.lock().await.query_one("SELECT u.salt FROM users u WHERE u.user_name=$1",
     &[&user_name]).await;
     let res = match e {
@@ -66,10 +90,8 @@ pub async fn auth_user(client: Arc<Mutex<Client>>, user_name: String, pass: Stri
         Err(_) => return Ok(false),
     };
     let hash: String = res.get("salt");
-    // SAFETY: Hashes are stored in the DB as valid Argon2 strings; parsing failures fall back
-    // to an authentication failure rather than panicking.
     let hash_str: PasswordHashString = PasswordHashString::parse(hash.as_str(), Encoding::B64)
-        .map_err(|_| "invalid hash format".to_string())?;
+        .map_err(|_| DaoError::ParseError("invalid hash format".into()))?;
     let true_hash = hash_str.password_hash();
     match Argon2::default().verify_password(pass.as_bytes(), &true_hash) {
         Ok(_) => Ok(true),
@@ -78,14 +100,10 @@ pub async fn auth_user(client: Arc<Mutex<Client>>, user_name: String, pass: Stri
 }
 
 /// Create a new user row and return the decrypted symmetric key for the caller.
-pub async fn create_user(client: Arc<Mutex<Client>>, user_name: String, pass: String, group: Option<String>, is_admin: bool) -> Result<Key<Aes256Gcm>, String>{
-    // NOTE: DB_PASS default is a convenience for local dev only; deployments should set it.
+pub async fn create_user(client: Arc<Mutex<Client>>, user_name: String, pass: String, group: Option<String>, is_admin: bool) -> Result<Key<Aes256Gcm>, DaoError>{
     let db_pass = get_db_pass();
-    let salt = match salt_pass(pass){
-        Ok(salt) => salt,
-        Err(_) => return Err(format!("couldn't hash user pass while creating user!")),
-    };
-    let key = key_gen().expect("could not serialize symmetric key!");
+    let salt = salt_pass(pass)?;
+    let key = key_gen().map_err(|_| DaoError::ParseError("could not serialize symmetric key".into()))?;
     let e = match group {
         Some(_) => client.lock().await.execute("INSERT INTO users (user_name, group_name, salt, key, is_admin) VALUES ($1, $2, $3, pgp_sym_encrypt($4 ::text, $6 ::text), $5)",
     &[&user_name, &group, &salt, &key, &is_admin, &db_pass]).await,
@@ -93,25 +111,27 @@ pub async fn create_user(client: Arc<Mutex<Client>>, user_name: String, pass: St
     &[&user_name, &salt, &key, &is_admin, &db_pass]).await,
     };
     match e {
-        Ok(_) => Ok(serde_json::from_str::<[u8; 32]>(&key).map_err(|e| format!("key parse error: {}", e))?.into()),
-        Err(e) => Err(format!("couldn't create user! {}", e)),
+        Ok(_) => {
+            let arr: [u8; 32] = serde_json::from_str(&key)
+                .map_err(|e| DaoError::ParseError(format!("key parse: {}", e)))?;
+            Ok(arr.into())
+        }
+        Err(e) => Err(DaoError::QueryFailed(format!("create user: {}", e))),
     }
 }
 
 /// Insert a new group into the database.
-pub async fn create_group(client: Arc<Mutex<Client>>, group_name: String) -> Result<String, String>{
-    let e = client.lock().await.execute("INSERT INTO groups (g_name, users) VALUES ($1, $2)",
-    &[&group_name, &Vec::<String>::new()]).await;
-    match e {
-        Ok(_) => Ok(group_name),
-        Err(_) => Err(format!("couldn't create group!")),
-    }
+pub async fn create_group(client: Arc<Mutex<Client>>, group_name: String) -> Result<String, DaoError>{
+    client.lock().await.execute("INSERT INTO groups (g_name, users) VALUES ($1, $2)",
+    &[&group_name, &Vec::<String>::new()]).await
+        .map(|_| group_name)
+        .map_err(|e| DaoError::Conflict(format!("create group: {}", e)))
 }
 
 /// Persist a file or directory node.
-pub async fn add_file(client: Arc<Mutex<Client>>, file: FNode) -> Result<String, String> {
+pub async fn add_file(client: Arc<Mutex<Client>>, file: FNode) -> Result<String, DaoError> {
     let db_pass = get_db_pass();
-    let e = client.lock().await.execute("INSERT INTO
+    client.lock().await.execute("INSERT INTO
     fnode (name, path, owner, hash, parent, dir, u, g, o, children, encrypted_name)
     VALUES (
         pgp_sym_encrypt($1 ::text, $12 ::text),
@@ -125,57 +145,49 @@ pub async fn add_file(client: Arc<Mutex<Client>>, file: FNode) -> Result<String,
         pgp_sym_encrypt($9 ::text, $12 ::text),
         $10,
         $11)",
-    &[&file.name, &file.path, &file.owner, &file.hash, &file.parent, &file.dir, &file.u.to_string(), &file.g.to_string(), &file.o.to_string(), &file.children, &file.encrypted_name, &db_pass]).await;
-    match e {
-        Ok(_) => Ok(file.name),
-        Err(err) => Err(format!("{}",err)),
-    }
+    &[&file.name, &file.path, &file.owner, &file.hash, &file.parent, &file.dir, &file.u.to_string(), &file.g.to_string(), &file.o.to_string(), &file.children, &file.encrypted_name, &db_pass]).await
+        .map(|_| file.name)
+        .map_err(|e| DaoError::QueryFailed(format!("add file: {}", e)))
 }
 
 /// Update the stored hash for a file at `path`.
-pub async fn update_hash(client: Arc<Mutex<Client>>, path: String, _file_name: String, hash: String) -> Result<String, String>{
+pub async fn update_hash(client: Arc<Mutex<Client>>, path: String, _file_name: String, hash: String) -> Result<String, DaoError>{
     let db_pass = get_db_pass();
-    let e = client.lock().await.execute("UPDATE fnode SET hash = $1 WHERE pgp_sym_decrypt(path ::bytea, $3 ::text)=$2",
-    &[&hash, &path, &db_pass]).await;
-    match e {
-        Ok(_) => Ok(path),
-        Err(_) => Err(format!("couldn't update hash!")),
-    }
+    client.lock().await.execute("UPDATE fnode SET hash = $1 WHERE pgp_sym_decrypt(path ::bytea, $3 ::text)=$2",
+    &[&hash, &path, &db_pass]).await
+        .map(|_| path)
+        .map_err(|e| DaoError::QueryFailed(format!("update hash: {}", e)))
 }
 
 /// Append a child entry to the parent's `children` array.
-pub async fn add_file_to_parent(client: Arc<Mutex<Client>>, parent_path: String, new_f_node_name: String) -> Result<(), String>{
+pub async fn add_file_to_parent(client: Arc<Mutex<Client>>, parent_path: String, new_f_node_name: String) -> Result<(), DaoError>{
     let db_pass = get_db_pass();
-    let e = client.lock().await.execute("UPDATE fnode SET children =
+    client.lock().await.execute("UPDATE fnode SET children =
         ARRAY_APPEND(children,
             pgp_sym_encrypt($1 ::text, $3 ::text)::text
         )
         WHERE pgp_sym_decrypt(path ::bytea, $3 ::text)=$2",
-    &[&new_f_node_name, &parent_path, &db_pass]).await;
-    match e {
-        Ok(_) => Ok(()),
-        _ => Err("Failed to add file to parent!".to_string()),
-    }
+    &[&new_f_node_name, &parent_path, &db_pass]).await
+        .map(|_| ())
+        .map_err(|e| DaoError::QueryFailed(format!("add to parent: {}", e)))
 }
 
 /// Remove a child entry from the parent's `children` array.
-pub async fn remove_file_from_parent(client: Arc<Mutex<Client>>, parent_path: String, f_node_name: String) -> Result<(), String>{
+pub async fn remove_file_from_parent(client: Arc<Mutex<Client>>, parent_path: String, f_node_name: String) -> Result<(), DaoError>{
     let db_pass = get_db_pass();
-    let e = client.lock().await.execute("UPDATE fnode
+    client.lock().await.execute("UPDATE fnode
         SET children =
             (SELECT array_agg(pgp_sym_encrypt(child1::text, $3::text)) FROM unnest
                 (ARRAY_REMOVE((SELECT array_agg(pgp_sym_decrypt(child ::bytea, $3::text)) FROM unnest(children) AS child), $1)
             ) AS child1)
             WHERE pgp_sym_decrypt(path ::bytea, $3 ::text)=$2",
-    &[&f_node_name, &parent_path, &db_pass]).await;
-    match e {
-        Ok(_) => Ok(()),
-        _ => Err("Failed to add user to group!".to_string()),
-    }
+    &[&f_node_name, &parent_path, &db_pass]).await
+        .map(|_| ())
+        .map_err(|e| DaoError::QueryFailed(format!("remove from parent: {}", e)))
 }
 
 /// Fetch a decrypted `FNode` by path.
-pub async fn get_f_node(client: Arc<Mutex<Client>>, path: String) -> Result<Option<FNode>, String> {
+pub async fn get_f_node(client: Arc<Mutex<Client>>, path: String) -> Result<Option<FNode>, DaoError> {
     let db_pass = get_db_pass();
     let e = client.lock().await.query_opt("SELECT
         id,
@@ -208,7 +220,6 @@ pub async fn get_f_node(client: Arc<Mutex<Client>>, path: String) -> Result<Opti
                 o: row.get(9),
                 children: row.try_get(10).unwrap_or(vec![]),
                 encrypted_name: row.get(11),
-                // NOTE: These fields are not yet in DB schema; use defaults.
                 size: 0,
                 created_at: 0,
                 modified_at: 0,
@@ -217,30 +228,28 @@ pub async fn get_f_node(client: Arc<Mutex<Client>>, path: String) -> Result<Opti
             Ok(Some(fnode))
         }
         Ok(None) => Ok(None),
-        Err(_) => Err(format!("failed to get fnode!")),
+        Err(e) => Err(DaoError::QueryFailed(format!("get fnode: {}", e))),
     }
 }
 
 /// Update the numeric permissions on a file or directory.
-pub async fn change_file_perms(client: Arc<Mutex<Client>>, file_path: String, u: i16, g: i16, o: i16) -> Result<(), String>{
+pub async fn change_file_perms(client: Arc<Mutex<Client>>, file_path: String, u: i16, g: i16, o: i16) -> Result<(), DaoError>{
     let db_pass = get_db_pass();
-    let e = client.lock().await.execute("
+    client.lock().await.execute("
         UPDATE fnode SET
             u=pgp_sym_encrypt($2 ::text, $5 ::text),
             g=pgp_sym_encrypt($3 ::text, $5 ::text),
             o=pgp_sym_encrypt($4 ::text, $5 ::text)
         WHERE pgp_sym_decrypt(path ::bytea, $5 ::text)=$1",
-    &[&file_path, &u.to_string(), &g.to_string(), &o.to_string(), &db_pass]).await;
-    match e {
-        Ok(_) => Ok(()),
-        _ => Err("Failed to update file permissions!".to_string()),
-    }
+    &[&file_path, &u.to_string(), &g.to_string(), &o.to_string(), &db_pass]).await
+        .map(|_| ())
+        .map_err(|e| DaoError::QueryFailed(format!("change perms: {}", e)))
 }
 
 /// Rewrite stored paths for a subtree, replacing prefixes in bulk.
-pub async fn update_path(client: Arc<Mutex<Client>>, file_path: String, new_file_path: String) -> Result<(), String>{
+pub async fn update_path(client: Arc<Mutex<Client>>, file_path: String, new_file_path: String) -> Result<(), DaoError>{
     let db_pass = get_db_pass();
-    let e = client.lock().await.execute("UPDATE fnode SET path =
+    client.lock().await.execute("UPDATE fnode SET path =
         pgp_sym_encrypt(
             regexp_replace(
                 pgp_sym_decrypt(path ::bytea, $4 ::text),
@@ -248,52 +257,44 @@ pub async fn update_path(client: Arc<Mutex<Client>>, file_path: String, new_file
         $4 ::text)
         WHERE pgp_sym_decrypt(path ::bytea, $4 ::text) ~ $3",
         &[&format!("^{}", file_path), &new_file_path, &format!("^{}", file_path), &db_pass]
-    ).await;
-    match e {
-        Ok(_) => Ok(()),
-        _ => Err("Failed to update path!".to_string()),
-    }
+    ).await
+        .map(|_| ())
+        .map_err(|e| DaoError::QueryFailed(format!("update path: {}", e)))
 }
 
 /// Delete every `fnode` whose path matches the provided prefix.
-pub async fn delete_path(client: Arc<Mutex<Client>>, file_path: String) -> Result<(), String>{
+pub async fn delete_path(client: Arc<Mutex<Client>>, file_path: String) -> Result<(), DaoError>{
     let db_pass = get_db_pass();
-    let e = client.lock().await.execute("
+    client.lock().await.execute("
         DELETE FROM fnode WHERE pgp_sym_decrypt(path ::bytea, $2 ::text) ~ $1",
         &[&format!("^{}", file_path), &db_pass]
-    ).await;
-    match e {
-        Ok(_) => Ok(()),
-        _ => Err("Failed to update path!".to_string()),
-    }
+    ).await
+        .map(|_| ())
+        .map_err(|e| DaoError::QueryFailed(format!("delete path: {}", e)))
 }
 
 /// Update only the display name after a path rename has occurred.
-pub async fn update_fnode_name_if_path_is_already_updated(client: Arc<Mutex<Client>>, path: String, new_name: String) -> Result<(), String>{
+pub async fn update_fnode_name_if_path_is_already_updated(client: Arc<Mutex<Client>>, path: String, new_name: String) -> Result<(), DaoError>{
     let db_pass = get_db_pass();
-    let e = client.lock().await.execute("UPDATE fnode SET name =
+    client.lock().await.execute("UPDATE fnode SET name =
         pgp_sym_encrypt($2 ::text, $3 ::text)
         WHERE pgp_sym_decrypt(path::bytea, $3::text) = $1",
-    &[&path, &new_name, &db_pass]).await;
-    match e {
-        Ok(_) => Ok(()),
-        _ => Err("Failed to update f_node name!".to_string()),
-    }
+    &[&path, &new_name, &db_pass]).await
+        .map(|_| ())
+        .map_err(|e| DaoError::QueryFailed(format!("update name: {}", e)))
 }
 
 /// Update the encrypted on-disk name for a node.
-pub async fn update_fnode_enc_name(client: Arc<Mutex<Client>>, path: String, new_enc_name: String) -> Result<(), String>{
+pub async fn update_fnode_enc_name(client: Arc<Mutex<Client>>, path: String, new_enc_name: String) -> Result<(), DaoError>{
     let db_pass = get_db_pass();
-    let e = client.lock().await.execute("UPDATE fnode SET encrypted_name = $2 WHERE pgp_sym_decrypt(path ::bytea, $3 ::text) = $1",
-    &[&path, &new_enc_name, &db_pass]).await;
-    match e {
-        Ok(_) => Ok(()),
-        _ => Err("Failed to update f_node name!".to_string()),
-    }
+    client.lock().await.execute("UPDATE fnode SET encrypted_name = $2 WHERE pgp_sym_decrypt(path ::bytea, $3 ::text) = $1",
+    &[&path, &new_enc_name, &db_pass]).await
+        .map(|_| ())
+        .map_err(|e| DaoError::QueryFailed(format!("update enc name: {}", e)))
 }
 
 /// Fetch a user record; decrypt the key with `DB_PASS`.
-pub async fn get_user(client: Arc<Mutex<Client>>, user_name: String) -> Result<Option<User>, String> {
+pub async fn get_user(client: Arc<Mutex<Client>>, user_name: String) -> Result<Option<User>, DaoError> {
     let db_pass = get_db_pass();
     let e = client.lock().await.query_opt("SELECT id, user_name, group_name, pgp_sym_decrypt(key ::bytea, $2 ::text) AS key, salt, is_admin FROM users WHERE user_name = $1",
      &[&user_name, &db_pass]).await;
@@ -307,70 +308,58 @@ pub async fn get_user(client: Arc<Mutex<Client>>, user_name: String) -> Result<O
             is_admin: row.get("is_admin"),
         })),
         Ok(None) => Ok(None),
-        Err(err) => Err(format!("failed to get user! {}", err)),
+        Err(e) => Err(DaoError::QueryFailed(format!("get user: {}", e))),
     }
 }
 
 /// Check whether a group exists.
-pub async fn get_group(client: Arc<Mutex<Client>>, group_name: String) -> Result<Option<String>, String> {
+pub async fn get_group(client: Arc<Mutex<Client>>, group_name: String) -> Result<Option<String>, DaoError> {
     let e = client.lock().await.query_opt("SELECT g_name FROM groups WHERE g_name = $1", &[&group_name]).await;
     match e {
         Ok(Some(_)) => Ok(Some(group_name)),
         Ok(None) => Ok(None),
-        Err(_) => Err(format!("failed to get group!")),
+        Err(e) => Err(DaoError::QueryFailed(format!("get group: {}", e))),
     }
 }
 
 /// Retrieve all group names from the database.
-pub async fn get_all_groups(client: Arc<Mutex<Client>>) -> Result<Vec<String>, String> {
-    let rows = client.lock().await.query("SELECT g_name FROM groups ORDER BY g_name", &[]).await;
-    match rows {
-        Ok(rows) => {
-            let groups: Vec<String> = rows.iter().map(|row| row.get("g_name")).collect();
-            Ok(groups)
-        }
-        Err(_) => Err("failed to list groups".to_string()),
-    }
+pub async fn get_all_groups(client: Arc<Mutex<Client>>) -> Result<Vec<String>, DaoError> {
+    client.lock().await.query("SELECT g_name FROM groups ORDER BY g_name", &[]).await
+        .map(|rows| rows.iter().map(|row| row.get("g_name")).collect())
+        .map_err(|e| DaoError::QueryFailed(format!("list groups: {}", e)))
 }
 
 /// Retrieve all usernames from the database.
-pub async fn get_all_users(client: Arc<Mutex<Client>>) -> Result<Vec<String>, String> {
-    let rows = client.lock().await.query("SELECT user_name FROM users ORDER BY user_name", &[]).await;
-    match rows {
-        Ok(rows) => {
-            let users: Vec<String> = rows.iter().map(|row| row.get("user_name")).collect();
-            Ok(users)
-        }
-        Err(_) => Err("failed to list users".to_string()),
-    }
+pub async fn get_all_users(client: Arc<Mutex<Client>>) -> Result<Vec<String>, DaoError> {
+    client.lock().await.query("SELECT user_name FROM users ORDER BY user_name", &[]).await
+        .map(|rows| rows.iter().map(|row| row.get("user_name")).collect())
+        .map_err(|e| DaoError::QueryFailed(format!("list users: {}", e)))
 }
 
 /// Check if a user has admin privileges.
-pub async fn is_admin(client: Arc<Mutex<Client>>, user_name: String) -> Result<bool, String> {
+pub async fn is_admin(client: Arc<Mutex<Client>>, user_name: String) -> Result<bool, DaoError> {
     let row = client.lock().await.query_opt("SELECT is_admin FROM users WHERE user_name = $1", &[&user_name]).await;
     match row {
         Ok(Some(row)) => Ok(row.get("is_admin")),
         Ok(None) => Ok(false),
-        Err(_) => Err("failed to check admin status".to_string()),
+        Err(e) => Err(DaoError::QueryFailed(format!("check admin: {}", e))),
     }
 }
 
 /// Change the owner of a file or directory.
-pub async fn change_owner(client: Arc<Mutex<Client>>, file_path: String, new_owner: String) -> Result<(), String> {
+pub async fn change_owner(client: Arc<Mutex<Client>>, file_path: String, new_owner: String) -> Result<(), DaoError> {
     let db_pass = get_db_pass();
-    let e = client.lock().await.execute(
+    client.lock().await.execute(
         "UPDATE fnode SET owner = pgp_sym_encrypt($2 ::text, $3 ::text) WHERE pgp_sym_decrypt(path ::bytea, $3 ::text) = $1",
         &[&file_path, &new_owner, &db_pass]
-    ).await;
-    match e {
-        Ok(_) => Ok(()),
-        Err(_) => Err("failed to change owner".to_string()),
-    }
+    ).await
+        .map(|_| ())
+        .map_err(|e| DaoError::QueryFailed(format!("change owner: {}", e)))
 }
 
 /// Get the group associated with a file node.
 /// Uses the file-level group if set, otherwise falls back to the owner's group.
-pub async fn get_file_group(client: Arc<Mutex<Client>>, owner: String, file_group: Option<String>) -> Result<Option<String>, String> {
+pub async fn get_file_group(client: Arc<Mutex<Client>>, owner: String, file_group: Option<String>) -> Result<Option<String>, DaoError> {
     if file_group.is_some() {
         return Ok(file_group);
     }
@@ -381,31 +370,28 @@ pub async fn get_file_group(client: Arc<Mutex<Client>>, owner: String, file_grou
     match row {
         Ok(Some(row)) => Ok(row.try_get("group_name").unwrap_or(None)),
         Ok(None) => Ok(None),
-        Err(_) => Err("failed to get file group".to_string()),
+        Err(e) => Err(DaoError::QueryFailed(format!("get file group: {}", e))),
     }
 }
 
 /// Update the group assignment for a file or directory.
-pub async fn change_file_group(client: Arc<Mutex<Client>>, file_path: String, new_group: String) -> Result<(), String> {
+pub async fn change_file_group(client: Arc<Mutex<Client>>, file_path: String, new_group: String) -> Result<(), DaoError> {
     let db_pass = get_db_pass();
-    let e = client.lock().await.execute(
+    client.lock().await.execute(
         "UPDATE fnode SET file_group = $2 WHERE pgp_sym_decrypt(path ::bytea, $3 ::text) = $1",
         &[&file_path, &new_group, &db_pass]
-    ).await;
-    match e {
-        Ok(_) => Ok(()),
-        Err(_) => Err("failed to change file group".to_string()),
-    }
+    ).await
+        .map(|_| ())
+        .map_err(|e| DaoError::QueryFailed(format!("change file group: {}", e)))
 }
 
 /// Check if a user belongs to a specific group.
-pub async fn user_in_group(client: Arc<Mutex<Client>>, user_name: String, group_name: String) -> Result<bool, String> {
-    // Check primary group first
+pub async fn user_in_group(client: Arc<Mutex<Client>>, user_name: String, group_name: String) -> Result<bool, DaoError> {
     let row = client.lock().await.query_opt(
         "SELECT group_name FROM users WHERE user_name = $1",
         &[&user_name]
     ).await;
-    
+
     let primary_group_match = match row {
         Ok(Some(row)) => {
             let user_group: Option<String> = row.try_get("group_name").unwrap_or(None);
@@ -418,7 +404,6 @@ pub async fn user_in_group(client: Arc<Mutex<Client>>, user_name: String, group_
         return Ok(true);
     }
 
-    // Check secondary groups in groups table
     let row = client.lock().await.query_opt(
         "SELECT 1 FROM groups WHERE g_name = $2 AND $1 = ANY(users)",
         &[&user_name, &group_name]
@@ -427,43 +412,37 @@ pub async fn user_in_group(client: Arc<Mutex<Client>>, user_name: String, group_
     match row {
         Ok(Some(_)) => Ok(true),
         Ok(None) => Ok(false),
-        Err(_) => Err("failed to check group membership".to_string()),
+        Err(e) => Err(DaoError::QueryFailed(format!("check group membership: {}", e))),
     }
 }
 
 /// Add a user to a group (secondary membership).
-pub async fn add_user_to_group(client: Arc<Mutex<Client>>, user_name: String, group_name: String) -> Result<(), String> {
-    // Check if group exists
+pub async fn add_user_to_group(client: Arc<Mutex<Client>>, user_name: String, group_name: String) -> Result<(), DaoError> {
     let group_exists = get_group(client.clone(), group_name.clone()).await?.is_some();
     if !group_exists {
-        return Err(format!("Group {} does not exist", group_name));
+        return Err(DaoError::NotFound);
     }
-    // Update groups table to append user to users array
-    let e = client.lock().await.execute(
+    client.lock().await.execute(
         "UPDATE groups SET users = array_append(users, $1) WHERE g_name = $2 AND NOT ($1 = ANY(users))",
         &[&user_name, &group_name]
-    ).await;
-    match e {
-        Ok(_) => Ok(()),
-        Err(e) => Err(format!("Failed to add user to group: {}", e)),
-    }
+    ).await
+        .map(|_| ())
+        .map_err(|e| DaoError::QueryFailed(format!("add user to group: {}", e)))
 }
 
 /// Remove a user from a group (secondary membership).
-pub async fn remove_user_from_group(client: Arc<Mutex<Client>>, user_name: String, group_name: String) -> Result<(), String> {
-    let e = client.lock().await.execute(
+pub async fn remove_user_from_group(client: Arc<Mutex<Client>>, user_name: String, group_name: String) -> Result<(), DaoError> {
+    client.lock().await.execute(
         "UPDATE groups SET users = array_remove(users, $1) WHERE g_name = $2",
         &[&user_name, &group_name]
-    ).await;
-    match e {
-        Ok(_) => Ok(()),
-        Err(e) => Err(format!("Failed to remove user from group: {}", e)),
-    }
+    ).await
+        .map(|_| ())
+        .map_err(|e| DaoError::QueryFailed(format!("remove user from group: {}", e)))
 }
 
 /// Ensure required seed data exists (currently `/home` root).
-pub async fn init_db(client: Arc<Mutex<Client>>) -> Result<(), ()> {
-    let does_home_exist = get_f_node(client.clone(), "/home".to_string()).await.unwrap().is_some();
+pub async fn init_db(client: Arc<Mutex<Client>>) -> Result<(), DaoError> {
+    let does_home_exist = get_f_node(client.clone(), "/home".to_string()).await?.is_some();
     if !does_home_exist {
         add_file(
             client.clone(),
@@ -484,7 +463,7 @@ pub async fn init_db(client: Arc<Mutex<Client>>) -> Result<(), ()> {
                 created_at: 0,
                 modified_at: 0,
                 file_group: None,
-            }).await.unwrap();
+            }).await?;
     }
     Ok(())
 }
@@ -495,7 +474,7 @@ pub async fn copy_recursive(
     src_root: String,
     dst_root: String,
     owner: String,
-) -> Result<(), String> {
+) -> Result<(), DaoError> {
     let mut stack = vec![(src_root, dst_root)];
 
     while let Some((src, dst)) = stack.pop() {
@@ -507,7 +486,7 @@ pub async fn copy_recursive(
                 Some("") | None => "/".to_string(),
                 Some(p) => p.to_string(),
             };
-            
+
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs() as i64)
@@ -531,16 +510,13 @@ pub async fn copy_recursive(
                 file_group: node.file_group.clone(),
             };
 
-            if let Err(e) = add_file(pg_client.clone(), new_node).await {
-                return Err(format!("db error creating {}: {}", dst, e));
-            }
-            if let Err(e) = add_file_to_parent(pg_client.clone(), parent, name).await {
-                return Err(format!("db parent error linking {}: {}", dst, e));
-            }
+            add_file(pg_client.clone(), new_node).await
+                .map_err(|e| DaoError::QueryFailed(format!("copy {}: {}", dst, e)))?;
+            add_file_to_parent(pg_client.clone(), parent, name).await
+                .map_err(|e| DaoError::QueryFailed(format!("copy link {}: {}", dst, e)))?;
 
             if node.dir {
                 for child in node.children {
-                    // Avoid double slashes if root
                     let child_src = if src == "/" { format!("/{}", child) } else { format!("{}/{}", src, child) };
                     let child_dst = if dst == "/" { format!("/{}", child) } else { format!("{}/{}", dst, child) };
                     stack.push((child_src, child_dst));
@@ -548,20 +524,14 @@ pub async fn copy_recursive(
             } else {
                 let src_storage = format!("storage{}", src);
                 let dst_storage = format!("storage{}", dst);
-                if let Err(e) = tokio::fs::copy(&src_storage, &dst_storage).await {
-                     // Creating directory if it doesn't exist?
-                     // Relying on previous loop iteration to have created parent dir.
-                     // But if top level is file, parent should exist.
-                     // If top level is dir, we handle mkdir below.
-                    return Err(format!("fs copy error: {}", e));
-                }
+                tokio::fs::copy(&src_storage, &dst_storage).await
+                    .map_err(|e| DaoError::QueryFailed(format!("fs copy: {}", e)))?;
             }
-            
+
             if node.dir {
                 let dst_storage = format!("storage{}", dst);
-                if let Err(e) = tokio::fs::create_dir_all(&dst_storage).await {
-                     return Err(format!("fs mkdir error: {}", e));
-                }
+                tokio::fs::create_dir_all(&dst_storage).await
+                    .map_err(|e| DaoError::QueryFailed(format!("fs mkdir: {}", e)))?;
             }
         }
     }

@@ -506,7 +506,7 @@ where
                             } else {
                                 match dao::add_user_to_group(pg_client.clone(), user_name.clone(), group_name.clone()).await {
                                     Ok(_) => AppMessage { cmd: Cmd::AddUserToGroup, data: vec![format!("User {} added to group {}", user_name, group_name)] },
-                                    Err(e) => AppMessage { cmd: Cmd::Failure, data: vec![e] },
+                                    Err(e) => AppMessage { cmd: Cmd::Failure, data: vec![e.to_string()] },
                                 }
                             }
                         }
@@ -527,7 +527,7 @@ where
                             } else {
                                 match dao::remove_user_from_group(pg_client.clone(), user_name.clone(), group_name.clone()).await {
                                     Ok(_) => AppMessage { cmd: Cmd::RemoveUserFromGroup, data: vec![format!("User {} removed from group {}", user_name, group_name)] },
-                                    Err(e) => AppMessage { cmd: Cmd::Failure, data: vec![e] },
+                                    Err(e) => AppMessage { cmd: Cmd::Failure, data: vec![e.to_string()] },
                                 }
                             }
                         }
@@ -636,7 +636,7 @@ where
                         let parent_update = if res.is_ok() {
                             dao::add_file_to_parent(pg_client.clone(), parent_path.clone(), dir_name.clone()).await
                         } else {
-                            Err("parent not updated".into())
+                            Err(dao::DaoError::QueryFailed("parent not updated".into()))
                         };
 
                         match (res, parent_update) {
@@ -868,7 +868,7 @@ where
                         let parent_update = if res.is_ok() {
                             dao::add_file_to_parent(pg_client.clone(), parent_path.clone(), file_name.clone()).await
                         } else {
-                            Err("parent not updated".into())
+                            Err(dao::DaoError::QueryFailed("parent not updated".into()))
                         };
 
                         match (res, parent_update) {
@@ -1253,7 +1253,7 @@ where
                                                          if can_write_with_group(&parent_node, current_user.as_ref(), current_user_group.as_ref(), parent_owner_group.as_ref()) {
                                                              match dao::copy_recursive(pg_client.clone(), src_path, final_dst_path, current_user.clone().unwrap()).await {
                                                                  Ok(_) => AppMessage { cmd: Cmd::Cp, data: vec!["ok".to_string()] },
-                                                                 Err(e) => AppMessage { cmd: Cmd::Failure, data: vec![e] }
+                                                                 Err(e) => AppMessage { cmd: Cmd::Failure, data: vec![e.to_string()] }
                                                              }
                                                          } else {
                                                              AppMessage { cmd: Cmd::Failure, data: vec!["no write permission on target directory".to_string()] }
