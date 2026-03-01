@@ -1,6 +1,15 @@
-# SecureFS
+<p align="center">
+  <h1 align="center">SecureFS</h1>
+  <p align="center">An encrypted virtual file system with client-server architecture, built in Rust.</p>
+</p>
 
-A secure distributed file system implemented in Rust with client-server architecture.
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License"></a>
+  <img src="https://img.shields.io/badge/rust-2021_edition-orange.svg" alt="Rust Edition">
+  <img src="https://img.shields.io/badge/postgres-15-336791.svg" alt="PostgreSQL">
+</p>
+
+---
 
 ## Installation
 
@@ -24,53 +33,154 @@ cargo run --bin securefs
 
 ---
 
+## Architecture
+
+<p align="center">
+  <img src="docs/Architecture.png" alt="Architecture Overview" width="700">
+</p>
+
+SecureFS implements a client-server model over encrypted WebSocket channels. The client sends commands through an AES-256-GCM encrypted tunnel established via X25519 key exchange. The server processes file operations against a PostgreSQL database where all metadata is encrypted with pgcrypto.
+
+### Security Layers
+
+<p align="center">
+  <img src="assets/security_architecture.svg" alt="Security Architecture" width="700">
+</p>
+
+| Layer | Technology | Purpose |
+|-------|-----------|---------|
+| Transport | AES-256-GCM over WebSocket | Message confidentiality |
+| Key Exchange | X25519 ECDH + HKDF-SHA256 | Ephemeral session keys |
+| Authentication | Argon2id | Password hashing with rate limiting |
+| Database | pgcrypto | Symmetric encryption for all metadata |
+| Integrity | BLAKE3 | File corruption detection |
+
+### Data Flow
+
+<p align="center">
+  <img src="assets/data_flow.svg" alt="Data Flow" width="600">
+</p>
+
+### Database Schema
+
+<p align="center">
+  <img src="assets/er_diagram.svg" alt="ER Diagram" width="600">
+</p>
+
+---
+
 ## Requirements
 
-- Rust 1.70+
-- PostgreSQL 13+
-- Docker and Docker Compose
+| Dependency | Version |
+|-----------|---------|
+| Rust | 1.70+ |
+| PostgreSQL | 13+ |
+| Docker | 20+ |
+| Docker Compose | v2+ |
 
 ---
 
 ## Features
 
-### Completed Features
+### Completed
 
-#### Core File System Operations
-- **File CRUD**: Create, read, update, delete files and directories
-- **Directory Navigation**: cd, pwd, ls commands
-- **File Operations**: mkdir, touch, mv, delete, cat, echo
-- **Recursive Copy**: Copy files and directories with `cp` command
-- **File Search**: Find files by pattern with recursive search
+- **End-to-End Encryption** — AES-256-GCM transport with X25519 key exchange
+- **Unix-style Permissions** — Owner/group/other rwx bits with chmod, chown, chgrp
+- **File Operations** — ls, cd, pwd, mkdir, touch, cat, echo, mv, delete, cp, find
+- **User & Group Management** — User creation, group assignment, admin tools
+- **Integrity Verification** — BLAKE3 hash checks via `scan` command
+- **Recursive Copy** — Deep copy of files and directories
+- **File Search** — Pattern-based recursive file search with `find`
+- **File Metadata** — Size and timestamp tracking
+- **Rate Limiting** — Login attempt throttling per IP
+- **TLS Enforcement** — Mandatory TLS unless explicitly disabled
+- **CI Pipeline** — GitHub Actions with clippy, fmt, and test checks
+- **Docker Support** — Multi-stage Dockerfile for server deployment
 
-#### Security & Encryption
-- **End-to-End Encryption**: AES-256-GCM encryption for all messages
-- **Key Exchange**: X25519 ECDH for secure key establishment
-- **Password Hashing**: Argon2 for secure password storage
-- **Database Encryption**: PostgreSQL pgcrypto for metadata encryption
-- **Integrity Checking**: BLAKE3 hash verification with `scan` command
+### Planned
 
-#### Permission System
-- **Unix-style Permissions**: Owner/group/other with rwx bits
-- **Permission Management**: chmod command support
-- **Access Control**: Read/write/execute permission checks
+- [ ] Large file streaming
+- [ ] Command history & tab completion
+- [ ] File compression (compress-then-encrypt)
 
-#### User & Group Management
-- **User Creation**: Admin can create new users
-- **Group Management**: Create and manage groups
-- **Admin Tools**: lsusers, lsgroups commands
-- **Authentication**: Secure login/logout with session management
+---
 
-### Planned Features
-- Large File Streaming: Efficient handling of large files
-- Tab Completion: Path auto-completion
-- Advanced Shell Features: Piping, variables, background jobs
+## Build Targets
+
+| Crate | Binary | Description |
+|-------|--------|-------------|
+| `securefs-server` | `securefs-server` | WebSocket server with TLS, encryption, and DAO layer |
+| `securefs-client` | `securefs` | Interactive CLI client with key exchange |
+| `securefs-model` | — (library) | Shared protocol, commands, and data types |
+
+---
+
+## Usage
+
+### Server
+
+```sh
+# Start PostgreSQL
+docker-compose up -d
+
+# Start server (default: 127.0.0.1:8080)
+cargo run --bin securefs-server
+
+# Environment variables
+export SERVER_ADDR=127.0.0.1:8080
+export DB_PASS=securefs
+```
+
+### Client
+
+```sh
+# Connect
+cargo run --bin securefs
+
+# Login (default admin: admin / password)
+> login admin password
+
+# File operations
+> pwd
+/home/admin
+> mkdir projects
+> cd projects
+> touch README.md
+> echo "Hello SecureFS" README.md
+> cat README.md
+Hello SecureFS
+
+# Copy and search
+> cp README.md backup.md
+> find README
+/home/admin/projects/README.md
+/home/admin/projects/backup.md
+
+# Integrity check
+> scan README.md
+Ensured integrity of README.md!
+
+# Permissions
+> chmod 750 README.md
+> chown admin README.md
+> chgrp developers README.md
+> ls
+-rwxr-x--- admin README.md
+
+# User management (admin only)
+> newuser alice pass1234 developers
+> newgroup engineering
+> add_user_to_group alice engineering
+
+> logout
+```
 
 ---
 
 ## Commands
 
-### File System Operations
+### File System
+
 | Command | Description |
 |---------|-------------|
 | `ls` | List directory contents |
@@ -78,23 +188,24 @@ cargo run --bin securefs
 | `pwd` | Print working directory |
 | `mkdir <name>` | Create directory |
 | `touch <name>` | Create empty file |
-| `mv <src> <dst>` | Move/rename file or directory |
-| `delete <name>` | Delete file or directory |
 | `cat <file>` | Display file contents |
 | `echo <content> <file>` | Write content to file |
+| `mv <src> <dst>` | Move/rename file or directory |
+| `delete <name>` | Delete file or directory |
 | `cp <src> <dst>` | Copy file or directory (recursive) |
-| `find <pattern>` | Search for files by name pattern |
+| `find <pattern>` | Search for files by name |
 
-### Permissions & Security
+### Security & Permissions
+
 | Command | Description |
 |---------|-------------|
-| `chmod <mode> <name>` | Change file permissions |
+| `chmod <mode> <name>` | Change file permissions (e.g. `750`) |
 | `chown <user> <name>` | Change file owner |
 | `chgrp <group> <name>` | Change file group |
-| `scan <file>` | Verify file integrity |
-| `get_encrypted_filename <file>` | Get encrypted filename |
+| `scan <file>` | Verify file integrity via BLAKE3 |
 
 ### User Management (Admin)
+
 | Command | Description |
 |---------|-------------|
 | `newuser <user> <pass> <group>` | Create new user |
@@ -105,253 +216,107 @@ cargo run --bin securefs
 | `remove_user_from_group <user> <group>` | Remove user from group |
 
 ### Session
+
 | Command | Description |
 |---------|-------------|
-| `login <user> <pass>` | Authenticate with server |
+| `login <user> <pass>` | Authenticate |
 | `logout` | End session |
 
 ---
 
-## Usage Examples
+## Project Structure
 
-### Server Setup
-```sh
-# Start PostgreSQL database
-docker-compose up -d
-
-# Initialize schema (automatic on first run)
-# Default admin credentials: admin / password
-
-# Start server
-cargo run --bin securefs-server
-# Server listening on 127.0.0.1:8080
 ```
-
-### Client Usage
-```sh
-# Connect to server
-cargo run --bin securefs
-# Connected to 127.0.0.1:8080
-
-# Login
-> login admin password
-# Logged in successfully
-
-# Basic operations
-> pwd
-/home/admin
-
-> ls
-drwxrwxrwx admin
-
-> mkdir projects
-> cd projects
-> touch README.md
-> echo "Hello SecureFS" README.md
-> cat README.md
-Hello SecureFS
-
-# Copy operations
-> cp README.md backup.md
-> cp -r projects archive
-
-# Search files
-> find README
-/home/admin/projects/README.md
-/home/admin/projects/backup.md
-
-# Check integrity
-> scan README.md
-Ensured integrity of README.md!
-
-# Change ownership
-> chown admin README.md
-owner changed to admin
-
-# Change group
-> chgrp developers README.md
-group changed to developers
-
-# Permission management
-> chmod 750 README.md
-> ls
--rwxr-x--- admin README.md
-
-# Logout
-> logout
-```
-
----
-
-## Architecture
-
-### System Overview
-
-![Architecture Overview](docs/Architecture.png)
-
-SecureFS implements a client-server architecture with end-to-end encryption, separating the system into **untrusted** (Client, OS) and **trusted** (Server, Database, Docker) environments.
-
-### Class Diagram
-
-![Class Diagram](assets/class_diagram.svg)
-
-Shows the complete system architecture including:
-- **Protocol**: AppMessage, Cmd enum, Path types
-- **Model**: FNode, User, Group data structures
-- **Server**: WebSocketHandler, DAO layer, Crypto utilities
-- **Client**: CLI with command parsing and encrypted communication
-- **Database**: PostgreSQL with pgcrypto extension
-
-### Sequence Diagram
-
-![Sequence Diagram](docs/sequence_diagram.png)
-
-Illustrates the high-level communication flow:
-- WebSocket connection establishment
-- X25519 Diffie-Hellman key exchange
-- Encrypted message loop between Client, Server, and Database
-
-### Use Case Diagram
-
-![Use Case Diagram](docs/usecase_diagram.png)
-
-Documents all system capabilities:
-- **File System Operations**: ls, cd, pwd, mkdir, touch, cat, echo, mv, delete, cp, find
-- **Security Operations**: chmod, scan, encryption, key exchange
-- **User Management**: login, logout, user/group management
-- **Permission System**: Read/write/execute checks, access control
-
-### Database Schema
-
-![ER Diagram](assets/er_diagram.svg)
-
-Entity-relationship diagram showing PostgreSQL tables with encryption details:
-- **users**: User accounts with Argon2 password hashes and encrypted AES keys
-- **groups**: Group definitions with member arrays
-- **fnode**: File/directory nodes with pgcrypto-encrypted metadata
-
-### Client State Machine
-
-![State Diagram](assets/state_diagram.svg)
-
-Connection lifecycle states from disconnected through authenticated command loop.
-
-### Security Architecture
-
-![Security Architecture](assets/security_architecture.svg)
-
-Comprehensive view of all security layers:
-- **Transport**: X25519 key exchange and AES-256-GCM encryption
-- **Authentication**: Argon2id password hashing with rate limiting
-- **Database**: pgcrypto symmetric encryption for all sensitive fields
-- **Integrity**: BLAKE3 file hashing for corruption detection
-
-### Command Processing Flow
-
-![File Operations](assets/file_operations.svg)
-
-End-to-end flow from user input through encryption, server processing, DAO operations, and response.
-
-### Permission Check Flow
-
-![Permission Flow](assets/permission_flow.svg)
-
-Unix-style permission evaluation: owner check, group membership, then other permissions.
-
-### Data Flow
-
-![Data Flow](assets/data_flow.svg)
-
-High-level data flow between client, encrypted transport, server session, and persistent storage.
-
-
----
-
-## Security Features
-
-### Encryption
-- **Transport**: All WebSocket messages encrypted with AES-256-GCM
-- **Key Exchange**: X25519 Elliptic Curve Diffie-Hellman
-- **Session Keys**: Unique per-connection ephemeral keys
-- **Database**: Sensitive fields encrypted with pgcrypto
-
-### Authentication
-- **Password Storage**: Argon2id with salt
-- **Session Management**: Stateful server-side authentication
-- **Access Control**: Unix-style permission enforcement
-
-### Integrity
-- **File Hashing**: BLAKE3 for content verification
-- **Corruption Detection**: `scan` command for integrity checks
-- **Audit Trail**: Server-side logging
-
----
-
-## Configuration
-
-### Environment Variables
-```sh
-# Server
-export SERVER_ADDR=127.0.0.1:8080
-export DB_PASS=securefs
-
-# Client
-export SERVER_ADDR=127.0.0.1:8080
-```
-
-### Database
-```sh
-# Connection (see docker-compose.yml)
-Host: localhost
-Port: 5431
-Database: securefs
-User: securefs_user
-Password: securefs_password
+securefs/
+├── Cargo.toml                  # Workspace root
+├── docker-compose.yml          # PostgreSQL service
+├── db/
+│   └── schema.sql              # Database schema with pgcrypto
+├── docker/
+│   └── Dockerfile.server       # Multi-stage server build
+├── model/
+│   └── src/
+│       ├── lib.rs              # Re-exports
+│       ├── cmd.rs              # Command enum and argument parsing
+│       └── protocol.rs         # AppMessage, FNode, User, Group types
+├── server/
+│   ├── src/
+│   │   ├── main.rs             # TLS setup, WebSocket listener
+│   │   ├── lib.rs              # DAO module + audit macro
+│   │   ├── session.rs          # Session state and rate limiter
+│   │   ├── crypto.rs           # AES-256-GCM encrypt/decrypt
+│   │   ├── util.rs             # Path resolution, permissions, validation
+│   │   ├── dao/
+│   │   │   ├── mod.rs
+│   │   │   └── dao.rs          # PostgreSQL queries with pgcrypto
+│   │   └── handlers/
+│   │       ├── mod.rs           # Command dispatcher
+│   │       ├── auth.rs          # Login, logout, key exchange
+│   │       ├── fs.rs            # File system operations
+│   │       ├── perms.rs         # chmod, chown, chgrp
+│   │       └── user.rs          # User and group management
+│   └── tests/
+│       ├── cp_test.rs           # Recursive copy tests
+│       ├── dao_auth.rs          # Authentication roundtrip
+│       ├── find_test.rs         # File search tests
+│       ├── group_membership_test.rs  # Group permission tests
+│       └── scan_test.rs         # Integrity verification tests
+├── client/
+│   └── src/
+│       └── main.rs             # CLI client with encrypted WebSocket
+└── .github/
+    └── workflows/
+        └── ci.yml              # Build, test, clippy, fmt checks
 ```
 
 ---
 
 ## Testing
 
-### Run All Tests
 ```sh
+# Run all tests (requires PostgreSQL running)
 cargo test --workspace
-```
 
-### Individual Test Suites
-```sh
-# Authentication roundtrip
+# Individual suites
 cargo test --package securefs-server --test dao_auth
-
-# Recursive copy
 cargo test --package securefs-server --test cp_test
-
-# File search
 cargo test --package securefs-server --test find_test
-
-# Integrity checking
 cargo test --package securefs-server --test scan_test
+cargo test --package securefs-server --test group_membership_test
 ```
+
 ---
 
-## Future Improvements
+## Configuration
 
-- [x] Basic file operations (ls, cd, mkdir, etc.)
-- [x] Unix-style permissions
-- [x] User and group management
-- [x] End-to-end encryption
-- [x] Recursive copy and search
-- [x] Integrity verification
-- [x] Integration test suite
-- [x] Group permission checks
-- [x] File metadata (size, timestamps)
-- [x] chown/chgrp commands
-- [x] Connection retry logic
-- [ ] Large file streaming
-- [ ] Command history & tab completion
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SERVER_ADDR` | `127.0.0.1:8080` | Server bind address |
+| `DB_PASS` | `securefs` | Database password |
+| `ALLOW_INSECURE` | — | Set to `1` to disable TLS requirement |
+
+### Database (docker-compose.yml)
+
+| Setting | Value |
+|---------|-------|
+| Host | `localhost` |
+| Port | `5431` |
+| Database | `securefs` |
+| User | `securefs_user` |
+| Password | `securefs_password` |
+
+---
+
+## Platform Support
+
+| Platform | Status |
+|----------|--------|
+| Linux (x86_64) | Supported |
+| macOS (ARM/x86) | Supported |
+| Windows | Untested |
 
 ---
 
 ## License
 
-Apache License 2.0 - See [LICENSE](LICENSE) for details.
+Apache License 2.0 — See [LICENSE](LICENSE) for details.
