@@ -1,6 +1,6 @@
 <p align="center">
   <h1 align="center">SecureFS</h1>
-  <p align="center">An encrypted virtual file system with client-server architecture, built in Rust.</p>
+  <p align="center">An encrypted file system with client-server architecture, built in Rust.</p>
 </p>
 
 <p align="center">
