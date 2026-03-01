@@ -76,6 +76,18 @@ pub enum Cmd {
     Grep,
     /// Create a symbolic link.
     Ln,
+    /// Begin a chunked file upload.
+    UploadStart,
+    /// Send a base64-encoded chunk during upload.
+    UploadChunk,
+    /// Finalize a chunked file upload.
+    UploadEnd,
+    /// Begin a chunked file download.
+    DownloadStart,
+    /// Request a specific chunk during download.
+    DownloadChunk,
+    /// Finalize a chunked file download.
+    DownloadEnd,
     #[default]
     /// Placeholder for unknown commands.
     Invalid,

@@ -47,6 +47,12 @@ impl MapStr for Cmd {
             "tail" => Ok(Cmd::Tail),
             "grep" => Ok(Cmd::Grep),
             "ln" => Ok(Cmd::Ln),
+            "upload_start" | "upload" => Ok(Cmd::UploadStart),
+            "upload_chunk" => Ok(Cmd::UploadChunk),
+            "upload_end" => Ok(Cmd::UploadEnd),
+            "download_start" | "download" => Ok(Cmd::DownloadStart),
+            "download_chunk" => Ok(Cmd::DownloadChunk),
+            "download_end" => Ok(Cmd::DownloadEnd),
             _ => Err(()),
         }
     }
@@ -97,6 +103,12 @@ impl NumArgs for Cmd {
             "tail" => Ok(usize::MAX),
             "grep" => Ok(2),
             "ln" => Ok(3),
+            "upload_start" | "upload" => Ok(2),
+            "upload_chunk" => Ok(usize::MAX),
+            "upload_end" => Ok(usize::MAX),
+            "download_start" | "download" => Ok(2),
+            "download_chunk" => Ok(usize::MAX),
+            "download_end" => Ok(usize::MAX),
             _ => Err(()),
         }
     }
