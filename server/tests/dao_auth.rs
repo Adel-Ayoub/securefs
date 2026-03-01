@@ -1,4 +1,4 @@
-use deadpool_postgres::{Config, ManagerConfig, RecyclingMethod, Runtime, Pool};
+use deadpool_postgres::{Config, ManagerConfig, Pool, RecyclingMethod, Runtime};
 use securefs_server::dao;
 use tokio_postgres::NoTls;
 
@@ -9,7 +9,9 @@ fn test_pool() -> Pool {
     cfg.user = Some("securefs_user".into());
     cfg.password = Some("securefs_password".into());
     cfg.port = Some(5431);
-    cfg.manager = Some(ManagerConfig { recycling_method: RecyclingMethod::Fast });
+    cfg.manager = Some(ManagerConfig {
+        recycling_method: RecyclingMethod::Fast,
+    });
     cfg.create_pool(Some(Runtime::Tokio1), NoTls).unwrap()
 }
 

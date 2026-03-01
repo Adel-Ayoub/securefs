@@ -8,27 +8,27 @@ use std::env;
 use std::sync::Arc;
 
 use aes_gcm::{Aes256Gcm, Key};
-use deadpool_postgres::{Config, ManagerConfig, RecyclingMethod, Runtime, Pool};
+use deadpool_postgres::{Config, ManagerConfig, Pool, RecyclingMethod, Runtime};
 use futures_util::{SinkExt, StreamExt};
 use log::{info, warn};
 use securefs_model::protocol::{AppMessage, Cmd};
 use std::collections::HashMap;
-use std::io::BufReader;
 use std::fs as stdfs;
+use std::io::BufReader;
 use std::net::IpAddr;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
 use tokio_postgres::NoTls;
-use tokio_rustls::TlsAcceptor;
 use tokio_rustls::rustls::{self, pki_types::CertificateDer};
+use tokio_rustls::TlsAcceptor;
+use tokio_tungstenite::accept_async;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
-use tokio_tungstenite::accept_async;
 
 use securefs_server::dao;
 
-mod session;
 mod crypto;
+mod session;
 mod util;
 
 /// Audit log for security-relevant events.
@@ -56,10 +56,10 @@ use session::{RateLimiter, Session};
 
 /// Load TLS configuration from certificate and key files.
 fn load_tls_config(cert_path: &str, key_path: &str) -> Result<TlsAcceptor, String> {
-    let cert_file = stdfs::File::open(cert_path)
-        .map_err(|e| format!("failed to open cert file: {}", e))?;
-    let key_file = stdfs::File::open(key_path)
-        .map_err(|e| format!("failed to open key file: {}", e))?;
+    let cert_file =
+        stdfs::File::open(cert_path).map_err(|e| format!("failed to open cert file: {}", e))?;
+    let key_file =
+        stdfs::File::open(key_path).map_err(|e| format!("failed to open key file: {}", e))?;
 
     let mut cert_reader = BufReader::new(cert_file);
     let mut key_reader = BufReader::new(key_file);
@@ -239,8 +239,8 @@ where
             let text = msg
                 .to_text()
                 .map_err(|e| format!("ws message error: {}", e))?;
-            let enc_tuple: (String, [u8; 12]) =
-                serde_json::from_str(text).map_err(|e| format!("encrypted decode failed: {}", e))?;
+            let enc_tuple: (String, [u8; 12]) = serde_json::from_str(text)
+                .map_err(|e| format!("encrypted decode failed: {}", e))?;
             crypto::decrypt_app_message(key, &enc_tuple)?
         } else {
             let text = msg
@@ -311,14 +311,8 @@ where
                 handlers::fs::delete(incoming.data, &session, &pool).await,
                 None,
             ),
-            Cmd::Mv => (
-                handlers::fs::mv(incoming.data, &session, &pool).await,
-                None,
-            ),
-            Cmd::Cp => (
-                handlers::fs::cp(incoming.data, &session, &pool).await,
-                None,
-            ),
+            Cmd::Mv => (handlers::fs::mv(incoming.data, &session, &pool).await, None),
+            Cmd::Cp => (handlers::fs::cp(incoming.data, &session, &pool).await, None),
             Cmd::Cat => (
                 handlers::fs::cat(incoming.data, &session, &pool).await,
                 None,

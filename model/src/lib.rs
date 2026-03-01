@@ -3,8 +3,8 @@
 //! This crate contains all the core data structures used throughout
 //! the SecureFS system for representing users, files, groups, and commands.
 
-pub mod protocol;
 pub mod cmd;
+pub mod protocol;
 
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -167,39 +167,95 @@ impl std::fmt::Display for Path {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Cmd {
     // Authentication
-    Login { username: String, password: String },
+    Login {
+        username: String,
+        password: String,
+    },
     Logout,
 
     // File operations
-    List { path: Option<Path> },
-    ChangeDir { path: Path },
+    List {
+        path: Option<Path>,
+    },
+    ChangeDir {
+        path: Path,
+    },
     PrintWorkingDir,
-    ReadFile { path: Path },
-    WriteFile { path: Path, data: Vec<u8> },
-    CreateFile { path: Path },
-    CreateDir { path: Path },
-    Remove { path: Path, recursive: bool },
-    Copy { src: Path, dst: Path },
-    Move { src: Path, dst: Path },
+    ReadFile {
+        path: Path,
+    },
+    WriteFile {
+        path: Path,
+        data: Vec<u8>,
+    },
+    CreateFile {
+        path: Path,
+    },
+    CreateDir {
+        path: Path,
+    },
+    Remove {
+        path: Path,
+        recursive: bool,
+    },
+    Copy {
+        src: Path,
+        dst: Path,
+    },
+    Move {
+        src: Path,
+        dst: Path,
+    },
 
     // User management (admin only)
-    CreateUser { username: String, password: String, is_admin: bool },
-    DeleteUser { username: String },
-    ChangePassword { username: String, new_password: String },
+    CreateUser {
+        username: String,
+        password: String,
+        is_admin: bool,
+    },
+    DeleteUser {
+        username: String,
+    },
+    ChangePassword {
+        username: String,
+        new_password: String,
+    },
 
     // Group management
-    CreateGroup { name: String },
-    DeleteGroup { name: String },
-    AddUserToGroup { username: String, groupname: String },
-    RemoveUserFromGroup { username: String, groupname: String },
+    CreateGroup {
+        name: String,
+    },
+    DeleteGroup {
+        name: String,
+    },
+    AddUserToGroup {
+        username: String,
+        groupname: String,
+    },
+    RemoveUserFromGroup {
+        username: String,
+        groupname: String,
+    },
 
     // Permission management
-    ChangePermissions { path: Path, permissions: u32 },
-    ChangeOwner { path: Path, username: String },
-    ChangeGroup { path: Path, groupname: String },
+    ChangePermissions {
+        path: Path,
+        permissions: u32,
+    },
+    ChangeOwner {
+        path: Path,
+        username: String,
+    },
+    ChangeGroup {
+        path: Path,
+        groupname: String,
+    },
 
     // Search operations
-    Find { path: Path, pattern: String },
+    Find {
+        path: Path,
+        pattern: String,
+    },
 
     // System info
     WhoAmI,
@@ -238,7 +294,10 @@ pub struct AppResponse {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ResponseData {
     /// Authentication response with session token
-    Auth { session_token: String, user_id: String },
+    Auth {
+        session_token: String,
+        user_id: String,
+    },
     /// File listing response
     FileList { nodes: Vec<FNode> },
     /// Single file/directory info
