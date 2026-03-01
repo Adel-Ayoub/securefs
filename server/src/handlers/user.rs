@@ -146,6 +146,7 @@ pub async fn new_user(data: Vec<String>, session: &Session, pool: &Pool) -> AppM
                 created_at: now,
                 modified_at: now,
                 file_group: Some(group.clone()),
+                link_target: None,
             };
             let _ = dao::add_file(pool, new_dir).await;
             let _ = dao::add_file_to_parent(pool, "/home".to_string(), user_name.clone()).await;

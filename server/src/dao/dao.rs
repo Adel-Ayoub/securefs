@@ -291,6 +291,7 @@ pub async fn get_f_node(pool: &Pool, path: String) -> Result<Option<FNode>, DaoE
                 created_at: 0,
                 modified_at: 0,
                 file_group: row.try_get("file_group").unwrap_or(None),
+                link_target: None,
             };
             Ok(Some(fnode))
         }
@@ -337,6 +338,7 @@ pub async fn get_children(pool: &Pool, parent_path: String) -> Result<Vec<FNode>
             created_at: 0,
             modified_at: 0,
             file_group: row.try_get("file_group").unwrap_or(None),
+            link_target: None,
         })
         .collect();
     Ok(nodes)
@@ -381,6 +383,7 @@ pub async fn get_subtree(pool: &Pool, path_prefix: String) -> Result<Vec<FNode>,
             created_at: 0,
             modified_at: 0,
             file_group: row.try_get("file_group").unwrap_or(None),
+            link_target: None,
         })
         .collect();
     Ok(nodes)
@@ -727,6 +730,7 @@ pub async fn init_db(pool: &Pool) -> Result<(), DaoError> {
                 created_at: 0,
                 modified_at: 0,
                 file_group: None,
+                link_target: None,
             },
         )
         .await?;
@@ -779,6 +783,7 @@ pub async fn copy_recursive(
                 created_at: now,
                 modified_at: now,
                 file_group: node.file_group.clone(),
+                link_target: None,
             };
 
             add_file(pool, new_node)
