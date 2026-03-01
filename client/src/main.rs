@@ -33,7 +33,9 @@ const COMMANDS: &[&str] = &[
     "echo",
     "find",
     "get_encrypted_filename",
+    "grep",
     "head",
+    "ln",
     "login",
     "logout",
     "ls",
@@ -266,7 +268,7 @@ async fn connect_and_run(
         );
         println!(
             "{}",
-            "          head, tail, new_user, new_group, lsusers, lsgroups".yellow()
+            "          head, tail, grep, ln, new_user, new_group, lsusers, lsgroups".yellow()
         );
         println!(
             "{}",
@@ -464,6 +466,8 @@ async fn connect_and_run(
                             for line in &reply.data {
                                 if line.ends_with('/') {
                                     println!("{}", line.blue());
+                                } else if line.contains(" -> ") {
+                                    println!("{}", line.cyan());
                                 } else {
                                     println!("{}", line);
                                 }
@@ -761,6 +765,34 @@ async fn connect_and_run(
                     Cmd::Failure => println!(
                         "{}",
                         reply.data.first().unwrap_or(&"tail failed".into()).red()
+                    ),
+                    _ => println!("{}", "unexpected reply".red()),
+                }
+            }
+            Cmd::Grep => {
+                send(&mut ws_stream, &app_message, shared_secret_key.as_ref()).await?;
+                let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
+                match reply.cmd {
+                    Cmd::Grep => {
+                        for line in &reply.data {
+                            println!("{}", line);
+                        }
+                    }
+                    Cmd::Failure => println!(
+                        "{}",
+                        reply.data.first().unwrap_or(&"grep failed".into()).red()
+                    ),
+                    _ => println!("{}", "unexpected reply".red()),
+                }
+            }
+            Cmd::Ln => {
+                send(&mut ws_stream, &app_message, shared_secret_key.as_ref()).await?;
+                let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
+                match reply.cmd {
+                    Cmd::Ln => println!("{}", "ok".green()),
+                    Cmd::Failure => println!(
+                        "{}",
+                        reply.data.first().unwrap_or(&"ln failed".into()).red()
                     ),
                     _ => println!("{}", "unexpected reply".red()),
                 }
