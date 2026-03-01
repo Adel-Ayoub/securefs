@@ -56,7 +56,7 @@ pub async fn login(
         };
     }
 
-    let user_name = data.get(0).cloned().unwrap_or_default();
+    let user_name = data.first().cloned().unwrap_or_default();
     let pass = data.get(1).cloned().unwrap_or_default();
     let is_ok = dao::auth_user(pool, user_name.clone(), pass)
         .await
@@ -103,10 +103,7 @@ pub async fn login(
     } else {
         session.current_path = "/home".into();
     }
-    let user_opt = dao::get_user(pool, user_name.clone())
-        .await
-        .ok()
-        .flatten();
+    let user_opt = dao::get_user(pool, user_name.clone()).await.ok().flatten();
     let is_admin = user_opt.as_ref().map(|u| u.is_admin).unwrap_or(false);
     session.current_user_group = user_opt.and_then(|u| u.group_name);
     audit!("LOGIN_OK", &user_name, &session.current_path, "success");
@@ -133,7 +130,7 @@ pub fn logout(session: &mut Session) -> AppMessage {
 /// Perform X25519 key exchange. Returns the reply message and an optional
 /// shared secret to use for subsequent message encryption.
 pub fn key_exchange(data: Vec<String>) -> (AppMessage, Option<Key<Aes256Gcm>>) {
-    let client_pubkey_hex = data.get(0).cloned().unwrap_or_default();
+    let client_pubkey_hex = data.first().cloned().unwrap_or_default();
     if client_pubkey_hex.is_empty() || client_pubkey_hex.len() != 64 {
         return (
             AppMessage {

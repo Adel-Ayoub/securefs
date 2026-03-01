@@ -5,7 +5,9 @@
 
 use std::env;
 
+use colored::Colorize;
 use futures_util::{SinkExt, StreamExt};
+use rand_core::OsRng;
 use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
 use securefs_model::cmd::{MapStr, NumArgs};
@@ -14,8 +16,6 @@ use tokio::runtime::Runtime;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
 use x25519_dalek::{EphemeralSecret, PublicKey};
-use rand_core::OsRng;
-use colored::Colorize;
 
 /// Initialize a Tokio runtime and run the async client loop.
 fn main() {
@@ -28,13 +28,13 @@ fn main() {
 /// Connect to the server and drive the interactive REPL.
 async fn run() -> Result<(), String> {
     let args: Vec<String> = env::args().collect();
-    
+
     // Check for help flag
     if args.len() > 1 && (args[1] == "-h" || args[1] == "--help") {
         print_help();
         return Ok(());
     }
-    
+
     // Check for flags
     let mut verbose = false;
     let mut quiet = false;
@@ -52,7 +52,10 @@ async fn run() -> Result<(), String> {
     }
 
     // Check env var for TLS
-    if env::var("USE_TLS").map(|v| v == "1" || v.to_lowercase() == "true").unwrap_or(false) {
+    if env::var("USE_TLS")
+        .map(|v| v == "1" || v.to_lowercase() == "true")
+        .unwrap_or(false)
+    {
         use_tls = true;
     }
 
@@ -67,7 +70,7 @@ async fn run() -> Result<(), String> {
 
     // Initialize rustyline editor for command history and line editing
     let mut rl = DefaultEditor::new().map_err(|e| format!("failed to init readline: {}", e))?;
-    
+
     let mut reconnect_delay = 1;
     let max_delay = 30;
 
@@ -92,7 +95,12 @@ async fn run() -> Result<(), String> {
     Ok(())
 }
 
-async fn connect_and_run(url: &str, rl: &mut DefaultEditor, verbose: bool, quiet: bool) -> Result<(), String> {
+async fn connect_and_run(
+    url: &str,
+    rl: &mut DefaultEditor,
+    verbose: bool,
+    quiet: bool,
+) -> Result<(), String> {
     let (mut ws_stream, _) = connect_async(url)
         .await
         .map_err(|e| format!("connect failed: {}", e))?;
@@ -104,7 +112,7 @@ async fn connect_and_run(url: &str, rl: &mut DefaultEditor, verbose: bool, quiet
     // Perform X25519 key exchange with server
     let client_secret = EphemeralSecret::random_from_rng(OsRng);
     let client_public = PublicKey::from(&client_secret);
-    
+
     if verbose {
         println!("{}", "Initiating key exchange...".cyan());
     }
@@ -115,14 +123,14 @@ async fn connect_and_run(url: &str, rl: &mut DefaultEditor, verbose: bool, quiet
         data: vec![hex::encode(client_public.as_bytes())],
     };
     send(&mut ws_stream, &key_exchange_msg, None).await?;
-    
+
     // Receive server's public key
     let reply = recv(&mut ws_stream, None).await?;
     let _shared_secret = match reply.cmd {
         Cmd::KeyExchangeResponse => {
-            let server_pubkey_hex = reply.data.get(0).cloned().unwrap_or_default();
-            let server_bytes = hex::decode(&server_pubkey_hex)
-                .map_err(|_| "invalid server public key")?;
+            let server_pubkey_hex = reply.data.first().cloned().unwrap_or_default();
+            let server_bytes =
+                hex::decode(&server_pubkey_hex).map_err(|_| "invalid server public key")?;
             if server_bytes.len() != 32 {
                 return Err("invalid server public key length".into());
             }
@@ -136,12 +144,16 @@ async fn connect_and_run(url: &str, rl: &mut DefaultEditor, verbose: bool, quiet
             shared
         }
         Cmd::Failure => {
-            let err = reply.data.get(0).cloned().unwrap_or_else(|| "key exchange failed".into());
+            let err = reply
+                .data
+                .first()
+                .cloned()
+                .unwrap_or_else(|| "key exchange failed".into());
             return Err(err);
         }
         _ => return Err("unexpected response to key exchange".into()),
     };
-    
+
     // Derive session key using HKDF-SHA256 (must match server derivation)
     let hkdf = Hkdf::<Sha256>::new(None, _shared_secret.as_bytes());
     let mut okm = [0u8; 32];
@@ -151,17 +163,35 @@ async fn connect_and_run(url: &str, rl: &mut DefaultEditor, verbose: bool, quiet
 
     if !quiet {
         // Use environment variable for server address in prompt or default
-        let server_addr_display = env::var("SERVER_ADDR").unwrap_or_else(|_| "127.0.0.1:8080".to_string());
-        println!("{} {}. Login with: login <username> <password>", "Connected to".cyan(), server_addr_display.cyan());
-        println!("{}", "Commands: login, logout, pwd, ls, cd, mkdir, touch, mv, delete, cat, echo".yellow());
-        println!("{}", "          chmod, chown, chgrp, cp, find, scan, get_encrypted_filename".yellow());
+        let server_addr_display =
+            env::var("SERVER_ADDR").unwrap_or_else(|_| "127.0.0.1:8080".to_string());
+        println!(
+            "{} {}. Login with: login <username> <password>",
+            "Connected to".cyan(),
+            server_addr_display.cyan()
+        );
+        println!(
+            "{}",
+            "Commands: login, logout, pwd, ls, cd, mkdir, touch, mv, delete, cat, echo".yellow()
+        );
+        println!(
+            "{}",
+            "          chmod, chown, chgrp, cp, find, scan, get_encrypted_filename".yellow()
+        );
         println!("{}", "          new_user, new_group, lsusers, lsgroups, add_user_to_group, remove_user_from_group".yellow());
-        println!("{}", "Use up/down arrows for command history. Ctrl+C or 'logout' to exit.".yellow());
+        println!(
+            "{}",
+            "Use up/down arrows for command history. Ctrl+C or 'logout' to exit.".yellow()
+        );
     }
-    
+
     loop {
         // REPL with command history support
-        let prompt = if quiet { "".to_string() } else { format!("{} ", ">".bold()) };
+        let prompt = if quiet {
+            "".to_string()
+        } else {
+            format!("{} ", ">".bold())
+        };
         let readline = rl.readline(&prompt);
         let line = match readline {
             Ok(l) => l,
@@ -174,14 +204,14 @@ async fn connect_and_run(url: &str, rl: &mut DefaultEditor, verbose: bool, quiet
             Err(ReadlineError::Eof) => return Ok(()), // treat EOF as logout/exit
             Err(e) => return Err(format!("readline error: {}", e)),
         };
-        
+
         if line.trim().is_empty() {
             continue;
         }
-        
+
         // Add to history
         let _ = rl.add_history_entry(&line);
-        
+
         let app_message = match command_parser(line.clone()) {
             Ok(msg) => msg,
             Err(err) => {
@@ -191,7 +221,10 @@ async fn connect_and_run(url: &str, rl: &mut DefaultEditor, verbose: bool, quiet
         };
 
         if verbose {
-            println!("{}", format!("Sending command: {:?}", app_message.cmd).dimmed());
+            println!(
+                "{}",
+                format!("Sending command: {:?}", app_message.cmd).dimmed()
+            );
         }
 
         match app_message.cmd {
@@ -205,7 +238,10 @@ async fn connect_and_run(url: &str, rl: &mut DefaultEditor, verbose: bool, quiet
                         println!("{} (is_admin: {})", "login ok".green(), is_admin);
                     }
                     Cmd::Failure => {
-                        println!("{}", reply.data.get(0).unwrap_or(&"login failed".into()).red());
+                        println!(
+                            "{}",
+                            reply.data.first().unwrap_or(&"login failed".into()).red()
+                        );
                     }
                     _ => println!("{}", "unexpected reply".red()),
                 }
@@ -224,7 +260,10 @@ async fn connect_and_run(url: &str, rl: &mut DefaultEditor, verbose: bool, quiet
                             }
                         }
                     }
-                    Cmd::Failure => println!("error: {}", reply.data.get(0).unwrap_or(&"lsusers failed".into()).red()),
+                    Cmd::Failure => println!(
+                        "error: {}",
+                        reply.data.first().unwrap_or(&"lsusers failed".into()).red()
+                    ),
                     _ => println!("{}", "unexpected reply".red()),
                 }
             }
@@ -242,7 +281,14 @@ async fn connect_and_run(url: &str, rl: &mut DefaultEditor, verbose: bool, quiet
                             }
                         }
                     }
-                    Cmd::Failure => println!("error: {}", reply.data.get(0).unwrap_or(&"lsgroups failed".into()).red()),
+                    Cmd::Failure => println!(
+                        "error: {}",
+                        reply
+                            .data
+                            .first()
+                            .unwrap_or(&"lsgroups failed".into())
+                            .red()
+                    ),
                     _ => println!("{}", "unexpected reply".red()),
                 }
             }
@@ -254,8 +300,14 @@ async fn connect_and_run(url: &str, rl: &mut DefaultEditor, verbose: bool, quiet
                 send(&mut ws_stream, &app_message, shared_secret_key.as_ref()).await?;
                 let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
                 match reply.cmd {
-                    Cmd::NewUser => println!("user created: {}", reply.data.get(0).unwrap_or(&"".into()).green()),
-                    Cmd::Failure => println!("{}", reply.data.get(0).unwrap_or(&"newuser failed".into()).red()),
+                    Cmd::NewUser => println!(
+                        "user created: {}",
+                        reply.data.first().unwrap_or(&"".into()).green()
+                    ),
+                    Cmd::Failure => println!(
+                        "{}",
+                        reply.data.first().unwrap_or(&"newuser failed".into()).red()
+                    ),
                     _ => println!("{}", "unexpected reply".red()),
                 }
             }
@@ -263,8 +315,18 @@ async fn connect_and_run(url: &str, rl: &mut DefaultEditor, verbose: bool, quiet
                 send(&mut ws_stream, &app_message, shared_secret_key.as_ref()).await?;
                 let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
                 match reply.cmd {
-                    Cmd::NewGroup => println!("group created: {}", reply.data.get(0).unwrap_or(&"".into()).green()),
-                    Cmd::Failure => println!("{}", reply.data.get(0).unwrap_or(&"newgroup failed".into()).red()),
+                    Cmd::NewGroup => println!(
+                        "group created: {}",
+                        reply.data.first().unwrap_or(&"".into()).green()
+                    ),
+                    Cmd::Failure => println!(
+                        "{}",
+                        reply
+                            .data
+                            .first()
+                            .unwrap_or(&"newgroup failed".into())
+                            .red()
+                    ),
                     _ => println!("{}", "unexpected reply".red()),
                 }
             }
@@ -272,8 +334,11 @@ async fn connect_and_run(url: &str, rl: &mut DefaultEditor, verbose: bool, quiet
                 send(&mut ws_stream, &app_message, shared_secret_key.as_ref()).await?;
                 let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
                 match reply.cmd {
-                    Cmd::Cd => println!("{}", reply.data.get(0).unwrap_or(&"/".into()).blue()),
-                    Cmd::Failure => println!("{}", reply.data.get(0).unwrap_or(&"cd failed".into()).red()),
+                    Cmd::Cd => println!("{}", reply.data.first().unwrap_or(&"/".into()).blue()),
+                    Cmd::Failure => println!(
+                        "{}",
+                        reply.data.first().unwrap_or(&"cd failed".into()).red()
+                    ),
                     _ => println!("{}", "unexpected reply".red()),
                 }
             }
@@ -283,11 +348,14 @@ async fn connect_and_run(url: &str, rl: &mut DefaultEditor, verbose: bool, quiet
                 match reply.cmd {
                     Cmd::Pwd => {
                         let default_path = "/".to_string();
-                        let path = reply.data.get(0).unwrap_or(&default_path);
+                        let path = reply.data.first().unwrap_or(&default_path);
                         println!("{}", path.blue());
                     }
                     Cmd::Failure => {
-                        println!("{}", reply.data.get(0).unwrap_or(&"pwd failed".into()).red());
+                        println!(
+                            "{}",
+                            reply.data.first().unwrap_or(&"pwd failed".into()).red()
+                        );
                     }
                     _ => println!("{}", "unexpected reply".red()),
                 }
@@ -298,13 +366,16 @@ async fn connect_and_run(url: &str, rl: &mut DefaultEditor, verbose: bool, quiet
                 match reply.cmd {
                     Cmd::Ls => {
                         if reply.data.is_empty() {
-                            println!("");
+                            println!();
                         } else {
                             reply.data.iter().for_each(|d| println!("{}", d));
                         }
                     }
                     Cmd::Failure => {
-                        println!("{}", reply.data.get(0).unwrap_or(&"ls failed".into()).red());
+                        println!(
+                            "{}",
+                            reply.data.first().unwrap_or(&"ls failed".into()).red()
+                        );
                     }
                     _ => println!("{}", "unexpected reply".red()),
                 }
@@ -315,7 +386,10 @@ async fn connect_and_run(url: &str, rl: &mut DefaultEditor, verbose: bool, quiet
                 match reply.cmd {
                     Cmd::Mkdir => println!("{}", "ok".green()),
                     Cmd::Failure => {
-                        println!("{}", reply.data.get(0).unwrap_or(&"mkdir failed".into()).red());
+                        println!(
+                            "{}",
+                            reply.data.first().unwrap_or(&"mkdir failed".into()).red()
+                        );
                     }
                     _ => println!("{}", "unexpected reply".red()),
                 }
@@ -325,7 +399,10 @@ async fn connect_and_run(url: &str, rl: &mut DefaultEditor, verbose: bool, quiet
                 let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
                 match reply.cmd {
                     Cmd::Touch => println!("{}", "ok".green()),
-                    Cmd::Failure => println!("{}", reply.data.get(0).unwrap_or(&"touch failed".into()).red()),
+                    Cmd::Failure => println!(
+                        "{}",
+                        reply.data.first().unwrap_or(&"touch failed".into()).red()
+                    ),
                     _ => println!("{}", "unexpected reply".red()),
                 }
             }
@@ -334,7 +411,10 @@ async fn connect_and_run(url: &str, rl: &mut DefaultEditor, verbose: bool, quiet
                 let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
                 match reply.cmd {
                     Cmd::Mv => println!("{}", "ok".green()),
-                    Cmd::Failure => println!("{}", reply.data.get(0).unwrap_or(&"mv failed".into()).red()),
+                    Cmd::Failure => println!(
+                        "{}",
+                        reply.data.first().unwrap_or(&"mv failed".into()).red()
+                    ),
                     _ => println!("{}", "unexpected reply".red()),
                 }
             }
@@ -343,7 +423,10 @@ async fn connect_and_run(url: &str, rl: &mut DefaultEditor, verbose: bool, quiet
                 let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
                 match reply.cmd {
                     Cmd::Delete => println!("{}", "ok".green()),
-                    Cmd::Failure => println!("{}", reply.data.get(0).unwrap_or(&"delete failed".into()).red()),
+                    Cmd::Failure => println!(
+                        "{}",
+                        reply.data.first().unwrap_or(&"delete failed".into()).red()
+                    ),
                     _ => println!("{}", "unexpected reply".red()),
                 }
             }
@@ -351,8 +434,11 @@ async fn connect_and_run(url: &str, rl: &mut DefaultEditor, verbose: bool, quiet
                 send(&mut ws_stream, &app_message, shared_secret_key.as_ref()).await?;
                 let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
                 match reply.cmd {
-                    Cmd::Cat => println!("{}", reply.data.get(0).unwrap_or(&"".into())),
-                    Cmd::Failure => println!("{}", reply.data.get(0).unwrap_or(&"cat failed".into()).red()),
+                    Cmd::Cat => println!("{}", reply.data.first().unwrap_or(&"".into())),
+                    Cmd::Failure => println!(
+                        "{}",
+                        reply.data.first().unwrap_or(&"cat failed".into()).red()
+                    ),
                     _ => println!("{}", "unexpected reply".red()),
                 }
             }
@@ -362,7 +448,10 @@ async fn connect_and_run(url: &str, rl: &mut DefaultEditor, verbose: bool, quiet
                 let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
                 match reply.cmd {
                     Cmd::Echo => println!("{}", "ok".green()),
-                    Cmd::Failure => println!("{}", reply.data.get(0).unwrap_or(&"echo failed".into()).red()),
+                    Cmd::Failure => println!(
+                        "{}",
+                        reply.data.first().unwrap_or(&"echo failed".into()).red()
+                    ),
                     _ => println!("{}", "unexpected reply".red()),
                 }
             }
@@ -371,7 +460,10 @@ async fn connect_and_run(url: &str, rl: &mut DefaultEditor, verbose: bool, quiet
                 let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
                 match reply.cmd {
                     Cmd::Chmod => println!("{}", "ok".green()),
-                    Cmd::Failure => println!("{}", reply.data.get(0).unwrap_or(&"chmod failed".into()).red()),
+                    Cmd::Failure => println!(
+                        "{}",
+                        reply.data.first().unwrap_or(&"chmod failed".into()).red()
+                    ),
                     _ => println!("{}", "unexpected reply".red()),
                 }
             }
@@ -379,8 +471,14 @@ async fn connect_and_run(url: &str, rl: &mut DefaultEditor, verbose: bool, quiet
                 send(&mut ws_stream, &app_message, shared_secret_key.as_ref()).await?;
                 let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
                 match reply.cmd {
-                    Cmd::Scan => println!("{}", reply.data.get(0).unwrap_or(&"scan ok".into()).green()),
-                    Cmd::Failure => println!("{}", reply.data.get(0).unwrap_or(&"scan failed".into()).red()),
+                    Cmd::Scan => println!(
+                        "{}",
+                        reply.data.first().unwrap_or(&"scan ok".into()).green()
+                    ),
+                    Cmd::Failure => println!(
+                        "{}",
+                        reply.data.first().unwrap_or(&"scan failed".into()).red()
+                    ),
                     _ => println!("{}", "unexpected reply".red()),
                 }
             }
@@ -391,7 +489,14 @@ async fn connect_and_run(url: &str, rl: &mut DefaultEditor, verbose: bool, quiet
                     Cmd::GetEncryptedFile => {
                         println!("encrypted path: {}", reply.data.join("/").blue());
                     }
-                    Cmd::Failure => println!("{}", reply.data.get(0).unwrap_or(&"failed to get encrypted file".into()).red()),
+                    Cmd::Failure => println!(
+                        "{}",
+                        reply
+                            .data
+                            .first()
+                            .unwrap_or(&"failed to get encrypted file".into())
+                            .red()
+                    ),
                     _ => println!("{}", "unexpected reply".red()),
                 }
             }
@@ -400,7 +505,10 @@ async fn connect_and_run(url: &str, rl: &mut DefaultEditor, verbose: bool, quiet
                 let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
                 match reply.cmd {
                     Cmd::Cp => println!("{}", "ok".green()),
-                    Cmd::Failure => println!("{}", reply.data.get(0).unwrap_or(&"cp failed".into()).red()),
+                    Cmd::Failure => println!(
+                        "{}",
+                        reply.data.first().unwrap_or(&"cp failed".into()).red()
+                    ),
                     _ => println!("{}", "unexpected reply".red()),
                 }
             }
@@ -413,7 +521,10 @@ async fn connect_and_run(url: &str, rl: &mut DefaultEditor, verbose: bool, quiet
                             println!("{}", path.blue());
                         }
                     }
-                    Cmd::Failure => println!("{}", reply.data.get(0).unwrap_or(&"find failed".into()).red()),
+                    Cmd::Failure => println!(
+                        "{}",
+                        reply.data.first().unwrap_or(&"find failed".into()).red()
+                    ),
                     _ => println!("{}", "unexpected reply".red()),
                 }
             }
@@ -421,8 +532,13 @@ async fn connect_and_run(url: &str, rl: &mut DefaultEditor, verbose: bool, quiet
                 send(&mut ws_stream, &app_message, shared_secret_key.as_ref()).await?;
                 let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
                 match reply.cmd {
-                    Cmd::Chown => println!("{}", reply.data.get(0).unwrap_or(&"ok".into()).green()),
-                    Cmd::Failure => println!("{}", reply.data.get(0).unwrap_or(&"chown failed".into()).red()),
+                    Cmd::Chown => {
+                        println!("{}", reply.data.first().unwrap_or(&"ok".into()).green())
+                    }
+                    Cmd::Failure => println!(
+                        "{}",
+                        reply.data.first().unwrap_or(&"chown failed".into()).red()
+                    ),
                     _ => println!("{}", "unexpected reply".red()),
                 }
             }
@@ -430,8 +546,13 @@ async fn connect_and_run(url: &str, rl: &mut DefaultEditor, verbose: bool, quiet
                 send(&mut ws_stream, &app_message, shared_secret_key.as_ref()).await?;
                 let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
                 match reply.cmd {
-                    Cmd::Chgrp => println!("{}", reply.data.get(0).unwrap_or(&"ok".into()).green()),
-                    Cmd::Failure => println!("{}", reply.data.get(0).unwrap_or(&"chgrp failed".into()).red()),
+                    Cmd::Chgrp => {
+                        println!("{}", reply.data.first().unwrap_or(&"ok".into()).green())
+                    }
+                    Cmd::Failure => println!(
+                        "{}",
+                        reply.data.first().unwrap_or(&"chgrp failed".into()).red()
+                    ),
                     _ => println!("{}", "unexpected reply".red()),
                 }
             }
@@ -439,8 +560,12 @@ async fn connect_and_run(url: &str, rl: &mut DefaultEditor, verbose: bool, quiet
                 send(&mut ws_stream, &app_message, shared_secret_key.as_ref()).await?;
                 let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
                 match reply.cmd {
-                    Cmd::AddUserToGroup => println!("{}", reply.data.get(0).unwrap_or(&"ok".into()).green()),
-                    Cmd::Failure => println!("{}", reply.data.get(0).unwrap_or(&"failed".into()).red()),
+                    Cmd::AddUserToGroup => {
+                        println!("{}", reply.data.first().unwrap_or(&"ok".into()).green())
+                    }
+                    Cmd::Failure => {
+                        println!("{}", reply.data.first().unwrap_or(&"failed".into()).red())
+                    }
                     _ => println!("{}", "unexpected reply".red()),
                 }
             }
@@ -448,8 +573,12 @@ async fn connect_and_run(url: &str, rl: &mut DefaultEditor, verbose: bool, quiet
                 send(&mut ws_stream, &app_message, shared_secret_key.as_ref()).await?;
                 let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
                 match reply.cmd {
-                    Cmd::RemoveUserFromGroup => println!("{}", reply.data.get(0).unwrap_or(&"ok".into()).green()),
-                    Cmd::Failure => println!("{}", reply.data.get(0).unwrap_or(&"failed".into()).red()),
+                    Cmd::RemoveUserFromGroup => {
+                        println!("{}", reply.data.first().unwrap_or(&"ok".into()).green())
+                    }
+                    Cmd::Failure => {
+                        println!("{}", reply.data.first().unwrap_or(&"failed".into()).red())
+                    }
                     _ => println!("{}", "unexpected reply".red()),
                 }
             }
@@ -466,31 +595,44 @@ fn command_parser(input: String) -> Result<AppMessage, String> {
         .split_whitespace()
         .map(|s| s.to_string())
         .collect::<Vec<String>>();
-    let cmd_str = match parts.get(0) {
+    let cmd_str = match parts.first() {
         Some(c) => c.clone(),
         None => return Err("missing command".into()),
     };
     let num_args = Cmd::num_args(cmd_str.clone()).unwrap_or(usize::MAX);
     if num_args < usize::MAX && parts.len() != num_args {
-        return Err(format!("expected {} args for '{}', got {}", num_args - 1, cmd_str, parts.len() - 1));
+        return Err(format!(
+            "expected {} args for '{}', got {}",
+            num_args - 1,
+            cmd_str,
+            parts.len() - 1
+        ));
     }
     let args = parts.split_off(1);
-    let cmd = Cmd::from_str(cmd_str.clone()).map_err(|_| format!("unknown command: {}", cmd_str))?;
+    let cmd =
+        Cmd::from_str(cmd_str.clone()).map_err(|_| format!("unknown command: {}", cmd_str))?;
     Ok(AppMessage { cmd, data: args })
 }
 
-use aes_gcm::{Aes256Gcm, Key, Nonce, KeyInit};
 use aes_gcm::aead::{Aead, AeadCore};
+use aes_gcm::{Aes256Gcm, Key, KeyInit, Nonce};
 use hkdf::Hkdf;
 use sha2::Sha256;
 
 /// Encrypt and send message
-async fn send(ws: &mut tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>, msg: &AppMessage, key: Option<&Key<Aes256Gcm>>) -> Result<(), String> {
+async fn send(
+    ws: &mut tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >,
+    msg: &AppMessage,
+    key: Option<&Key<Aes256Gcm>>,
+) -> Result<(), String> {
     let payload = if let Some(k) = key {
         let cipher = Aes256Gcm::new(k);
         let nonce = Aes256Gcm::generate_nonce(OsRng);
         let msg_str = serde_json::to_string(msg).map_err(|e| e.to_string())?;
-        let ciphertext = cipher.encrypt(&nonce, msg_str.as_bytes())
+        let ciphertext = cipher
+            .encrypt(&nonce, msg_str.as_bytes())
             .map_err(|e| format!("encryption failed: {}", e))?;
         let tuple = (hex::encode(ciphertext), Into::<[u8; 12]>::into(nonce));
         serde_json::to_string(&tuple).map_err(|e| e.to_string())?
@@ -503,21 +645,31 @@ async fn send(ws: &mut tokio_tungstenite::WebSocketStream<tokio_tungstenite::May
 }
 
 /// Receive and decrypt message
-async fn recv(ws: &mut tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>, key: Option<&Key<Aes256Gcm>>) -> Result<AppMessage, String> {
-    let msg = ws.next().await.ok_or("connection closed".to_string())?
+async fn recv(
+    ws: &mut tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >,
+    key: Option<&Key<Aes256Gcm>>,
+) -> Result<AppMessage, String> {
+    let msg = ws
+        .next()
+        .await
+        .ok_or("connection closed".to_string())?
         .map_err(|e| format!("recv failed: {}", e))?;
     if !msg.is_text() {
         return Err("non-text message".into());
     }
     let text = msg.to_text().unwrap();
-    
+
     if let Some(k) = key {
-        let (ciphertext_hex, nonce_bytes): (String, [u8; 12]) = serde_json::from_str(text)
-            .map_err(|e| format!("encrypted decode failed: {}", e))?;
+        let (ciphertext_hex, nonce_bytes): (String, [u8; 12]) =
+            serde_json::from_str(text).map_err(|e| format!("encrypted decode failed: {}", e))?;
         let cipher = Aes256Gcm::new(k);
         let nonce = Nonce::from_slice(&nonce_bytes);
-        let ciphertext = hex::decode(ciphertext_hex).map_err(|_| "invalid ciphertext hex".to_string())?;
-        let plaintext = cipher.decrypt(nonce, ciphertext.as_ref())
+        let ciphertext =
+            hex::decode(ciphertext_hex).map_err(|_| "invalid ciphertext hex".to_string())?;
+        let plaintext = cipher
+            .decrypt(nonce, ciphertext.as_ref())
             .map_err(|e| format!("decryption failed: {}", e))?;
         let plaintext_str = String::from_utf8(plaintext).map_err(|_| "invalid utf8".to_string())?;
         serde_json::from_str(&plaintext_str).map_err(|e| format!("json decode failed: {}", e))

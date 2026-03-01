@@ -17,7 +17,7 @@ pub async fn chmod(data: Vec<String>, session: &Session, pool: &Pool) -> AppMess
         };
     }
 
-    let target = data.get(0).cloned().unwrap_or_default();
+    let target = data.first().cloned().unwrap_or_default();
     let mode = data.get(1).cloned().unwrap_or_default();
     if !is_valid_name(&target) || mode.len() != 3 {
         return AppMessage {
@@ -76,7 +76,7 @@ pub async fn chown(data: Vec<String>, session: &Session, pool: &Pool) -> AppMess
         };
     }
 
-    let target = data.get(0).cloned().unwrap_or_default();
+    let target = data.first().cloned().unwrap_or_default();
     let new_owner = data.get(1).cloned().unwrap_or_default();
 
     if !is_valid_name(&target) {
@@ -137,7 +137,7 @@ pub async fn chgrp(data: Vec<String>, session: &Session, pool: &Pool) -> AppMess
         };
     }
 
-    let target = data.get(0).cloned().unwrap_or_default();
+    let target = data.first().cloned().unwrap_or_default();
     let new_group = data.get(1).cloned().unwrap_or_default();
 
     if !is_valid_name(&target) {
@@ -201,7 +201,7 @@ pub async fn scan(data: Vec<String>, session: &Session, pool: &Pool) -> AppMessa
         };
     }
 
-    let file_name = data.get(0).cloned().unwrap_or_default();
+    let file_name = data.first().cloned().unwrap_or_default();
     if !is_valid_name(&file_name) {
         return AppMessage {
             cmd: Cmd::Failure,
@@ -278,7 +278,7 @@ pub async fn get_encrypted_file(data: Vec<String>, session: &Session, pool: &Poo
         };
     }
 
-    let file_name = data.get(0).cloned().unwrap_or_default();
+    let file_name = data.first().cloned().unwrap_or_default();
     if !is_valid_name(&file_name) {
         return AppMessage {
             cmd: Cmd::Failure,

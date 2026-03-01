@@ -66,7 +66,7 @@ pub async fn new_user(data: Vec<String>, session: &Session, pool: &Pool) -> AppM
         };
     }
 
-    let user_name = data.get(0).cloned().unwrap_or_default();
+    let user_name = data.first().cloned().unwrap_or_default();
     let pass = data.get(1).cloned().unwrap_or_default();
     let group = data.get(2).cloned().unwrap_or_default();
 
@@ -151,7 +151,7 @@ pub async fn new_group(data: Vec<String>, session: &Session, pool: &Pool) -> App
         };
     }
 
-    let group_name = data.get(0).cloned().unwrap_or_default();
+    let group_name = data.first().cloned().unwrap_or_default();
     if group_name.is_empty() {
         return AppMessage {
             cmd: Cmd::Failure,
@@ -187,7 +187,7 @@ pub async fn add_user_to_group(data: Vec<String>, session: &Session, pool: &Pool
     if let Some(user) = &session.current_user {
         match dao::is_admin(pool, user.clone()).await {
             Ok(true) => {
-                let user_name = data.get(0).cloned().unwrap_or_default();
+                let user_name = data.first().cloned().unwrap_or_default();
                 let group_name = data.get(1).cloned().unwrap_or_default();
                 if user_name.is_empty() || group_name.is_empty() {
                     AppMessage {
@@ -199,10 +199,7 @@ pub async fn add_user_to_group(data: Vec<String>, session: &Session, pool: &Pool
                     {
                         Ok(_) => AppMessage {
                             cmd: Cmd::AddUserToGroup,
-                            data: vec![format!(
-                                "User {} added to group {}",
-                                user_name, group_name
-                            )],
+                            data: vec![format!("User {} added to group {}", user_name, group_name)],
                         },
                         Err(e) => AppMessage {
                             cmd: Cmd::Failure,
@@ -232,7 +229,7 @@ pub async fn remove_user_from_group(
     if let Some(user) = &session.current_user {
         match dao::is_admin(pool, user.clone()).await {
             Ok(true) => {
-                let user_name = data.get(0).cloned().unwrap_or_default();
+                let user_name = data.first().cloned().unwrap_or_default();
                 let group_name = data.get(1).cloned().unwrap_or_default();
                 if user_name.is_empty() || group_name.is_empty() {
                     AppMessage {
@@ -240,12 +237,8 @@ pub async fn remove_user_from_group(
                         data: vec!["missing arguments".to_string()],
                     }
                 } else {
-                    match dao::remove_user_from_group(
-                        pool,
-                        user_name.clone(),
-                        group_name.clone(),
-                    )
-                    .await
+                    match dao::remove_user_from_group(pool, user_name.clone(), group_name.clone())
+                        .await
                     {
                         Ok(_) => AppMessage {
                             cmd: Cmd::RemoveUserFromGroup,

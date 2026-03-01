@@ -171,11 +171,7 @@ pub fn current_timestamp() -> i64 {
 
 /// Validate file or directory name (no path separators or special chars).
 pub fn is_valid_name(name: &str) -> bool {
-    !name.is_empty()
-        && !name.contains('/')
-        && !name.contains('\0')
-        && name != "."
-        && name != ".."
+    !name.is_empty() && !name.contains('/') && !name.contains('\0') && name != "." && name != ".."
 }
 
 /// Validate username or group name (alphanumeric + underscore/hyphen).
@@ -185,10 +181,7 @@ pub fn is_valid_user_group_name(name: &str) -> bool {
         && name
             .chars()
             .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
-        && name
-            .chars()
-            .next()
-            .map_or(false, |c| c.is_alphabetic())
+        && name.chars().next().is_some_and(|c| c.is_alphabetic())
 }
 
 /// Validate password strength (minimum 8 characters).

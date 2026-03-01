@@ -33,7 +33,7 @@ pub async fn cd(data: Vec<String>, session: &mut Session, pool: &Pool) -> AppMes
         };
     }
 
-    let target = data.get(0).cloned().unwrap_or_default();
+    let target = data.first().cloned().unwrap_or_default();
     let new_path = resolve_path(&session.current_path, &target);
     if !is_safe_path(&new_path) {
         return AppMessage {
@@ -52,9 +52,10 @@ pub async fn cd(data: Vec<String>, session: &mut Session, pool: &Pool) -> AppMes
 
     match dao::get_f_node(pool, new_path.clone()).await {
         Ok(Some(node)) if node.dir => {
-            let owner_group = dao::get_file_group(pool, node.owner.clone(), node.file_group.clone())
-                .await
-                .unwrap_or(None);
+            let owner_group =
+                dao::get_file_group(pool, node.owner.clone(), node.file_group.clone())
+                    .await
+                    .unwrap_or(None);
             if can_read_with_group(
                 &node,
                 session.current_user.as_ref(),
@@ -101,7 +102,7 @@ pub async fn ls(session: &Session, pool: &Pool) -> AppMessage {
                 owner_group.as_ref(),
             ) {
                 match dao::get_children(pool, session.current_path.clone()).await {
-                    Ok(nodes) => nodes.iter().map(|n| format_ls_entry(n)).collect(),
+                    Ok(nodes) => nodes.iter().map(format_ls_entry).collect(),
                     Err(_) => vec![],
                 }
             } else {
@@ -124,7 +125,7 @@ pub async fn find(data: Vec<String>, session: &Session, pool: &Pool) -> AppMessa
         };
     }
 
-    let pattern = data.get(0).cloned().unwrap_or_default();
+    let pattern = data.first().cloned().unwrap_or_default();
     if pattern.is_empty() {
         return AppMessage {
             cmd: Cmd::Failure,
@@ -175,7 +176,7 @@ pub async fn mkdir(data: Vec<String>, session: &Session, pool: &Pool) -> AppMess
         };
     }
 
-    let dir_name = data.get(0).cloned().unwrap_or_default();
+    let dir_name = data.first().cloned().unwrap_or_default();
     if !is_valid_name(&dir_name) {
         return AppMessage {
             cmd: Cmd::Failure,
@@ -266,7 +267,7 @@ pub async fn touch(data: Vec<String>, session: &Session, pool: &Pool) -> AppMess
         };
     }
 
-    let file_name = data.get(0).cloned().unwrap_or_default();
+    let file_name = data.first().cloned().unwrap_or_default();
     if !is_valid_name(&file_name) {
         return AppMessage {
             cmd: Cmd::Failure,
@@ -357,7 +358,7 @@ pub async fn delete(data: Vec<String>, session: &Session, pool: &Pool) -> AppMes
         };
     }
 
-    let target = data.get(0).cloned().unwrap_or_default();
+    let target = data.first().cloned().unwrap_or_default();
     if !is_valid_name(&target) {
         return AppMessage {
             cmd: Cmd::Failure,
@@ -434,7 +435,7 @@ pub async fn mv(data: Vec<String>, session: &Session, pool: &Pool) -> AppMessage
         };
     }
 
-    let src = data.get(0).cloned().unwrap_or_default();
+    let src = data.first().cloned().unwrap_or_default();
     let dst = data.get(1).cloned().unwrap_or_default();
     if !is_valid_name(&src) || !is_valid_name(&dst) {
         return AppMessage {
@@ -521,7 +522,7 @@ pub async fn cp(data: Vec<String>, session: &Session, pool: &Pool) -> AppMessage
         };
     }
 
-    let src = data.get(0).cloned().unwrap_or_default();
+    let src = data.first().cloned().unwrap_or_default();
     let dst = data.get(1).cloned().unwrap_or_default();
     if !is_valid_name(&src) || !is_valid_name(&dst) {
         return AppMessage {
@@ -545,23 +546,22 @@ pub async fn cp(data: Vec<String>, session: &Session, pool: &Pool) -> AppMessage
                 session.current_user_group.as_ref(),
                 src_owner_group.as_ref(),
             ) {
-                let (final_dst_path, valid_dst) =
-                    match dao::get_f_node(pool, dst_path_orig.clone()).await {
-                        Ok(Some(dst_node)) => {
-                            if dst_node.dir {
-                                match Path::new(&src_path).file_name().and_then(|n| n.to_str()) {
-                                    Some(src_name) => {
-                                        (format!("{}/{}", dst_path_orig, src_name), true)
-                                    }
-                                    None => (String::new(), false),
-                                }
-                            } else {
-                                (String::new(), false)
+                let (final_dst_path, valid_dst) = match dao::get_f_node(pool, dst_path_orig.clone())
+                    .await
+                {
+                    Ok(Some(dst_node)) => {
+                        if dst_node.dir {
+                            match Path::new(&src_path).file_name().and_then(|n| n.to_str()) {
+                                Some(src_name) => (format!("{}/{}", dst_path_orig, src_name), true),
+                                None => (String::new(), false),
                             }
+                        } else {
+                            (String::new(), false)
                         }
-                        Ok(None) => (dst_path_orig, true),
-                        Err(_) => (String::new(), false),
-                    };
+                    }
+                    Ok(None) => (dst_path_orig, true),
+                    Err(_) => (String::new(), false),
+                };
 
                 if !valid_dst || final_dst_path.is_empty() {
                     return AppMessage {
@@ -653,7 +653,7 @@ pub async fn cat(data: Vec<String>, session: &Session, pool: &Pool) -> AppMessag
         };
     }
 
-    let file_name = data.get(0).cloned().unwrap_or_default();
+    let file_name = data.first().cloned().unwrap_or_default();
     if !is_valid_name(&file_name) {
         return AppMessage {
             cmd: Cmd::Failure,
@@ -689,10 +689,7 @@ pub async fn cat(data: Vec<String>, session: &Session, pool: &Pool) -> AppMessag
                                     Ok(content) => {
                                         audit!(
                                             "FILE_READ",
-                                            session
-                                                .current_user
-                                                .as_deref()
-                                                .unwrap_or("-"),
+                                            session.current_user.as_deref().unwrap_or("-"),
                                             &file_path,
                                             "ok"
                                         );
@@ -744,7 +741,7 @@ pub async fn echo(data: Vec<String>, session: &Session, pool: &Pool) -> AppMessa
         };
     }
 
-    let file_name = data.get(0).cloned().unwrap_or_default();
+    let file_name = data.first().cloned().unwrap_or_default();
     let content = data.get(1).cloned().unwrap_or_default();
     if !is_valid_name(&file_name) {
         return AppMessage {
@@ -779,17 +776,12 @@ pub async fn echo(data: Vec<String>, session: &Session, pool: &Pool) -> AppMessa
                         match f.write_all(&encrypted).await {
                             Ok(_) => {
                                 let hash = hash_content(content.as_bytes());
-                                let node_path =
-                                    format!("{}/{}", session.current_path, file_name);
-                                let _ =
-                                    dao::update_hash(pool, node_path, file_name.clone(), hash)
-                                        .await;
+                                let node_path = format!("{}/{}", session.current_path, file_name);
+                                let _ = dao::update_hash(pool, node_path, file_name.clone(), hash)
+                                    .await;
                                 audit!(
                                     "FILE_WRITE",
-                                    session
-                                        .current_user
-                                        .as_deref()
-                                        .unwrap_or("-"),
+                                    session.current_user.as_deref().unwrap_or("-"),
                                     &file_path,
                                     "ok"
                                 );

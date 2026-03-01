@@ -4,6 +4,7 @@ use crate::protocol::Cmd;
 
 /// Convert strings into strongly typed commands.
 pub trait MapStr: Sized {
+    #[allow(clippy::result_unit_err)]
     fn from_str(s: String) -> Result<Self, ()>;
 }
 
@@ -45,6 +46,7 @@ impl MapStr for Cmd {
 
 /// Return the expected argument count for a command string.
 pub trait NumArgs {
+    #[allow(clippy::result_unit_err)]
     fn num_args(s: String) -> Result<usize, ()>;
 }
 
@@ -132,4 +134,3 @@ mod tests {
         assert!(Cmd::num_args("invalid".into()).is_err());
     }
 }
-

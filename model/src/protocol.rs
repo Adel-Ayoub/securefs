@@ -91,7 +91,7 @@ impl std::fmt::Display for Path {
             .collect::<Vec<String>>()
             .join("/");
 
-        path_string.insert_str(0, "/");
+        path_string.insert(0, '/');
         write!(f, "{}", path_string)?;
         Ok(())
     }
