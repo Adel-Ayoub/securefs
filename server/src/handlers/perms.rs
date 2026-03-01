@@ -1,4 +1,5 @@
 use deadpool_postgres::Pool;
+use globset::GlobBuilder;
 use log::info;
 use securefs_model::protocol::{AppMessage, Cmd};
 use tokio::fs;
@@ -19,14 +20,13 @@ pub async fn chmod(data: Vec<String>, session: &Session, pool: &Pool) -> AppMess
 
     let target = data.first().cloned().unwrap_or_default();
     let mode = data.get(1).cloned().unwrap_or_default();
-    if !is_valid_name(&target) || mode.len() != 3 {
+    if mode.len() != 3 {
         return AppMessage {
             cmd: Cmd::Failure,
             data: vec!["invalid args".to_string()],
         };
     }
 
-    let path = format!("{}/{}", session.current_path, target);
     let ugo: Vec<i16> = mode
         .chars()
         .filter_map(|c| c.to_digit(8))
@@ -39,32 +39,92 @@ pub async fn chmod(data: Vec<String>, session: &Session, pool: &Pool) -> AppMess
         };
     }
 
-    match dao::get_f_node(pool, path.clone()).await {
-        Ok(Some(node)) if is_owner(&node, session.current_user.as_ref()) => {
-            let path_for_log = path.clone();
-            match dao::change_file_perms(pool, path, ugo[0], ugo[1], ugo[2]).await {
-                Ok(_) => {
-                    audit!(
-                        "CHMOD",
-                        session.current_user.as_deref().unwrap_or("-"),
-                        &path_for_log,
-                        &mode
-                    );
-                    AppMessage {
-                        cmd: Cmd::Chmod,
-                        data: vec!["ok".to_string()],
-                    }
-                }
-                Err(_) => AppMessage {
+    // Expand glob or use single target
+    let is_glob = target.contains('*') || target.contains('?');
+    let targets = if is_glob {
+        let glob = match GlobBuilder::new(&target).literal_separator(true).build() {
+            Ok(g) => g.compile_matcher(),
+            Err(e) => {
+                return AppMessage {
                     cmd: Cmd::Failure,
-                    data: vec!["chmod failed".to_string()],
-                },
+                    data: vec![format!("invalid glob: {}", e)],
+                }
             }
+        };
+        let children = match dao::get_children(pool, session.current_path.clone()).await {
+            Ok(c) => c,
+            Err(_) => {
+                return AppMessage {
+                    cmd: Cmd::Failure,
+                    data: vec!["failed to list children".into()],
+                }
+            }
+        };
+        let names: Vec<String> = children
+            .iter()
+            .filter(|c| glob.is_match(&c.name))
+            .map(|c| c.name.clone())
+            .collect();
+        if names.is_empty() {
+            return AppMessage {
+                cmd: Cmd::Failure,
+                data: vec!["no matches".into()],
+            };
         }
-        _ => AppMessage {
+        names
+    } else {
+        if !is_valid_name(&target) {
+            return AppMessage {
+                cmd: Cmd::Failure,
+                data: vec!["invalid args".to_string()],
+            };
+        }
+        vec![target]
+    };
+
+    let mut changed = 0;
+    let mut errors = Vec::new();
+    for name in &targets {
+        let path = format!("{}/{}", session.current_path, name);
+        match dao::get_f_node(pool, path.clone()).await {
+            Ok(Some(node)) if is_owner(&node, session.current_user.as_ref()) => {
+                match dao::change_file_perms(pool, path.clone(), ugo[0], ugo[1], ugo[2]).await {
+                    Ok(_) => {
+                        audit!(
+                            "CHMOD",
+                            session.current_user.as_deref().unwrap_or("-"),
+                            &path,
+                            &mode
+                        );
+                        changed += 1;
+                    }
+                    Err(_) => errors.push(format!("{}: chmod failed", name)),
+                }
+            }
+            Ok(Some(_)) => errors.push(format!("{}: not owner", name)),
+            _ => errors.push(format!("{}: not found", name)),
+        }
+    }
+
+    if changed > 0 && errors.is_empty() {
+        AppMessage {
+            cmd: Cmd::Chmod,
+            data: vec!["ok".to_string()],
+        }
+    } else if changed > 0 {
+        AppMessage {
+            cmd: Cmd::Chmod,
+            data: vec![format!(
+                "{} changed, errors: {}",
+                changed,
+                errors.join("; ")
+            )],
+        }
+    } else {
+        AppMessage {
             cmd: Cmd::Failure,
-            data: vec!["not owner".to_string()],
-        },
+            data: vec![errors.join("; ")],
+        }
     }
 }
 

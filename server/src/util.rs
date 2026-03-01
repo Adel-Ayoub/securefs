@@ -39,9 +39,13 @@ pub fn is_safe_path(path: &str) -> bool {
 
 /// Format ls entry with owner, group, permissions, and name.
 pub fn format_ls_entry(node: &FNode) -> String {
-    let suffix = if node.dir { "/" } else { "" };
     let perms = format_permissions(node.u, node.g, node.o);
-    format!("{} {} {}{}", node.owner, perms, node.name, suffix)
+    if let Some(ref target) = node.link_target {
+        format!("{} {} {} -> {}", node.owner, perms, node.name, target)
+    } else {
+        let suffix = if node.dir { "/" } else { "" };
+        format!("{} {} {}{}", node.owner, perms, node.name, suffix)
+    }
 }
 
 /// Format Unix-style permissions into rwxrwxrwx string.

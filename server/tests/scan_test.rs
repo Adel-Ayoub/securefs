@@ -54,6 +54,7 @@ async fn test_scan_command() {
         created_at: 0,
         modified_at: 0,
         file_group: None,
+        link_target: None,
     };
 
     dao::add_file(&pool, file_node).await.expect("create file");

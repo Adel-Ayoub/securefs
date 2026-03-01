@@ -356,6 +356,11 @@ where
                 handlers::fs::tail(incoming.data, &session, &pool).await,
                 None,
             ),
+            Cmd::Grep => (
+                handlers::fs::grep(incoming.data, &session, &pool).await,
+                None,
+            ),
+            Cmd::Ln => (handlers::fs::ln(incoming.data, &session, &pool).await, None),
             _ => (
                 AppMessage {
                     cmd: Cmd::Failure,
@@ -432,6 +437,7 @@ mod tests {
             created_at: 0,
             modified_at: 0,
             file_group: None,
+            link_target: None,
         };
 
         assert!(can_read(&node, Some(&"alice".to_string())));
@@ -469,6 +475,7 @@ mod tests {
             created_at: 0,
             modified_at: 0,
             file_group: Some("devs".to_string()),
+            link_target: None,
         };
 
         let owner_group = Some("devs".to_string());

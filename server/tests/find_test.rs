@@ -57,6 +57,7 @@ async fn test_find_command() {
         created_at: 0,
         modified_at: 0,
         file_group: None,
+        link_target: None,
     };
     dao::add_file(&pool, dir1).await.expect("create dir1");
     dao::add_file_to_parent(&pool, "/home".into(), "dir1".into())
@@ -80,6 +81,7 @@ async fn test_find_command() {
         created_at: 0,
         modified_at: 0,
         file_group: None,
+        link_target: None,
     };
     dao::add_file(&pool, match_target)
         .await
@@ -105,6 +107,7 @@ async fn test_find_command() {
         created_at: 0,
         modified_at: 0,
         file_group: None,
+        link_target: None,
     };
     dao::add_file(&pool, other).await.expect("create other");
     dao::add_file_to_parent(&pool, "/home/dir1".into(), "other.txt".into())

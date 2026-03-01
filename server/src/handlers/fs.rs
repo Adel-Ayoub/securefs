@@ -1,4 +1,5 @@
 use deadpool_postgres::Pool;
+use globset::GlobBuilder;
 use securefs_model::protocol::{AppMessage, Cmd, FNode};
 use std::collections::HashSet;
 use std::fs as stdfs;
@@ -11,6 +12,28 @@ use securefs_server::dao;
 use crate::crypto::{decrypt_file_content, encrypt_file_content, hash_content};
 use crate::session::Session;
 use crate::util::*;
+
+/// Check if a string contains glob metacharacters.
+fn is_glob_pattern(s: &str) -> bool {
+    s.contains('*') || s.contains('?')
+}
+
+/// Expand a glob pattern against children of a directory.
+async fn expand_glob(pool: &Pool, parent_path: &str, pattern: &str) -> Result<Vec<String>, String> {
+    let glob = GlobBuilder::new(pattern)
+        .literal_separator(true)
+        .build()
+        .map_err(|e| format!("invalid glob: {}", e))?
+        .compile_matcher();
+    let children = dao::get_children(pool, parent_path.to_string())
+        .await
+        .map_err(|_| "failed to list children".to_string())?;
+    Ok(children
+        .iter()
+        .filter(|c| glob.is_match(&c.name))
+        .map(|c| c.name.clone())
+        .collect())
+}
 
 // Helpers for reading and decrypting file content (shared by cat, head, tail)
 async fn read_file_content(file_path: &str) -> Result<String, AppMessage> {
@@ -74,21 +97,44 @@ pub async fn cd(data: Vec<String>, session: &mut Session, pool: &Pool) -> AppMes
     }
 
     match dao::get_f_node(pool, new_path.clone()).await {
-        Ok(Some(node)) if node.dir => {
-            let owner_group =
-                dao::get_file_group(pool, node.owner.clone(), node.file_group.clone())
-                    .await
-                    .unwrap_or(None);
+        Ok(Some(node)) => {
+            // Follow symlink if target is a directory
+            let (resolved_path, resolved_node) = if let Some(ref target) = node.link_target {
+                match dao::get_f_node(pool, target.clone()).await {
+                    Ok(Some(tgt)) if tgt.dir => (target.clone(), tgt),
+                    _ => {
+                        return AppMessage {
+                            cmd: Cmd::Failure,
+                            data: vec!["symlink target is not a directory".into()],
+                        }
+                    }
+                }
+            } else if node.dir {
+                (new_path.clone(), node)
+            } else {
+                return AppMessage {
+                    cmd: Cmd::Failure,
+                    data: vec!["not a directory".into()],
+                };
+            };
+
+            let owner_group = dao::get_file_group(
+                pool,
+                resolved_node.owner.clone(),
+                resolved_node.file_group.clone(),
+            )
+            .await
+            .unwrap_or(None);
             if can_read_with_group(
-                &node,
+                &resolved_node,
                 session.current_user.as_ref(),
                 session.current_user_group.as_ref(),
                 owner_group.as_ref(),
             ) {
-                session.current_path = new_path.clone();
+                session.current_path = resolved_path.clone();
                 AppMessage {
                     cmd: Cmd::Cd,
-                    data: vec![new_path],
+                    data: vec![resolved_path],
                 }
             } else {
                 AppMessage {
@@ -261,6 +307,7 @@ pub async fn mkdir(data: Vec<String>, session: &Session, pool: &Pool) -> AppMess
         created_at: now,
         modified_at: now,
         file_group: session.current_user_group.clone(),
+        link_target: None,
     };
 
     let res = dao::add_file(pool, new_dir).await;
@@ -352,6 +399,7 @@ pub async fn touch(data: Vec<String>, session: &Session, pool: &Pool) -> AppMess
         created_at: now,
         modified_at: now,
         file_group: session.current_user_group.clone(),
+        link_target: None,
     };
 
     let res = dao::add_file(pool, new_file).await;
@@ -382,14 +430,8 @@ pub async fn delete(data: Vec<String>, session: &Session, pool: &Pool) -> AppMes
     }
 
     let target = data.first().cloned().unwrap_or_default();
-    if !is_valid_name(&target) {
-        return AppMessage {
-            cmd: Cmd::Failure,
-            data: vec!["invalid path".to_string()],
-        };
-    }
 
-    let path = format!("{}/{}", session.current_path, target);
+    // Check write permission on parent directory
     let has_perm = match dao::get_f_node(pool, session.current_path.clone()).await {
         Ok(Some(parent)) => {
             let owner_group =
@@ -405,7 +447,6 @@ pub async fn delete(data: Vec<String>, session: &Session, pool: &Pool) -> AppMes
         }
         _ => false,
     };
-
     if !has_perm {
         return AppMessage {
             cmd: Cmd::Failure,
@@ -413,39 +454,79 @@ pub async fn delete(data: Vec<String>, session: &Session, pool: &Pool) -> AppMes
         };
     }
 
-    if let Ok(Some(node)) = dao::get_f_node(pool, path.clone()).await {
-        if node.dir && !node.children.is_empty() {
+    // Expand glob or use single target
+    let targets = if is_glob_pattern(&target) {
+        match expand_glob(pool, &session.current_path, &target).await {
+            Ok(names) if names.is_empty() => {
+                return AppMessage {
+                    cmd: Cmd::Failure,
+                    data: vec!["no matches".into()],
+                }
+            }
+            Ok(names) => names,
+            Err(e) => {
+                return AppMessage {
+                    cmd: Cmd::Failure,
+                    data: vec![e],
+                }
+            }
+        }
+    } else {
+        if !is_valid_name(&target) {
             return AppMessage {
                 cmd: Cmd::Failure,
-                data: vec!["directory not empty".into()],
+                data: vec!["invalid path".to_string()],
             };
         }
+        vec![target]
+    };
 
-        let storage_path = format!("storage{}", path);
-        if Path::new(&storage_path).exists() {
-            let _ =
-                stdfs::remove_file(&storage_path).or_else(|_| stdfs::remove_dir_all(&storage_path));
-        }
-
-        let parent_remove =
-            dao::remove_file_from_parent(pool, session.current_path.clone(), target.clone()).await;
-        let del = dao::delete_path(pool, path.clone()).await;
-
-        if parent_remove.is_ok() && del.is_ok() {
-            AppMessage {
-                cmd: Cmd::Delete,
-                data: vec!["ok".to_string()],
+    let mut deleted = 0;
+    let mut errors = Vec::new();
+    for name in &targets {
+        let path = format!("{}/{}", session.current_path, name);
+        if let Ok(Some(node)) = dao::get_f_node(pool, path.clone()).await {
+            if node.dir && !node.children.is_empty() {
+                errors.push(format!("{}: directory not empty", name));
+                continue;
+            }
+            let storage_path = format!("storage{}", path);
+            if Path::new(&storage_path).exists() {
+                let _ = stdfs::remove_file(&storage_path)
+                    .or_else(|_| stdfs::remove_dir_all(&storage_path));
+            }
+            let parent_remove =
+                dao::remove_file_from_parent(pool, session.current_path.clone(), name.clone())
+                    .await;
+            let del = dao::delete_path(pool, path.clone()).await;
+            if parent_remove.is_ok() && del.is_ok() {
+                deleted += 1;
+            } else {
+                errors.push(format!("{}: delete failed", name));
             }
         } else {
-            AppMessage {
-                cmd: Cmd::Failure,
-                data: vec!["delete failed".to_string()],
-            }
+            errors.push(format!("{}: not found", name));
+        }
+    }
+
+    if deleted > 0 && errors.is_empty() {
+        AppMessage {
+            cmd: Cmd::Delete,
+            data: vec![format!("{} deleted", deleted)],
+        }
+    } else if deleted > 0 {
+        AppMessage {
+            cmd: Cmd::Delete,
+            data: vec![format!(
+                "{} deleted, errors: {}",
+                deleted,
+                errors.join("; ")
+            )],
         }
     } else {
         AppMessage {
             cmd: Cmd::Failure,
-            data: vec!["delete failed".to_string()],
+            data: vec![errors.join("; ")],
         }
     }
 }
@@ -693,16 +774,44 @@ pub async fn cat(data: Vec<String>, session: &Session, pool: &Pool) -> AppMessag
             data: vec!["cannot cat dir".into()],
         },
         Ok(Some(node)) => {
-            let owner_group =
-                dao::get_file_group(pool, node.owner.clone(), node.file_group.clone())
-                    .await
-                    .unwrap_or(None);
+            // Follow symlink to resolve actual file
+            let (resolved_node, resolved_phys) = if let Some(ref target) = node.link_target {
+                match dao::get_f_node(pool, target.clone()).await {
+                    Ok(Some(tgt)) if !tgt.dir => {
+                        let phys = format!("storage{}", tgt.path);
+                        (tgt, phys)
+                    }
+                    Ok(Some(_)) => {
+                        return AppMessage {
+                            cmd: Cmd::Failure,
+                            data: vec!["cannot cat dir".into()],
+                        }
+                    }
+                    _ => {
+                        return AppMessage {
+                            cmd: Cmd::Failure,
+                            data: vec!["broken symlink".into()],
+                        }
+                    }
+                }
+            } else {
+                (node, file_path.clone())
+            };
+
+            let owner_group = dao::get_file_group(
+                pool,
+                resolved_node.owner.clone(),
+                resolved_node.file_group.clone(),
+            )
+            .await
+            .unwrap_or(None);
             if can_read_with_group(
-                &node,
+                &resolved_node,
                 session.current_user.as_ref(),
                 session.current_user_group.as_ref(),
                 owner_group.as_ref(),
             ) {
+                let file_path = resolved_phys;
                 match fs::File::open(&file_path).await {
                     Ok(mut f) => {
                         let mut encrypted = Vec::new();
@@ -1115,6 +1224,205 @@ pub async fn tail(data: Vec<String>, session: &Session, pool: &Pool) -> AppMessa
         _ => AppMessage {
             cmd: Cmd::Failure,
             data: vec!["file not found".into()],
+        },
+    }
+}
+
+pub async fn grep(data: Vec<String>, session: &Session, pool: &Pool) -> AppMessage {
+    if !session.authenticated {
+        return AppMessage {
+            cmd: Cmd::Failure,
+            data: vec!["not authenticated".to_string()],
+        };
+    }
+
+    let pattern = data.first().cloned().unwrap_or_default();
+    if pattern.is_empty() {
+        return AppMessage {
+            cmd: Cmd::Failure,
+            data: vec!["missing pattern".into()],
+        };
+    }
+
+    let nodes = match dao::get_subtree(pool, session.current_path.clone()).await {
+        Ok(n) => n,
+        Err(_) => {
+            return AppMessage {
+                cmd: Cmd::Failure,
+                data: vec!["grep failed".into()],
+            }
+        }
+    };
+
+    let mut matches = Vec::new();
+    let max_matches = 100;
+
+    for node in &nodes {
+        if node.dir {
+            continue;
+        }
+        let owner_group = dao::get_file_group(pool, node.owner.clone(), node.file_group.clone())
+            .await
+            .unwrap_or(None);
+        if !can_read_with_group(
+            node,
+            session.current_user.as_ref(),
+            session.current_user_group.as_ref(),
+            owner_group.as_ref(),
+        ) {
+            continue;
+        }
+
+        let file_path = format!("storage{}", node.path);
+        if let Ok(content) = read_file_content(&file_path).await {
+            for (i, line) in content.lines().enumerate() {
+                if line.contains(&pattern) {
+                    let rel = node
+                        .path
+                        .strip_prefix(&session.current_path)
+                        .unwrap_or(&node.path)
+                        .trim_start_matches('/');
+                    matches.push(format!("{}:{}:{}", rel, i + 1, line));
+                    if matches.len() >= max_matches {
+                        break;
+                    }
+                }
+            }
+        }
+        if matches.len() >= max_matches {
+            break;
+        }
+    }
+
+    if matches.is_empty() {
+        return AppMessage {
+            cmd: Cmd::Failure,
+            data: vec!["no matches".into()],
+        };
+    }
+
+    AppMessage {
+        cmd: Cmd::Grep,
+        data: matches,
+    }
+}
+
+pub async fn ln(data: Vec<String>, session: &Session, pool: &Pool) -> AppMessage {
+    if !session.authenticated {
+        return AppMessage {
+            cmd: Cmd::Failure,
+            data: vec!["not authenticated".to_string()],
+        };
+    }
+
+    let target = data.first().cloned().unwrap_or_default();
+    let link_name = data.get(1).cloned().unwrap_or_default();
+    if target.is_empty() || link_name.is_empty() {
+        return AppMessage {
+            cmd: Cmd::Failure,
+            data: vec!["usage: ln <target> <link_name>".into()],
+        };
+    }
+    if !is_valid_name(&link_name) {
+        return AppMessage {
+            cmd: Cmd::Failure,
+            data: vec!["invalid link name".into()],
+        };
+    }
+
+    let target_path = if target.starts_with('/') {
+        target.clone()
+    } else {
+        format!("{}/{}", session.current_path, target)
+    };
+    if !is_safe_path(&target_path) {
+        return AppMessage {
+            cmd: Cmd::Failure,
+            data: vec!["invalid target path".into()],
+        };
+    }
+
+    if dao::get_f_node(pool, target_path.clone())
+        .await
+        .ok()
+        .flatten()
+        .is_none()
+    {
+        return AppMessage {
+            cmd: Cmd::Failure,
+            data: vec!["target does not exist".into()],
+        };
+    }
+
+    let has_perm = match dao::get_f_node(pool, session.current_path.clone()).await {
+        Ok(Some(parent)) => {
+            let owner_group =
+                dao::get_file_group(pool, parent.owner.clone(), parent.file_group.clone())
+                    .await
+                    .unwrap_or(None);
+            can_write_with_group(
+                &parent,
+                session.current_user.as_ref(),
+                session.current_user_group.as_ref(),
+                owner_group.as_ref(),
+            )
+        }
+        _ => false,
+    };
+    if !has_perm {
+        return AppMessage {
+            cmd: Cmd::Failure,
+            data: vec!["no write permission".into()],
+        };
+    }
+
+    let link_path = format!("{}/{}", session.current_path, link_name);
+    if dao::get_f_node(pool, link_path.clone())
+        .await
+        .ok()
+        .flatten()
+        .is_some()
+    {
+        return AppMessage {
+            cmd: Cmd::Failure,
+            data: vec!["name already exists".into()],
+        };
+    }
+
+    let owner = session.current_user.clone().unwrap_or_default();
+    let now = current_timestamp();
+    let symlink_node = FNode {
+        id: -1,
+        name: link_name.clone(),
+        path: link_path,
+        owner,
+        hash: "".to_string(),
+        parent: session.current_path.clone(),
+        dir: false,
+        u: 7,
+        g: 7,
+        o: 7,
+        children: vec![],
+        encrypted_name: link_name.clone(),
+        size: 0,
+        created_at: now,
+        modified_at: now,
+        file_group: session.current_user_group.clone(),
+        link_target: Some(target_path),
+    };
+
+    match dao::add_file(pool, symlink_node).await {
+        Ok(_) => {
+            let _ = dao::add_file_to_parent(pool, session.current_path.clone(), link_name.clone())
+                .await;
+            AppMessage {
+                cmd: Cmd::Ln,
+                data: vec!["ok".into()],
+            }
+        }
+        Err(_) => AppMessage {
+            cmd: Cmd::Failure,
+            data: vec!["failed to create symlink".into()],
         },
     }
 }

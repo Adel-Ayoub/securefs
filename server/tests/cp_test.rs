@@ -60,6 +60,7 @@ async fn test_recursive_copy() {
         created_at: 0,
         modified_at: 0,
         file_group: None,
+        link_target: None,
     };
     dao::add_file(&pool, dir_node)
         .await
@@ -86,6 +87,7 @@ async fn test_recursive_copy() {
         created_at: 0,
         modified_at: 0,
         file_group: None,
+        link_target: None,
     };
     dao::add_file(&pool, file1_node)
         .await
