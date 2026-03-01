@@ -8,14 +8,89 @@ use std::env;
 use colored::Colorize;
 use futures_util::{SinkExt, StreamExt};
 use rand_core::OsRng;
+use rustyline::completion::{Completer, Pair};
 use rustyline::error::ReadlineError;
-use rustyline::DefaultEditor;
+use rustyline::highlight::Highlighter;
+use rustyline::hint::Hinter;
+use rustyline::validate::Validator;
+use rustyline::{CompletionType, Config, Context, Editor, Helper};
 use securefs_model::cmd::{MapStr, NumArgs};
 use securefs_model::protocol::{AppMessage, Cmd};
 use tokio::runtime::Runtime;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
 use x25519_dalek::{EphemeralSecret, PublicKey};
+
+const COMMANDS: &[&str] = &[
+    "cat",
+    "cd",
+    "chmod",
+    "chown",
+    "chgrp",
+    "cp",
+    "delete",
+    "du",
+    "echo",
+    "find",
+    "get_encrypted_filename",
+    "head",
+    "login",
+    "logout",
+    "ls",
+    "lsgroups",
+    "lsusers",
+    "mkdir",
+    "mv",
+    "new_group",
+    "new_user",
+    "pwd",
+    "scan",
+    "stat",
+    "tail",
+    "touch",
+    "tree",
+    "whoami",
+    "add_user_to_group",
+    "remove_user_from_group",
+];
+
+struct SecureFsHelper;
+
+impl Completer for SecureFsHelper {
+    type Candidate = Pair;
+
+    fn complete(
+        &self,
+        line: &str,
+        pos: usize,
+        _ctx: &Context<'_>,
+    ) -> rustyline::Result<(usize, Vec<Pair>)> {
+        let line_up_to_pos = &line[..pos];
+        // Only complete the first word (command name)
+        if !line_up_to_pos.contains(' ') {
+            let prefix = line_up_to_pos;
+            let matches: Vec<Pair> = COMMANDS
+                .iter()
+                .filter(|cmd| cmd.starts_with(prefix))
+                .map(|cmd| Pair {
+                    display: cmd.to_string(),
+                    replacement: cmd.to_string(),
+                })
+                .collect();
+            Ok((0, matches))
+        } else {
+            Ok((pos, vec![]))
+        }
+    }
+}
+
+impl Hinter for SecureFsHelper {
+    type Hint = String;
+}
+
+impl Highlighter for SecureFsHelper {}
+impl Validator for SecureFsHelper {}
+impl Helper for SecureFsHelper {}
 
 /// Initialize a Tokio runtime and run the async client loop.
 fn main() {
@@ -68,19 +143,25 @@ async fn run() -> Result<(), String> {
         println!("{}", format!("Connecting to {}", url).cyan());
     }
 
-    // Initialize rustyline editor for command history and line editing
-    let mut rl = DefaultEditor::new().map_err(|e| format!("failed to init readline: {}", e))?;
+    let config = Config::builder()
+        .completion_type(CompletionType::List)
+        .build();
+    let mut rl =
+        Editor::with_config(config).map_err(|e| format!("failed to init readline: {}", e))?;
+    rl.set_helper(Some(SecureFsHelper));
+
+    // Load persistent history
+    let history_path = dirs::home_dir().map(|h| h.join(".securefs_history"));
+    if let Some(ref path) = history_path {
+        let _ = rl.load_history(path);
+    }
 
     let mut reconnect_delay = 1;
     let max_delay = 30;
 
     loop {
-        // Connection loop
         match connect_and_run(&url, &mut rl, verbose, quiet).await {
-            Ok(_) => {
-                // Normal exit (logout)
-                break;
-            }
+            Ok(_) => break,
             Err(e) => {
                 if !quiet {
                     eprintln!("Connection error: {}", e.red());
@@ -92,12 +173,17 @@ async fn run() -> Result<(), String> {
         }
     }
 
+    // Save history on exit
+    if let Some(ref path) = history_path {
+        let _ = rl.save_history(path);
+    }
+
     Ok(())
 }
 
 async fn connect_and_run(
     url: &str,
-    rl: &mut DefaultEditor,
+    rl: &mut Editor<SecureFsHelper, rustyline::history::DefaultHistory>,
     verbose: bool,
     quiet: bool,
 ) -> Result<(), String> {
@@ -176,12 +262,19 @@ async fn connect_and_run(
         );
         println!(
             "{}",
-            "          chmod, chown, chgrp, cp, find, scan, get_encrypted_filename".yellow()
+            "          chmod, chown, chgrp, cp, find, scan, whoami, tree, stat, du".yellow()
         );
-        println!("{}", "          new_user, new_group, lsusers, lsgroups, add_user_to_group, remove_user_from_group".yellow());
         println!(
             "{}",
-            "Use up/down arrows for command history. Ctrl+C or 'logout' to exit.".yellow()
+            "          head, tail, new_user, new_group, lsusers, lsgroups".yellow()
+        );
+        println!(
+            "{}",
+            "          add_user_to_group, remove_user_from_group, get_encrypted_filename".yellow()
+        );
+        println!(
+            "{}",
+            "Tab for completion. Up/down for history. Ctrl+C or 'logout' to exit.".yellow()
         );
     }
 
@@ -368,7 +461,13 @@ async fn connect_and_run(
                         if reply.data.is_empty() {
                             println!();
                         } else {
-                            reply.data.iter().for_each(|d| println!("{}", d));
+                            for line in &reply.data {
+                                if line.ends_with('/') {
+                                    println!("{}", line.blue());
+                                } else {
+                                    println!("{}", line);
+                                }
+                            }
                         }
                     }
                     Cmd::Failure => {
@@ -579,6 +678,90 @@ async fn connect_and_run(
                     Cmd::Failure => {
                         println!("{}", reply.data.first().unwrap_or(&"failed".into()).red())
                     }
+                    _ => println!("{}", "unexpected reply".red()),
+                }
+            }
+            Cmd::Whoami => {
+                send(&mut ws_stream, &app_message, shared_secret_key.as_ref()).await?;
+                let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
+                match reply.cmd {
+                    Cmd::Whoami => {
+                        let user = reply.data.first().cloned().unwrap_or_default();
+                        let group = reply.data.get(1).cloned().unwrap_or_default();
+                        println!("user: {}  group: {}", user.green(), group.blue());
+                    }
+                    Cmd::Failure => println!(
+                        "{}",
+                        reply.data.first().unwrap_or(&"whoami failed".into()).red()
+                    ),
+                    _ => println!("{}", "unexpected reply".red()),
+                }
+            }
+            Cmd::Tree => {
+                send(&mut ws_stream, &app_message, shared_secret_key.as_ref()).await?;
+                let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
+                match reply.cmd {
+                    Cmd::Tree => {
+                        for line in &reply.data {
+                            println!("{}", line);
+                        }
+                    }
+                    Cmd::Failure => println!(
+                        "{}",
+                        reply.data.first().unwrap_or(&"tree failed".into()).red()
+                    ),
+                    _ => println!("{}", "unexpected reply".red()),
+                }
+            }
+            Cmd::Stat => {
+                send(&mut ws_stream, &app_message, shared_secret_key.as_ref()).await?;
+                let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
+                match reply.cmd {
+                    Cmd::Stat => {
+                        for line in &reply.data {
+                            println!("{}", line);
+                        }
+                    }
+                    Cmd::Failure => println!(
+                        "{}",
+                        reply.data.first().unwrap_or(&"stat failed".into()).red()
+                    ),
+                    _ => println!("{}", "unexpected reply".red()),
+                }
+            }
+            Cmd::Du => {
+                send(&mut ws_stream, &app_message, shared_secret_key.as_ref()).await?;
+                let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
+                match reply.cmd {
+                    Cmd::Du => println!("{}", reply.data.first().unwrap_or(&"0 B".into())),
+                    Cmd::Failure => println!(
+                        "{}",
+                        reply.data.first().unwrap_or(&"du failed".into()).red()
+                    ),
+                    _ => println!("{}", "unexpected reply".red()),
+                }
+            }
+            Cmd::Head => {
+                send(&mut ws_stream, &app_message, shared_secret_key.as_ref()).await?;
+                let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
+                match reply.cmd {
+                    Cmd::Head => println!("{}", reply.data.first().unwrap_or(&"".into())),
+                    Cmd::Failure => println!(
+                        "{}",
+                        reply.data.first().unwrap_or(&"head failed".into()).red()
+                    ),
+                    _ => println!("{}", "unexpected reply".red()),
+                }
+            }
+            Cmd::Tail => {
+                send(&mut ws_stream, &app_message, shared_secret_key.as_ref()).await?;
+                let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
+                match reply.cmd {
+                    Cmd::Tail => println!("{}", reply.data.first().unwrap_or(&"".into())),
+                    Cmd::Failure => println!(
+                        "{}",
+                        reply.data.first().unwrap_or(&"tail failed".into()).red()
+                    ),
                     _ => println!("{}", "unexpected reply".red()),
                 }
             }
