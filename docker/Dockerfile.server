@@ -1,0 +1,52 @@
+# --- Builder stage: compiles the server binary ---
+FROM rust:1-slim-bookworm AS builder
+WORKDIR /app
+
+# Install build-time dependencies.
+# tokio-rustls is pure Rust TLS so libssl-dev is not needed;
+# if cargo build fails due to OpenSSL headers, add libssl-dev here.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy workspace manifests first to create a cacheable dependency layer
+COPY Cargo.toml Cargo.lock ./
+COPY model/Cargo.toml model/Cargo.toml
+COPY server/Cargo.toml server/Cargo.toml
+COPY client/Cargo.toml client/Cargo.toml
+
+# Build deps with dummy source files so Docker caches this layer separately.
+# client is binary-only ([[bin]]), so it needs main.rs not lib.rs.
+RUN mkdir -p model/src server/src client/src \
+    && echo "fn main() {}" > server/src/main.rs \
+    && echo "fn main() {}" > client/src/main.rs \
+    && touch model/src/lib.rs server/src/lib.rs \
+    && cargo build --release \
+    && rm -rf model/src server/src client/src
+
+# Copy real source code
+COPY . .
+
+# Touch source files to invalidate the cache layer and build the real binary
+RUN touch server/src/main.rs server/src/lib.rs model/src/lib.rs \
+    && cargo build --release --bin securefs-server
+
+# Verify runtime dependencies so we know what to include in the runtime stage
+RUN ldd target/release/securefs-server || true
+
+# --- Runtime stage: minimal image with binary only ---
+FROM debian:bookworm-slim AS runtime
+WORKDIR /app
+
+# ca-certificates is needed for TLS certificate verification at runtime.
+# libssl3 is omitted since tokio-rustls is pure Rust and does not link libssl;
+# verify with `ldd securefs-server` in builder — add libssl3 if libssl.so appears.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /app/target/release/securefs-server /usr/local/bin/securefs-server
+
+EXPOSE 8080
+
+ENTRYPOINT ["/usr/local/bin/securefs-server"]
