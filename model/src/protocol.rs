@@ -72,6 +72,10 @@ pub enum Cmd {
     Head,
     /// Display last N lines of a file.
     Tail,
+    /// Search file contents for a pattern.
+    Grep,
+    /// Create a symbolic link.
+    Ln,
     #[default]
     /// Placeholder for unknown commands.
     Invalid,
@@ -145,6 +149,9 @@ pub struct FNode {
     /// File-level group override (None = inherit from owner's group).
     #[serde(default)]
     pub file_group: Option<String>,
+    /// Symlink target path (None = regular file/dir).
+    #[serde(default)]
+    pub link_target: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

@@ -45,6 +45,8 @@ impl MapStr for Cmd {
             "du" => Ok(Cmd::Du),
             "head" => Ok(Cmd::Head),
             "tail" => Ok(Cmd::Tail),
+            "grep" => Ok(Cmd::Grep),
+            "ln" => Ok(Cmd::Ln),
             _ => Err(()),
         }
     }
@@ -93,6 +95,8 @@ impl NumArgs for Cmd {
             "du" => Ok(1),
             "head" => Ok(usize::MAX),
             "tail" => Ok(usize::MAX),
+            "grep" => Ok(2),
+            "ln" => Ok(3),
             _ => Err(()),
         }
     }
@@ -139,6 +143,8 @@ mod tests {
         assert_eq!(Cmd::from_str("du".into()).unwrap(), Cmd::Du);
         assert_eq!(Cmd::from_str("head".into()).unwrap(), Cmd::Head);
         assert_eq!(Cmd::from_str("tail".into()).unwrap(), Cmd::Tail);
+        assert_eq!(Cmd::from_str("grep".into()).unwrap(), Cmd::Grep);
+        assert_eq!(Cmd::from_str("ln".into()).unwrap(), Cmd::Ln);
     }
 
     #[test]
@@ -156,5 +162,7 @@ mod tests {
         assert_eq!(Cmd::num_args("du".into()).unwrap(), 1);
         assert_eq!(Cmd::num_args("head".into()).unwrap(), usize::MAX);
         assert_eq!(Cmd::num_args("tail".into()).unwrap(), usize::MAX);
+        assert_eq!(Cmd::num_args("grep".into()).unwrap(), 2);
+        assert_eq!(Cmd::num_args("ln".into()).unwrap(), 3);
     }
 }
