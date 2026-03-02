@@ -7,13 +7,13 @@ use securefs_model::protocol::{AppMessage, Cmd};
 use sha2::Sha256;
 use std::net::IpAddr;
 use std::time::Instant;
+use totp_rs::{Algorithm, Secret, TOTP};
 use x25519_dalek::{EphemeralSecret, PublicKey};
 
 use securefs_server::dao;
 
-use crate::session::{RateLimiter, Session};
+use crate::session::{RateLimiter, Session, RATE_LIMIT_WINDOW_SECS};
 
-const RATE_LIMIT_WINDOW_SECS: u64 = 900;
 const MAX_LOGIN_ATTEMPTS: u8 = 5;
 
 pub fn new_connection() -> AppMessage {
@@ -70,6 +70,7 @@ pub async fn login(
             entry.0
         };
         audit!(
+            pool,
             "LOGIN_FAIL",
             &user_name,
             &client_ip.to_string(),
@@ -106,7 +107,35 @@ pub async fn login(
     let user_opt = dao::get_user(pool, user_name.clone()).await.ok().flatten();
     let is_admin = user_opt.as_ref().map(|u| u.is_admin).unwrap_or(false);
     session.current_user_group = user_opt.and_then(|u| u.group_name);
-    audit!("LOGIN_OK", &user_name, &session.current_path, "success");
+
+    // Check if TOTP is enabled for this user
+    let has_totp = dao::get_totp_secret(pool, &user_name)
+        .await
+        .ok()
+        .flatten()
+        .is_some();
+    if has_totp {
+        session.totp_required = true;
+        audit!(
+            pool,
+            "LOGIN_OK",
+            &user_name,
+            &session.current_path,
+            "totp pending"
+        );
+        return AppMessage {
+            cmd: Cmd::Login,
+            data: vec![user_name, is_admin.to_string(), "totp_required".into()],
+        };
+    }
+
+    audit!(
+        pool,
+        "LOGIN_OK",
+        &user_name,
+        &session.current_path,
+        "success"
+    );
     AppMessage {
         cmd: Cmd::Login,
         data: vec![user_name, is_admin.to_string()],
@@ -124,6 +153,122 @@ pub fn logout(session: &mut Session) -> AppMessage {
     AppMessage {
         cmd: Cmd::Logout,
         data: vec![],
+    }
+}
+
+/// Generate a TOTP secret and return the provisioning URI.
+/// The secret is stored but TOTP is not enforced until the user verifies a code.
+pub async fn totp_setup(session: &Session, pool: &Pool) -> AppMessage {
+    if !session.authenticated {
+        return AppMessage {
+            cmd: Cmd::Failure,
+            data: vec!["not authenticated".into()],
+        };
+    }
+    let user = session.current_user.as_deref().unwrap_or("");
+    let secret = Secret::generate_secret();
+    let totp = match TOTP::new(
+        Algorithm::SHA1,
+        6,
+        1,
+        30,
+        secret.to_bytes().unwrap(),
+        Some("SecureFS".into()),
+        user.to_string(),
+    ) {
+        Ok(t) => t,
+        Err(e) => {
+            return AppMessage {
+                cmd: Cmd::Failure,
+                data: vec![format!("totp init failed: {}", e)],
+            }
+        }
+    };
+    let secret_b32 = secret.to_encoded().to_string();
+    if let Err(e) = dao::set_totp_secret(pool, user, &secret_b32).await {
+        return AppMessage {
+            cmd: Cmd::Failure,
+            data: vec![format!("failed to store secret: {}", e)],
+        };
+    }
+    let uri = totp.get_url();
+    audit!(pool, "TOTP_SETUP", user, "-", "secret generated");
+    AppMessage {
+        cmd: Cmd::TotpSetup,
+        data: vec![secret_b32, uri],
+    }
+}
+
+/// Verify a TOTP code. On success, clears the totp_required flag.
+pub async fn totp_verify(data: Vec<String>, session: &mut Session, pool: &Pool) -> AppMessage {
+    if !session.authenticated {
+        return AppMessage {
+            cmd: Cmd::Failure,
+            data: vec!["not authenticated".into()],
+        };
+    }
+    let user = session.current_user.as_deref().unwrap_or("");
+    let code = data.first().cloned().unwrap_or_default();
+
+    let secret_b32 = match dao::get_totp_secret(pool, user).await {
+        Ok(Some(s)) => s,
+        Ok(None) => {
+            return AppMessage {
+                cmd: Cmd::Failure,
+                data: vec!["totp not configured".into()],
+            }
+        }
+        Err(e) => {
+            return AppMessage {
+                cmd: Cmd::Failure,
+                data: vec![format!("totp lookup failed: {}", e)],
+            }
+        }
+    };
+
+    let secret_bytes = match Secret::Encoded(secret_b32).to_bytes() {
+        Ok(b) => b,
+        Err(e) => {
+            return AppMessage {
+                cmd: Cmd::Failure,
+                data: vec![format!("invalid secret: {}", e)],
+            }
+        }
+    };
+    let totp = match TOTP::new(
+        Algorithm::SHA1,
+        6,
+        1,
+        30,
+        secret_bytes,
+        None,
+        user.to_string(),
+    ) {
+        Ok(t) => t,
+        Err(e) => {
+            return AppMessage {
+                cmd: Cmd::Failure,
+                data: vec![format!("totp init failed: {}", e)],
+            }
+        }
+    };
+
+    match totp.check_current(&code) {
+        Ok(true) => {
+            session.totp_required = false;
+            audit!(pool, "TOTP_VERIFY", user, "-", "success");
+            AppMessage {
+                cmd: Cmd::TotpVerify,
+                data: vec!["ok".into()],
+            }
+        }
+        _ => {
+            audit!(pool, "TOTP_VERIFY", user, "-", "invalid code");
+            AppMessage {
+                cmd: Cmd::Failure,
+                data: vec!["invalid totp code".into()],
+            }
+        }
     }
 }
 
