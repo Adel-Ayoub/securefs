@@ -88,6 +88,16 @@ pub enum Cmd {
     DownloadChunk,
     /// Finalize a chunked file download.
     DownloadEnd,
+    /// Query the persistent audit log (admin only).
+    AuditLog,
+    /// Begin TOTP setup — returns provisioning URI.
+    TotpSetup,
+    /// Verify a 6-digit TOTP code.
+    TotpVerify,
+    /// List all active sessions (admin only).
+    ListSessions,
+    /// Force logout a specific session (admin only).
+    ForceLogout,
     #[default]
     /// Placeholder for unknown commands.
     Invalid,
