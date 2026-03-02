@@ -53,6 +53,11 @@ impl MapStr for Cmd {
             "download_start" | "download" => Ok(Cmd::DownloadStart),
             "download_chunk" => Ok(Cmd::DownloadChunk),
             "download_end" => Ok(Cmd::DownloadEnd),
+            "audit_log" | "auditlog" => Ok(Cmd::AuditLog),
+            "totp_setup" => Ok(Cmd::TotpSetup),
+            "totp_verify" => Ok(Cmd::TotpVerify),
+            "list_sessions" | "sessions" => Ok(Cmd::ListSessions),
+            "force_logout" => Ok(Cmd::ForceLogout),
             _ => Err(()),
         }
     }
@@ -109,6 +114,11 @@ impl NumArgs for Cmd {
             "download_start" | "download" => Ok(2),
             "download_chunk" => Ok(usize::MAX),
             "download_end" => Ok(usize::MAX),
+            "audit_log" | "auditlog" => Ok(usize::MAX),
+            "totp_setup" => Ok(1),
+            "totp_verify" => Ok(2),
+            "list_sessions" | "sessions" => Ok(1),
+            "force_logout" => Ok(2),
             _ => Err(()),
         }
     }

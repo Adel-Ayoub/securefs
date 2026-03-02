@@ -91,6 +91,7 @@ pub async fn chmod(data: Vec<String>, session: &Session, pool: &Pool) -> AppMess
                 match dao::change_file_perms(pool, path.clone(), ugo[0], ugo[1], ugo[2]).await {
                     Ok(_) => {
                         audit!(
+                            pool,
                             "CHMOD",
                             session.current_user.as_deref().unwrap_or("-"),
                             &path,

@@ -25,6 +25,7 @@ use tokio_tungstenite::tungstenite::Message;
 use x25519_dalek::{EphemeralSecret, PublicKey};
 
 const COMMANDS: &[&str] = &[
+    "audit_log",
     "cat",
     "cd",
     "chmod",
@@ -36,9 +37,11 @@ const COMMANDS: &[&str] = &[
     "du",
     "echo",
     "find",
+    "force_logout",
     "get_encrypted_filename",
     "grep",
     "head",
+    "list_sessions",
     "ln",
     "login",
     "logout",
@@ -53,6 +56,8 @@ const COMMANDS: &[&str] = &[
     "scan",
     "stat",
     "tail",
+    "totp_setup",
+    "totp_verify",
     "touch",
     "tree",
     "upload",
@@ -277,6 +282,10 @@ async fn connect_and_run(
         );
         println!(
             "{}",
+            "          totp_setup, totp_verify, audit_log, list_sessions, force_logout".yellow()
+        );
+        println!(
+            "{}",
             "          new_user, new_group, lsusers, lsgroups".yellow()
         );
         println!(
@@ -339,7 +348,39 @@ async fn connect_and_run(
                     Cmd::Login => {
                         let default_admin = "false".to_string();
                         let is_admin = reply.data.get(1).unwrap_or(&default_admin);
-                        println!("{} (is_admin: {})", "login ok".green(), is_admin);
+                        // TOTP second factor required
+                        if reply.data.get(2).map(|s| s.as_str()) == Some("totp_required") {
+                            println!("{}", "totp verification required".yellow());
+                            print!("enter 6-digit code: ");
+                            std::io::Write::flush(&mut std::io::stdout()).ok();
+                            let mut code = String::new();
+                            std::io::stdin().read_line(&mut code).ok();
+                            let totp_msg = AppMessage {
+                                cmd: Cmd::TotpVerify,
+                                data: vec![code.trim().to_string()],
+                            };
+                            send(&mut ws_stream, &totp_msg, shared_secret_key.as_ref()).await?;
+                            let totp_reply =
+                                recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
+                            match totp_reply.cmd {
+                                Cmd::TotpVerify => {
+                                    println!("{} (is_admin: {})", "login ok".green(), is_admin);
+                                }
+                                Cmd::Failure => {
+                                    println!(
+                                        "{}",
+                                        totp_reply
+                                            .data
+                                            .first()
+                                            .unwrap_or(&"totp failed".into())
+                                            .red()
+                                    );
+                                }
+                                _ => println!("{}", "unexpected totp reply".red()),
+                            }
+                        } else {
+                            println!("{} (is_admin: {})", "login ok".green(), is_admin);
+                        }
                     }
                     Cmd::Failure => {
                         println!(
@@ -774,6 +815,105 @@ async fn connect_and_run(
                     Cmd::Failure => println!(
                         "{}",
                         reply.data.first().unwrap_or(&"tail failed".into()).red()
+                    ),
+                    _ => println!("{}", "unexpected reply".red()),
+                }
+            }
+            Cmd::AuditLog => {
+                send(&mut ws_stream, &app_message, shared_secret_key.as_ref()).await?;
+                let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
+                match reply.cmd {
+                    Cmd::AuditLog => {
+                        for line in &reply.data {
+                            println!("{}", line);
+                        }
+                    }
+                    Cmd::Failure => println!(
+                        "{}",
+                        reply
+                            .data
+                            .first()
+                            .unwrap_or(&"audit_log failed".into())
+                            .red()
+                    ),
+                    _ => println!("{}", "unexpected reply".red()),
+                }
+            }
+            Cmd::TotpSetup => {
+                send(&mut ws_stream, &app_message, shared_secret_key.as_ref()).await?;
+                let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
+                match reply.cmd {
+                    Cmd::TotpSetup => {
+                        println!("{}", "TOTP setup successful".green());
+                        if let Some(uri) = reply.data.first() {
+                            println!("  URI: {}", uri);
+                        }
+                        if let Some(secret) = reply.data.get(1) {
+                            println!("  Secret: {}", secret.yellow());
+                        }
+                        println!("{}", "  Verify with: totp_verify <code>".yellow());
+                    }
+                    Cmd::Failure => println!(
+                        "{}",
+                        reply
+                            .data
+                            .first()
+                            .unwrap_or(&"totp_setup failed".into())
+                            .red()
+                    ),
+                    _ => println!("{}", "unexpected reply".red()),
+                }
+            }
+            Cmd::TotpVerify => {
+                send(&mut ws_stream, &app_message, shared_secret_key.as_ref()).await?;
+                let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
+                match reply.cmd {
+                    Cmd::TotpVerify => println!("{}", "TOTP verified".green()),
+                    Cmd::Failure => println!(
+                        "{}",
+                        reply
+                            .data
+                            .first()
+                            .unwrap_or(&"totp_verify failed".into())
+                            .red()
+                    ),
+                    _ => println!("{}", "unexpected reply".red()),
+                }
+            }
+            Cmd::ListSessions => {
+                send(&mut ws_stream, &app_message, shared_secret_key.as_ref()).await?;
+                let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
+                match reply.cmd {
+                    Cmd::ListSessions => {
+                        for line in &reply.data {
+                            println!("{}", line);
+                        }
+                    }
+                    Cmd::Failure => println!(
+                        "{}",
+                        reply
+                            .data
+                            .first()
+                            .unwrap_or(&"list_sessions failed".into())
+                            .red()
+                    ),
+                    _ => println!("{}", "unexpected reply".red()),
+                }
+            }
+            Cmd::ForceLogout => {
+                send(&mut ws_stream, &app_message, shared_secret_key.as_ref()).await?;
+                let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
+                match reply.cmd {
+                    Cmd::ForceLogout => {
+                        println!("{}", reply.data.first().unwrap_or(&"ok".into()).green())
+                    }
+                    Cmd::Failure => println!(
+                        "{}",
+                        reply
+                            .data
+                            .first()
+                            .unwrap_or(&"force_logout failed".into())
+                            .red()
                     ),
                     _ => println!("{}", "unexpected reply".red()),
                 }
