@@ -32,27 +32,35 @@ mod session;
 mod util;
 
 /// Audit log for security-relevant events.
+/// Logs to stdout AND persists to the audit_log DB table.
 #[macro_export]
 macro_rules! audit {
-    ($event:expr, $user:expr, $resource:expr, $result:expr) => {{
-        let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
+    ($pool:expr, $event:expr, $user:expr, $resource:expr, $result:expr) => {{
         log::info!(
-            "[AUDIT] {} | {} | {} | {} | {}",
-            timestamp,
+            "[AUDIT] {} | {} | {} | {}",
             $event,
             $user,
             $resource,
             $result
         );
+        let pool_ref = $pool.clone();
+        let ev = $event.to_string();
+        let us = $user.to_string();
+        let re = $resource.to_string();
+        let rs = $result.to_string();
+        tokio::spawn(async move {
+            if let Err(e) =
+                securefs_server::dao::insert_audit_log(&pool_ref, &ev, &us, &re, &rs, None).await
+            {
+                log::warn!("audit persist failed: {}", e);
+            }
+        });
     }};
 }
 
 mod handlers;
 
-use session::{RateLimiter, Session};
+use session::{RateLimiter, Session, SessionInfo, SessionRegistry};
 
 /// Load TLS configuration from certificate and key files.
 fn load_tls_config(cert_path: &str, key_path: &str) -> Result<TlsAcceptor, String> {
@@ -141,20 +149,35 @@ async fn main() -> Result<(), String> {
     // Shared rate limiter for IP-based tracking
     let rate_limiter: RateLimiter = Arc::new(Mutex::new(HashMap::new()));
 
+    // Periodic cleanup of expired rate limiter entries (SEC-08)
+    {
+        let rl = rate_limiter.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+            loop {
+                interval.tick().await;
+                session::cleanup_rate_limiter(&rl).await;
+            }
+        });
+    }
+
+    let session_registry: SessionRegistry = Arc::new(Mutex::new(HashMap::new()));
+
     while let Ok((stream, addr)) = listener.accept().await {
         info!("New connection from: {}", addr);
         let pg = pool.clone();
         let rl = rate_limiter.clone();
+        let sr = session_registry.clone();
         let ip = addr.ip();
         let tls = tls_acceptor.clone();
         tokio::spawn(async move {
             let result = if let Some(acceptor) = tls {
                 match acceptor.accept(stream).await {
-                    Ok(tls_stream) => handle_tls_connection(tls_stream, pg, rl, ip).await,
+                    Ok(tls_stream) => handle_tls_connection(tls_stream, pg, rl, sr, ip).await,
                     Err(e) => Err(format!("TLS handshake failed: {}", e)),
                 }
             } else {
-                handle_connection(stream, pg, rl, ip).await
+                handle_connection(stream, pg, rl, sr, ip).await
             };
             if let Err(e) = result {
                 warn!("Connection error: {}", e);
@@ -170,12 +193,13 @@ async fn handle_tls_connection(
     stream: tokio_rustls::server::TlsStream<TcpStream>,
     pool: Pool,
     rate_limiter: RateLimiter,
+    session_registry: SessionRegistry,
     client_ip: IpAddr,
 ) -> Result<(), String> {
     let ws_stream = accept_async(stream)
         .await
         .map_err(|e| format!("TLS handshake failed: {}", e))?;
-    handle_ws_stream(ws_stream, pool, rate_limiter, client_ip).await
+    handle_ws_stream(ws_stream, pool, rate_limiter, session_registry, client_ip).await
 }
 
 /// Handle a plain TCP WebSocket connection lifecycle.
@@ -183,12 +207,13 @@ async fn handle_connection(
     stream: TcpStream,
     pool: Pool,
     rate_limiter: RateLimiter,
+    session_registry: SessionRegistry,
     client_ip: IpAddr,
 ) -> Result<(), String> {
     let ws_stream = accept_async(stream)
         .await
         .map_err(|e| format!("handshake failed: {}", e))?;
-    handle_ws_stream(ws_stream, pool, rate_limiter, client_ip).await
+    handle_ws_stream(ws_stream, pool, rate_limiter, session_registry, client_ip).await
 }
 
 /// Serialize and send an application message over the websocket.
@@ -219,6 +244,7 @@ async fn handle_ws_stream<S>(
     mut ws_stream: WebSocketStream<S>,
     pool: Pool,
     rate_limiter: RateLimiter,
+    session_registry: SessionRegistry,
     client_ip: IpAddr,
 ) -> Result<(), String>
 where
@@ -227,6 +253,7 @@ where
     let mut session = Session::new();
     let mut shared_secret: Option<Key<Aes256Gcm>> = None;
     let mut last_activity = std::time::Instant::now();
+    let session_id = uuid::Uuid::new_v4().to_string();
 
     while let Some(msg) = ws_stream.next().await {
         let msg = msg.map_err(|e| format!("ws read failed: {}", e))?;
@@ -256,10 +283,46 @@ where
                 session.current_user,
                 last_activity.elapsed().as_secs()
             );
+            session_registry.lock().await.remove(&session_id);
             session.reset();
         }
 
         last_activity = std::time::Instant::now();
+
+        // Check if admin flagged this session for forced logout
+        {
+            let reg = session_registry.lock().await;
+            if let Some(info) = reg.get(&session_id) {
+                if info.force_logout {
+                    drop(reg);
+                    session_registry.lock().await.remove(&session_id);
+                    session.reset();
+                    let reply = AppMessage {
+                        cmd: Cmd::Logout,
+                        data: vec!["session terminated by admin".into()],
+                    };
+                    send_app_message(&mut ws_stream, reply, shared_secret.as_ref()).await?;
+                    break;
+                }
+            }
+        }
+
+        // Update last_activity in registry
+        if session.authenticated {
+            if let Some(info) = session_registry.lock().await.get_mut(&session_id) {
+                info.last_activity = std::time::Instant::now();
+            }
+        }
+
+        // Block all commands except TotpVerify/Logout while TOTP is pending
+        if session.totp_required && !matches!(incoming.cmd, Cmd::TotpVerify | Cmd::Logout) {
+            let reply = AppMessage {
+                cmd: Cmd::Failure,
+                data: vec!["totp verification required".into()],
+            };
+            send_app_message(&mut ws_stream, reply, shared_secret.as_ref()).await?;
+            continue;
+        }
 
         // Dispatch command to appropriate handler module
         let (reply, new_secret) = match incoming.cmd {
@@ -376,6 +439,24 @@ where
             ),
             Cmd::DownloadChunk => (handlers::fs::download_chunk(incoming.data, &session), None),
             Cmd::DownloadEnd => (handlers::fs::download_end(&mut session), None),
+            Cmd::AuditLog => (
+                handlers::audit::audit_log(incoming.data, &session, &pool).await,
+                None,
+            ),
+            Cmd::TotpSetup => (handlers::auth::totp_setup(&session, &pool).await, None),
+            Cmd::TotpVerify => (
+                handlers::auth::totp_verify(incoming.data, &mut session, &pool).await,
+                None,
+            ),
+            Cmd::ListSessions => (
+                handlers::sessions::list_sessions(&session, &pool, &session_registry).await,
+                None,
+            ),
+            Cmd::ForceLogout => (
+                handlers::sessions::force_logout(incoming.data, &session, &pool, &session_registry)
+                    .await,
+                None,
+            ),
             _ => (
                 AppMessage {
                     cmd: Cmd::Failure,
@@ -385,6 +466,22 @@ where
             ),
         };
 
+        // Register session in registry on successful login
+        if matches!(reply.cmd, Cmd::Login) && session.authenticated {
+            let now = std::time::Instant::now();
+            session_registry.lock().await.insert(
+                session_id.clone(),
+                SessionInfo {
+                    session_id: session_id.clone(),
+                    username: session.current_user.clone().unwrap_or_default(),
+                    client_ip,
+                    connected_at: now,
+                    last_activity: now,
+                    force_logout: false,
+                },
+            );
+        }
+
         let is_logout = matches!(reply.cmd, Cmd::Logout);
         send_app_message(&mut ws_stream, reply, shared_secret.as_ref()).await?;
 
@@ -393,10 +490,13 @@ where
         }
 
         if !session.authenticated && is_logout {
+            session_registry.lock().await.remove(&session_id);
             break;
         }
     }
 
+    // Deregister on disconnect
+    session_registry.lock().await.remove(&session_id);
     Ok(())
 }
 
