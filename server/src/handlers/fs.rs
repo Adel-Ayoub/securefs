@@ -823,6 +823,7 @@ pub async fn cat(data: Vec<String>, session: &Session, pool: &Pool) -> AppMessag
                                 Ok(decrypted) => match String::from_utf8(decrypted) {
                                     Ok(content) => {
                                         audit!(
+                                            pool,
                                             "FILE_READ",
                                             session.current_user.as_deref().unwrap_or("-"),
                                             &file_path,
@@ -912,9 +913,24 @@ pub async fn echo(data: Vec<String>, session: &Session, pool: &Pool) -> AppMessa
                             Ok(_) => {
                                 let hash = hash_content(content.as_bytes());
                                 let node_path = format!("{}/{}", session.current_path, file_name);
-                                let _ = dao::update_hash(pool, node_path, file_name.clone(), hash)
-                                    .await;
+                                // Use advisory lock for existing files
+                                if let Err(e) =
+                                    dao::update_hash_locked(pool, node_path.clone(), hash.clone())
+                                        .await
+                                {
+                                    if matches!(e, dao::DaoError::Conflict(_)) {
+                                        return AppMessage {
+                                            cmd: Cmd::Failure,
+                                            data: vec![e.to_string()],
+                                        };
+                                    }
+                                    // File may not exist yet — fall back to regular update
+                                    let _ =
+                                        dao::update_hash(pool, node_path, file_name.clone(), hash)
+                                            .await;
+                                }
                                 audit!(
+                                    pool,
                                     "FILE_WRITE",
                                     session.current_user.as_deref().unwrap_or("-"),
                                     &file_path,
@@ -1591,7 +1607,17 @@ pub async fn upload_end(session: &mut Session, pool: &Pool) -> AppMessage {
                     .await;
                 }
 
-                let _ = dao::update_hash(pool, node_path, file_name, hash).await;
+                // Use advisory lock for the hash update
+                if let Err(e) = dao::update_hash_locked(pool, node_path.clone(), hash.clone()).await
+                {
+                    if matches!(e, dao::DaoError::Conflict(_)) {
+                        return AppMessage {
+                            cmd: Cmd::Failure,
+                            data: vec![e.to_string()],
+                        };
+                    }
+                    let _ = dao::update_hash(pool, node_path, file_name, hash).await;
+                }
                 AppMessage {
                     cmd: Cmd::UploadEnd,
                     data: vec![format!("{} bytes uploaded", content.len())],

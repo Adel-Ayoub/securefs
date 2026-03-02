@@ -211,6 +211,50 @@ pub async fn update_hash(
         .map_err(|e| DaoError::QueryFailed(format!("update hash: {}", e)))
 }
 
+/// Update a file's hash inside a transaction with an advisory lock.
+/// Prevents concurrent writes to the same file.
+pub async fn update_hash_locked(pool: &Pool, path: String, hash: String) -> Result<(), DaoError> {
+    let mut client = conn(pool).await?;
+    let db_pass = get_db_pass();
+    let tx = client
+        .transaction()
+        .await
+        .map_err(|e| DaoError::QueryFailed(format!("begin tx: {}", e)))?;
+    // Look up fnode id for the advisory lock key
+    let row = tx
+        .query_opt(
+            "SELECT id FROM fnode WHERE pgp_sym_decrypt(path ::bytea, $2 ::text) = $1",
+            &[&path, &db_pass],
+        )
+        .await
+        .map_err(|e| DaoError::QueryFailed(format!("lock lookup: {}", e)))?;
+    let id: i64 = match row {
+        Some(r) => r.get("id"),
+        None => return Err(DaoError::NotFound),
+    };
+    // Non-blocking advisory lock scoped to this transaction
+    let lock_row = tx
+        .query_one("SELECT pg_try_advisory_xact_lock($1) AS acquired", &[&id])
+        .await
+        .map_err(|e| DaoError::QueryFailed(format!("advisory lock: {}", e)))?;
+    let acquired: bool = lock_row.get("acquired");
+    if !acquired {
+        return Err(DaoError::Conflict(
+            "file is being written by another session".into(),
+        ));
+    }
+    tx.execute(
+        "UPDATE fnode SET hash = $1 WHERE pgp_sym_decrypt(path ::bytea, $3 ::text) = $2",
+        &[&hash, &path, &db_pass],
+    )
+    .await
+    .map_err(|e| DaoError::QueryFailed(format!("update hash: {}", e)))?;
+    tx.commit()
+        .await
+        .map_err(|e| DaoError::QueryFailed(format!("commit: {}", e)))?;
+    Ok(())
+}
+
 /// Append a child entry to the parent's `children` array.
 pub async fn add_file_to_parent(
     pool: &Pool,
@@ -707,8 +751,43 @@ pub async fn remove_user_from_group(
         .map_err(|e| DaoError::QueryFailed(format!("remove user from group: {}", e)))
 }
 
-/// Ensure required seed data exists (currently `/home` root).
+/// Ensure required seed data and tables exist.
 pub async fn init_db(pool: &Pool) -> Result<(), DaoError> {
+    let client = conn(pool).await?;
+
+    // Create audit_log table if it doesn't exist
+    client
+        .execute(
+            "CREATE TABLE IF NOT EXISTS audit_log (
+                id BIGSERIAL PRIMARY KEY,
+                ts BIGINT NOT NULL,
+                event VARCHAR(64) NOT NULL,
+                username VARCHAR(64) NOT NULL,
+                resource VARCHAR(512) NOT NULL,
+                result VARCHAR(256) NOT NULL,
+                ip VARCHAR(45)
+            )",
+            &[],
+        )
+        .await
+        .map_err(|e| DaoError::QueryFailed(format!("create audit_log: {}", e)))?;
+    let _ = client
+        .execute(
+            "CREATE INDEX IF NOT EXISTS idx_audit_log_ts ON audit_log(ts DESC)",
+            &[],
+        )
+        .await;
+
+    // Add TOTP columns to users table (idempotent)
+    let _ = client
+        .execute(
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_secret VARCHAR DEFAULT NULL",
+            &[],
+        )
+        .await;
+
+    drop(client);
+
     let does_home_exist = get_f_node(pool, "/home".to_string()).await?.is_some();
     if !does_home_exist {
         add_file(
@@ -736,6 +815,90 @@ pub async fn init_db(pool: &Pool) -> Result<(), DaoError> {
         .await?;
     }
     Ok(())
+}
+
+/// Persist an audit log entry.
+pub async fn insert_audit_log(
+    pool: &Pool,
+    event: &str,
+    username: &str,
+    resource: &str,
+    result: &str,
+    ip: Option<&str>,
+) -> Result<(), DaoError> {
+    let client = conn(pool).await?;
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    client
+        .execute(
+            "INSERT INTO audit_log (ts, event, username, resource, result, ip)
+             VALUES ($1, $2, $3, $4, $5, $6)",
+            &[&ts, &event, &username, &resource, &result, &ip],
+        )
+        .await
+        .map(|_| ())
+        .map_err(|e| DaoError::QueryFailed(format!("insert audit: {}", e)))
+}
+
+/// Query audit log entries, most recent first.
+pub async fn query_audit_log(
+    pool: &Pool,
+    limit: i64,
+) -> Result<Vec<(i64, String, String, String, String, Option<String>)>, DaoError> {
+    let client = conn(pool).await?;
+    let rows = client
+        .query(
+            "SELECT ts, event, username, resource, result, ip
+             FROM audit_log ORDER BY ts DESC LIMIT $1",
+            &[&limit],
+        )
+        .await
+        .map_err(|e| DaoError::QueryFailed(format!("query audit: {}", e)))?;
+    Ok(rows
+        .iter()
+        .map(|r| {
+            (
+                r.get::<_, i64>(0),
+                r.get::<_, String>(1),
+                r.get::<_, String>(2),
+                r.get::<_, String>(3),
+                r.get::<_, String>(4),
+                r.try_get::<_, Option<String>>(5).unwrap_or(None),
+            )
+        })
+        .collect())
+}
+
+/// Get the TOTP secret for a user (decrypted). Returns None if not set.
+pub async fn get_totp_secret(pool: &Pool, user_name: &str) -> Result<Option<String>, DaoError> {
+    let client = conn(pool).await?;
+    let db_pass = get_db_pass();
+    let row = client
+        .query_opt(
+            "SELECT pgp_sym_decrypt(totp_secret ::bytea, $2 ::text) AS totp
+             FROM users WHERE user_name = $1 AND totp_secret IS NOT NULL",
+            &[&user_name.to_string(), &db_pass],
+        )
+        .await
+        .map_err(|e| DaoError::QueryFailed(format!("get totp: {}", e)))?;
+    Ok(row.map(|r| r.get::<_, String>("totp")))
+}
+
+/// Set the TOTP secret for a user (encrypted with DB_PASS).
+pub async fn set_totp_secret(pool: &Pool, user_name: &str, secret: &str) -> Result<(), DaoError> {
+    let client = conn(pool).await?;
+    let db_pass = get_db_pass();
+    client
+        .execute(
+            "UPDATE users SET totp_secret = pgp_sym_encrypt($2 ::text, $3 ::text)
+             WHERE user_name = $1",
+            &[&user_name.to_string(), &secret.to_string(), &db_pass],
+        )
+        .await
+        .map(|_| ())
+        .map_err(|e| DaoError::QueryFailed(format!("set totp: {}", e)))
 }
 
 /// Recursively copy a file or directory tree.
