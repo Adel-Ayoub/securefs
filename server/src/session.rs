@@ -43,6 +43,7 @@ pub type SessionRegistry = Arc<Mutex<HashMap<String, SessionInfo>>>;
 pub struct UploadState {
     pub file_name: String,
     pub chunks: Vec<Vec<u8>>,
+    pub total: usize,
 }
 
 /// Active download state for chunked file transfers.

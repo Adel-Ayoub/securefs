@@ -16,6 +16,12 @@ use crate::util::*;
 
 const CHUNK_SIZE: usize = 64 * 1024;
 
+// Hard cap on a single chunked upload to bound server memory.
+const MAX_UPLOAD_BYTES: usize = 100 * 1024 * 1024;
+
+// Cap on total bytes grep will decrypt+scan in one request.
+const MAX_GREP_SCAN_BYTES: usize = 64 * 1024 * 1024;
+
 /// Check if a string contains glob metacharacters.
 fn is_glob_pattern(s: &str) -> bool {
     s.contains('*') || s.contains('?')
@@ -913,6 +919,42 @@ pub async fn echo(data: Vec<String>, session: &Session, pool: &Pool) -> AppMessa
                             Ok(_) => {
                                 let hash = hash_content(content.as_bytes());
                                 let node_path = format!("{}/{}", session.current_path, file_name);
+                                // Create the FNode if this is a new file; otherwise
+                                // echo writes ciphertext to disk with no visible node.
+                                if dao::get_f_node(pool, node_path.clone())
+                                    .await
+                                    .ok()
+                                    .flatten()
+                                    .is_none()
+                                {
+                                    let now = current_timestamp();
+                                    let new_file = FNode {
+                                        id: -1,
+                                        name: file_name.clone(),
+                                        path: node_path.clone(),
+                                        owner: session.current_user.clone().unwrap_or_default(),
+                                        hash: hash.clone(),
+                                        parent: session.current_path.clone(),
+                                        dir: false,
+                                        u: 6,
+                                        g: 6,
+                                        o: 4,
+                                        children: vec![],
+                                        encrypted_name: file_name.clone(),
+                                        size: content.len() as i64,
+                                        created_at: now,
+                                        modified_at: now,
+                                        file_group: session.current_user_group.clone(),
+                                        link_target: None,
+                                    };
+                                    let _ = dao::add_file(pool, new_file).await;
+                                    let _ = dao::add_file_to_parent(
+                                        pool,
+                                        session.current_path.clone(),
+                                        file_name.clone(),
+                                    )
+                                    .await;
+                                }
                                 // Use advisory lock for existing files
                                 if let Err(e) =
                                     dao::update_hash_locked(pool, node_path.clone(), hash.clone())
@@ -1275,10 +1317,14 @@ pub async fn grep(data: Vec<String>, session: &Session, pool: &Pool) -> AppMessa
 
     let mut matches = Vec::new();
     let max_matches = 100;
+    let mut scanned: usize = 0;
 
     for node in &nodes {
         if node.dir {
             continue;
+        }
+        if scanned >= MAX_GREP_SCAN_BYTES {
+            break;
         }
         let owner_group = dao::get_file_group(pool, node.owner.clone(), node.file_group.clone())
             .await
@@ -1294,6 +1340,7 @@ pub async fn grep(data: Vec<String>, session: &Session, pool: &Pool) -> AppMessa
 
         let file_path = format!("storage{}", node.path);
         if let Ok(content) = read_file_content(&file_path).await {
+            scanned += content.len();
             for (i, line) in content.lines().enumerate() {
                 if line.contains(&pattern) {
                     let rel = node
@@ -1488,6 +1535,7 @@ pub async fn upload_start(data: Vec<String>, session: &mut Session, pool: &Pool)
     session.upload = Some(UploadState {
         file_name,
         chunks: Vec::new(),
+        total: 0,
     });
 
     AppMessage {
@@ -1505,28 +1553,39 @@ pub fn upload_chunk(data: Vec<String>, session: &mut Session) -> AppMessage {
     }
 
     let b64_chunk = data.first().cloned().unwrap_or_default();
-    let upload = match session.upload.as_mut() {
-        Some(u) => u,
-        None => {
+    if session.upload.is_none() {
+        return AppMessage {
+            cmd: Cmd::Failure,
+            data: vec!["no upload in progress".into()],
+        };
+    }
+
+    let bytes = match base64::engine::general_purpose::STANDARD.decode(&b64_chunk) {
+        Ok(b) => b,
+        Err(_) => {
             return AppMessage {
                 cmd: Cmd::Failure,
-                data: vec!["no upload in progress".into()],
+                data: vec!["invalid base64".into()],
             }
         }
     };
 
-    match base64::engine::general_purpose::STANDARD.decode(&b64_chunk) {
-        Ok(bytes) => {
-            upload.chunks.push(bytes);
-            AppMessage {
-                cmd: Cmd::UploadChunk,
-                data: vec!["ok".into()],
-            }
-        }
-        Err(_) => AppMessage {
+    let new_total = session.upload.as_ref().map(|u| u.total).unwrap_or(0) + bytes.len();
+    if new_total > MAX_UPLOAD_BYTES {
+        // Abort the transfer; freeing the buffer prevents a memory-exhaustion DoS.
+        session.upload = None;
+        return AppMessage {
             cmd: Cmd::Failure,
-            data: vec!["invalid base64".into()],
-        },
+            data: vec!["upload exceeds maximum size".into()],
+        };
+    }
+
+    let upload = session.upload.as_mut().unwrap();
+    upload.total = new_total;
+    upload.chunks.push(bytes);
+    AppMessage {
+        cmd: Cmd::UploadChunk,
+        data: vec!["ok".into()],
     }
 }
 
@@ -1551,6 +1610,30 @@ pub async fn upload_end(session: &mut Session, pool: &Pool) -> AppMessage {
     // Reassemble content from chunks
     let content: Vec<u8> = upload.chunks.into_iter().flatten().collect();
     let file_name = upload.file_name;
+
+    // Re-check write permission on the *current* directory; it may have
+    // changed via cd between upload_start and upload_end.
+    let has_perm = match dao::get_f_node(pool, session.current_path.clone()).await {
+        Ok(Some(parent)) => {
+            let owner_group =
+                dao::get_file_group(pool, parent.owner.clone(), parent.file_group.clone())
+                    .await
+                    .unwrap_or(None);
+            can_write_with_group(
+                &parent,
+                session.current_user.as_ref(),
+                session.current_user_group.as_ref(),
+                owner_group.as_ref(),
+            )
+        }
+        _ => false,
+    };
+    if !has_perm {
+        return AppMessage {
+            cmd: Cmd::Failure,
+            data: vec!["no write permission".into()],
+        };
+    }
 
     // Encrypt (compress-then-encrypt handled by encrypt_file_content)
     let encrypted = encrypt_file_content(&content);

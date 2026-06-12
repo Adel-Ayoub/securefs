@@ -23,7 +23,11 @@ pub async fn audit_log(data: Vec<String>, session: &Session, pool: &Pool) -> App
             }
         }
     }
-    let limit: i64 = data.first().and_then(|s| s.parse().ok()).unwrap_or(50);
+    let limit: i64 = data
+        .first()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(50)
+        .clamp(1, 1000);
     match dao::query_audit_log(pool, limit).await {
         Ok(entries) => {
             let lines: Vec<String> = entries
