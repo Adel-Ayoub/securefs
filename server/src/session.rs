@@ -55,6 +55,7 @@ pub struct DownloadState {
 pub struct Session {
     pub authenticated: bool,
     pub totp_required: bool,
+    pub totp_attempts: u8,
     pub current_user: Option<String>,
     pub current_user_group: Option<String>,
     pub current_path: String,
@@ -67,6 +68,7 @@ impl Session {
         Self {
             authenticated: false,
             totp_required: false,
+            totp_attempts: 0,
             current_user: None,
             current_user_group: None,
             current_path: "/home".to_string(),
@@ -78,6 +80,7 @@ impl Session {
     pub fn reset(&mut self) {
         self.authenticated = false;
         self.totp_required = false;
+        self.totp_attempts = 0;
         self.current_user = None;
         self.current_user_group = None;
         self.current_path = "/home".to_string();

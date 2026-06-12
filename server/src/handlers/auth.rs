@@ -186,9 +186,10 @@ pub async fn totp_setup(session: &Session, pool: &Pool) -> AppMessage {
     };
     let secret_b32 = secret.to_encoded().to_string();
     if let Err(e) = dao::set_totp_secret(pool, user, &secret_b32).await {
+        log::warn!("failed to store totp secret: {}", e);
         return AppMessage {
             cmd: Cmd::Failure,
-            data: vec![format!("failed to store secret: {}", e)],
+            data: vec!["failed to store secret".into()],
         };
     }
     let uri = totp.get_url();
@@ -200,13 +201,35 @@ pub async fn totp_setup(session: &Session, pool: &Pool) -> AppMessage {
 }
 
 /// Verify a TOTP code. On success, clears the totp_required flag.
-pub async fn totp_verify(data: Vec<String>, session: &mut Session, pool: &Pool) -> AppMessage {
+pub async fn totp_verify(
+    data: Vec<String>,
+    session: &mut Session,
+    pool: &Pool,
+    rate_limiter: &RateLimiter,
+    client_ip: IpAddr,
+) -> AppMessage {
     if !session.authenticated {
         return AppMessage {
             cmd: Cmd::Failure,
             data: vec!["not authenticated".into()],
         };
     }
+
+    // Reuse the login bucket so TOTP guesses are bounded per IP.
+    {
+        let rl = rate_limiter.lock().await;
+        if let Some((count, first_time)) = rl.get(&client_ip) {
+            if first_time.elapsed().as_secs() <= RATE_LIMIT_WINDOW_SECS
+                && *count >= MAX_LOGIN_ATTEMPTS
+            {
+                return AppMessage {
+                    cmd: Cmd::Failure,
+                    data: vec!["too many attempts, try again later".into()],
+                };
+            }
+        }
+    }
+
     let user = session.current_user.as_deref().unwrap_or("");
     let code = data.first().cloned().unwrap_or_default();
 
@@ -219,10 +242,11 @@ pub async fn totp_verify(data: Vec<String>, session: &mut Session, pool: &Pool) 
             }
         }
         Err(e) => {
+            log::warn!("totp lookup failed: {}", e);
             return AppMessage {
                 cmd: Cmd::Failure,
-                data: vec![format!("totp lookup failed: {}", e)],
-            }
+                data: vec!["totp verification failed".into()],
+            };
         }
     };
 
@@ -256,6 +280,7 @@ pub async fn totp_verify(data: Vec<String>, session: &mut Session, pool: &Pool) 
     match totp.check_current(&code) {
         Ok(true) => {
             session.totp_required = false;
+            session.totp_attempts = 0;
             audit!(pool, "TOTP_VERIFY", user, "-", "success");
             AppMessage {
                 cmd: Cmd::TotpVerify,
@@ -263,7 +288,20 @@ pub async fn totp_verify(data: Vec<String>, session: &mut Session, pool: &Pool) 
             }
         }
         _ => {
+            {
+                let mut rl = rate_limiter.lock().await;
+                let entry = rl.entry(client_ip).or_insert((0, Instant::now()));
+                entry.0 = entry.0.saturating_add(1);
+            }
+            session.totp_attempts = session.totp_attempts.saturating_add(1);
             audit!(pool, "TOTP_VERIFY", user, "-", "invalid code");
+            if session.totp_attempts >= MAX_LOGIN_ATTEMPTS {
+                session.reset();
+                return AppMessage {
+                    cmd: Cmd::Failure,
+                    data: vec!["too many totp attempts; please log in again".into()],
+                };
+            }
             AppMessage {
                 cmd: Cmd::Failure,
                 data: vec!["invalid totp code".into()],

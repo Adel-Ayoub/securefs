@@ -100,6 +100,12 @@ async fn main() -> Result<(), String> {
     // NOTE: Default env fallbacks are for local/dev usage; production
     // deployments should provide explicit values.
     let db_pass = dao::get_db_pass();
+    if db_pass == "TEMP" && env::var("ALLOW_INSECURE").unwrap_or_default() != "1" {
+        return Err(
+            "refusing to start with the default DB_PASS; set a strong DB_PASS (or ALLOW_INSECURE=1 for development)"
+                .into(),
+        );
+    }
     let db_host = env::var("DB_HOST").unwrap_or_else(|_| "localhost".to_string());
     let db_name = env::var("DB_NAME").unwrap_or_else(|_| "db".to_string());
     let db_user = env::var("DB_USER").unwrap_or_else(|_| "USER".to_string());
@@ -318,6 +324,19 @@ where
             }
         }
 
+        // Require an established secure channel before anything but the
+        // handshake — credentials must never travel over plaintext.
+        if shared_secret.is_none()
+            && !matches!(incoming.cmd, Cmd::NewConnection | Cmd::KeyExchangeInit)
+        {
+            let reply = AppMessage {
+                cmd: Cmd::Failure,
+                data: vec!["secure channel required: perform key exchange first".into()],
+            };
+            send_app_message(&mut ws_stream, reply, None).await?;
+            continue;
+        }
+
         // Block all commands except TotpVerify/Logout while TOTP is pending
         if session.totp_required && !matches!(incoming.cmd, Cmd::TotpVerify | Cmd::Logout) {
             let reply = AppMessage {
@@ -449,7 +468,14 @@ where
             ),
             Cmd::TotpSetup => (handlers::auth::totp_setup(&session, &pool).await, None),
             Cmd::TotpVerify => (
-                handlers::auth::totp_verify(incoming.data, &mut session, &pool).await,
+                handlers::auth::totp_verify(
+                    incoming.data,
+                    &mut session,
+                    &pool,
+                    &rate_limiter,
+                    client_ip,
+                )
+                .await,
                 None,
             ),
             Cmd::ListSessions => (
