@@ -158,8 +158,9 @@ pub async fn add_file(pool: &Pool, file: FNode) -> Result<String, DaoError> {
     let db_pass = get_db_pass();
     client
         .execute(
-            "INSERT INTO
-    fnode (name, path, owner, hash, parent, dir, u, g, o, children, encrypted_name)
+            "INSERT INTO fnode
+    (name, path, owner, hash, parent, dir, u, g, o, children, encrypted_name,
+     file_group, size_bytes, created_at, modified_at, link_target)
     VALUES (
         pgp_sym_encrypt($1 ::text, $12 ::text),
         pgp_sym_encrypt($2 ::text, $12 ::text),
@@ -171,7 +172,8 @@ pub async fn add_file(pool: &Pool, file: FNode) -> Result<String, DaoError> {
         pgp_sym_encrypt($8 ::text, $12 ::text),
         pgp_sym_encrypt($9 ::text, $12 ::text),
         $10,
-        $11)",
+        $11,
+        $13, $14, $15, $16, $17)",
             &[
                 &file.name,
                 &file.path,
@@ -185,6 +187,11 @@ pub async fn add_file(pool: &Pool, file: FNode) -> Result<String, DaoError> {
                 &file.children,
                 &file.encrypted_name,
                 &db_pass,
+                &file.file_group,
+                &file.size,
+                &file.created_at,
+                &file.modified_at,
+                &file.link_target,
             ],
         )
         .await
@@ -313,7 +320,11 @@ pub async fn get_f_node(pool: &Pool, path: String) -> Result<Option<FNode>, DaoE
         CAST (pgp_sym_decrypt(o ::bytea, $2 ::text) AS SMALLINT) AS o,
         (SELECT array_agg(pgp_sym_decrypt(child ::bytea, $2::text)) FROM unnest(children) AS child) AS children,
         encrypted_name,
-        file_group
+        file_group,
+        size_bytes,
+        created_at,
+        modified_at,
+        link_target
     FROM fnode WHERE pgp_sym_decrypt(path::bytea, $2::text) = $1",
         &[&path, &db_pass]).await;
     match e {
@@ -331,11 +342,11 @@ pub async fn get_f_node(pool: &Pool, path: String) -> Result<Option<FNode>, DaoE
                 o: row.get(9),
                 children: row.try_get(10).unwrap_or(vec![]),
                 encrypted_name: row.get(11),
-                size: 0,
-                created_at: 0,
-                modified_at: 0,
+                size: row.try_get("size_bytes").unwrap_or(0),
+                created_at: row.try_get("created_at").unwrap_or(0),
+                modified_at: row.try_get("modified_at").unwrap_or(0),
                 file_group: row.try_get("file_group").unwrap_or(None),
-                link_target: None,
+                link_target: row.try_get("link_target").unwrap_or(None),
             };
             Ok(Some(fnode))
         }
@@ -359,7 +370,11 @@ pub async fn get_children(pool: &Pool, parent_path: String) -> Result<Vec<FNode>
         CAST (pgp_sym_decrypt(o ::bytea, $2 ::text) AS SMALLINT) AS o,
         (SELECT array_agg(pgp_sym_decrypt(child ::bytea, $2::text)) FROM unnest(children) AS child) AS children,
         encrypted_name,
-        file_group
+        file_group,
+        size_bytes,
+        created_at,
+        modified_at,
+        link_target
     FROM fnode WHERE pgp_sym_decrypt(parent ::bytea, $2 ::text) = $1",
         &[&parent_path, &db_pass]).await
         .map_err(|e| DaoError::QueryFailed(format!("get children: {}", e)))?;
@@ -378,11 +393,11 @@ pub async fn get_children(pool: &Pool, parent_path: String) -> Result<Vec<FNode>
             o: row.get(9),
             children: row.try_get(10).unwrap_or(vec![]),
             encrypted_name: row.get(11),
-            size: 0,
-            created_at: 0,
-            modified_at: 0,
+            size: row.try_get("size_bytes").unwrap_or(0),
+            created_at: row.try_get("created_at").unwrap_or(0),
+            modified_at: row.try_get("modified_at").unwrap_or(0),
             file_group: row.try_get("file_group").unwrap_or(None),
-            link_target: None,
+            link_target: row.try_get("link_target").unwrap_or(None),
         })
         .collect();
     Ok(nodes)
@@ -392,7 +407,6 @@ pub async fn get_children(pool: &Pool, parent_path: String) -> Result<Vec<FNode>
 pub async fn get_subtree(pool: &Pool, path_prefix: String) -> Result<Vec<FNode>, DaoError> {
     let client = conn(pool).await?;
     let db_pass = get_db_pass();
-    let pattern = format!("^{}/", path_prefix);
     let rows = client.query("SELECT
         id,
         pgp_sym_decrypt(name ::bytea, $2 ::text) AS name,
@@ -404,9 +418,13 @@ pub async fn get_subtree(pool: &Pool, path_prefix: String) -> Result<Vec<FNode>,
         CAST (pgp_sym_decrypt(o ::bytea, $2 ::text) AS SMALLINT) AS o,
         (SELECT array_agg(pgp_sym_decrypt(child ::bytea, $2::text)) FROM unnest(children) AS child) AS children,
         encrypted_name,
-        file_group
-    FROM fnode WHERE pgp_sym_decrypt(path ::bytea, $2 ::text) ~ $1",
-        &[&pattern, &db_pass]).await
+        file_group,
+        size_bytes,
+        created_at,
+        modified_at,
+        link_target
+    FROM fnode WHERE left(pgp_sym_decrypt(path ::bytea, $2 ::text), length($1) + 1) = $1 || '/'",
+        &[&path_prefix, &db_pass]).await
         .map_err(|e| DaoError::QueryFailed(format!("get subtree: {}", e)))?;
     let nodes = rows
         .iter()
@@ -423,11 +441,11 @@ pub async fn get_subtree(pool: &Pool, path_prefix: String) -> Result<Vec<FNode>,
             o: row.get(9),
             children: row.try_get(10).unwrap_or(vec![]),
             encrypted_name: row.get(11),
-            size: 0,
-            created_at: 0,
-            modified_at: 0,
+            size: row.try_get("size_bytes").unwrap_or(0),
+            created_at: row.try_get("created_at").unwrap_or(0),
+            modified_at: row.try_get("modified_at").unwrap_or(0),
             file_group: row.try_get("file_group").unwrap_or(None),
-            link_target: None,
+            link_target: row.try_get("link_target").unwrap_or(None),
         })
         .collect();
     Ok(nodes)
@@ -789,6 +807,16 @@ pub async fn init_db(pool: &Pool) -> Result<(), DaoError> {
             &[],
         )
         .await;
+
+    // Persist FNode metadata that older schemas lacked (idempotent).
+    for ddl in [
+        "ALTER TABLE fnode ADD COLUMN IF NOT EXISTS size_bytes BIGINT DEFAULT 0",
+        "ALTER TABLE fnode ADD COLUMN IF NOT EXISTS created_at BIGINT DEFAULT 0",
+        "ALTER TABLE fnode ADD COLUMN IF NOT EXISTS modified_at BIGINT DEFAULT 0",
+        "ALTER TABLE fnode ADD COLUMN IF NOT EXISTS link_target VARCHAR",
+    ] {
+        let _ = client.execute(ddl, &[]).await;
+    }
 
     drop(client);
 

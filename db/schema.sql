@@ -12,7 +12,11 @@ CREATE TABLE if not exists fnode  (
     o VARCHAR,
     children VARCHAR[],
     encrypted_name VARCHAR,
-    file_group VARCHAR
+    file_group VARCHAR,
+    size_bytes BIGINT DEFAULT 0,
+    created_at BIGINT DEFAULT 0,
+    modified_at BIGINT DEFAULT 0,
+    link_target VARCHAR
 );
 
 CREATE TABLE groups (
