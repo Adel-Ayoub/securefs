@@ -723,10 +723,13 @@ pub async fn cp(data: Vec<String>, session: &Session, pool: &Pool) -> AppMessage
                                             cmd: Cmd::Cp,
                                             data: vec!["ok".to_string()],
                                         },
-                                        Err(e) => AppMessage {
-                                            cmd: Cmd::Failure,
-                                            data: vec![e.to_string()],
-                                        },
+                                        Err(e) => {
+                                            log::warn!("cp failed: {}", e);
+                                            AppMessage {
+                                                cmd: Cmd::Failure,
+                                                data: vec!["copy failed".into()],
+                                            }
+                                        }
                                     }
                                 } else {
                                     AppMessage {
@@ -963,7 +966,7 @@ pub async fn echo(data: Vec<String>, session: &Session, pool: &Pool) -> AppMessa
                                     if matches!(e, dao::DaoError::Conflict(_)) {
                                         return AppMessage {
                                             cmd: Cmd::Failure,
-                                            data: vec![e.to_string()],
+                                            data: vec!["file is being modified, try again".into()],
                                         };
                                     }
                                     // File may not exist yet — fall back to regular update
@@ -1696,7 +1699,7 @@ pub async fn upload_end(session: &mut Session, pool: &Pool) -> AppMessage {
                     if matches!(e, dao::DaoError::Conflict(_)) {
                         return AppMessage {
                             cmd: Cmd::Failure,
-                            data: vec![e.to_string()],
+                            data: vec!["file is being modified, try again".into()],
                         };
                     }
                     let _ = dao::update_hash(pool, node_path, file_name, hash).await;

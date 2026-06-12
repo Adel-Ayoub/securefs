@@ -45,9 +45,12 @@ pub async fn audit_log(data: Vec<String>, session: &Session, pool: &Pool) -> App
                 data: lines,
             }
         }
-        Err(e) => AppMessage {
-            cmd: Cmd::Failure,
-            data: vec![format!("audit query failed: {}", e)],
-        },
+        Err(e) => {
+            log::warn!("audit query failed: {}", e);
+            AppMessage {
+                cmd: Cmd::Failure,
+                data: vec!["audit query failed".into()],
+            }
+        }
     }
 }

@@ -228,10 +228,13 @@ pub async fn add_user_to_group(data: Vec<String>, session: &Session, pool: &Pool
                             cmd: Cmd::AddUserToGroup,
                             data: vec![format!("User {} added to group {}", user_name, group_name)],
                         },
-                        Err(e) => AppMessage {
-                            cmd: Cmd::Failure,
-                            data: vec![e.to_string()],
-                        },
+                        Err(e) => {
+                            log::warn!("add_user_to_group failed: {}", e);
+                            AppMessage {
+                                cmd: Cmd::Failure,
+                                data: vec!["operation failed".into()],
+                            }
+                        }
                     }
                 }
             }
@@ -274,10 +277,13 @@ pub async fn remove_user_from_group(
                                 user_name, group_name
                             )],
                         },
-                        Err(e) => AppMessage {
-                            cmd: Cmd::Failure,
-                            data: vec![e.to_string()],
-                        },
+                        Err(e) => {
+                            log::warn!("remove_user_from_group failed: {}", e);
+                            AppMessage {
+                                cmd: Cmd::Failure,
+                                data: vec!["operation failed".into()],
+                            }
+                        }
                     }
                 }
             }
