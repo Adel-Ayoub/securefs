@@ -84,6 +84,14 @@ pub async fn new_user(data: Vec<String>, session: &Session, pool: &Pool) -> AppM
         };
     }
 
+    let actor = session.current_user.as_deref().unwrap_or("");
+    if !matches!(dao::is_admin(pool, actor.to_string()).await, Ok(true)) {
+        return AppMessage {
+            cmd: Cmd::Failure,
+            data: vec!["admin privileges required".to_string()],
+        };
+    }
+
     let user_name = data.first().cloned().unwrap_or_default();
     let pass = data.get(1).cloned().unwrap_or_default();
     let group = data.get(2).cloned().unwrap_or_default();
