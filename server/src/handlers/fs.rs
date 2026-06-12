@@ -44,8 +44,8 @@ async fn expand_glob(pool: &Pool, parent_path: &str, pattern: &str) -> Result<Ve
         .collect())
 }
 
-// Helpers for reading and decrypting file content (shared by cat, head, tail)
-async fn read_file_content(file_path: &str) -> Result<String, AppMessage> {
+// Read and decrypt a file's content as raw bytes (binary-safe).
+async fn read_file_bytes(file_path: &str) -> Result<Vec<u8>, AppMessage> {
     let mut f = fs::File::open(file_path).await.map_err(|_| AppMessage {
         cmd: Cmd::Failure,
         data: vec!["file not found".into()],
@@ -57,13 +57,18 @@ async fn read_file_content(file_path: &str) -> Result<String, AppMessage> {
             cmd: Cmd::Failure,
             data: vec!["read failed".into()],
         })?;
-    let decrypted = decrypt_file_content(&encrypted).map_err(|e| AppMessage {
+    decrypt_file_content(&encrypted).map_err(|e| AppMessage {
         cmd: Cmd::Failure,
         data: vec![e.to_string()],
-    })?;
-    String::from_utf8(decrypted).map_err(|_| AppMessage {
+    })
+}
+
+// Decrypt to UTF-8 text for the line-oriented commands (cat, head, tail, grep).
+async fn read_file_content(file_path: &str) -> Result<String, AppMessage> {
+    let bytes = read_file_bytes(file_path).await?;
+    String::from_utf8(bytes).map_err(|_| AppMessage {
         cmd: Cmd::Failure,
-        data: vec!["invalid utf-8".into()],
+        data: vec!["binary file; use download".into()],
     })
 }
 
@@ -1775,8 +1780,8 @@ pub async fn download_start(data: Vec<String>, session: &mut Session, pool: &Poo
     }
 
     let file_path = format!("storage{}/{}", session.current_path, file_name);
-    let content = match read_file_content(&file_path).await {
-        Ok(c) => c.into_bytes(),
+    let content = match read_file_bytes(&file_path).await {
+        Ok(c) => c,
         Err(e) => return e,
     };
 
@@ -1790,9 +1795,14 @@ pub async fn download_start(data: Vec<String>, session: &mut Session, pool: &Poo
 
     session.download = Some(DownloadState { chunks });
 
+    // Send the plaintext BLAKE3 hash so the client can verify integrity.
     AppMessage {
         cmd: Cmd::DownloadStart,
-        data: vec![total.to_string(), content.len().to_string()],
+        data: vec![
+            total.to_string(),
+            content.len().to_string(),
+            node.hash.clone(),
+        ],
     }
 }
 
