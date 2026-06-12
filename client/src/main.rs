@@ -125,7 +125,7 @@ async fn run() -> Result<(), String> {
     // Check for flags
     let mut verbose = false;
     let mut quiet = false;
-    let mut use_tls = false;
+    let mut use_tls = true;
     let mut server_addr_arg = None;
 
     for arg in args.iter().skip(1) {
@@ -133,23 +133,40 @@ async fn run() -> Result<(), String> {
             "-v" | "--verbose" => verbose = true,
             "-q" | "--quiet" => quiet = true,
             "-t" | "--tls" => use_tls = true,
+            "-k" | "--insecure" | "--no-tls" => use_tls = false,
             s if !s.starts_with("-") => server_addr_arg = Some(s.to_string()),
             _ => {}
         }
     }
 
-    // Check env var for TLS
+    // Env overrides: USE_TLS forces TLS on; ALLOW_INSECURE/INSECURE forces it off.
     if env::var("USE_TLS")
         .map(|v| v == "1" || v.to_lowercase() == "true")
         .unwrap_or(false)
     {
         use_tls = true;
     }
+    if env::var("ALLOW_INSECURE")
+        .or_else(|_| env::var("INSECURE"))
+        .map(|v| v == "1" || v.to_lowercase() == "true")
+        .unwrap_or(false)
+    {
+        use_tls = false;
+    }
 
     let bind = env::var("SERVER_ADDR").unwrap_or_else(|_| "127.0.0.1:8080".to_string());
     let server_addr = server_addr_arg.unwrap_or(bind);
     let scheme = if use_tls { "wss" } else { "ws" };
     let url = format!("{}://{}", scheme, server_addr);
+
+    if !use_tls {
+        eprintln!(
+            "{}",
+            "[WARNING] plaintext ws:// — traffic is not encrypted in transit; use TLS (default) \
+             in production, --insecure for local dev only."
+                .yellow()
+        );
+    }
 
     if verbose {
         println!("{}", format!("Connecting to {}", url).cyan());
@@ -264,7 +281,7 @@ async fn connect_and_run(
         let server_addr_display =
             env::var("SERVER_ADDR").unwrap_or_else(|_| "127.0.0.1:8080".to_string());
         println!(
-            "{} {}. Login with: login <username> <password>",
+            "{} {}. Login with: login <username>",
             "Connected to".cyan(),
             server_addr_display.cyan()
         );
@@ -322,14 +339,25 @@ async fn connect_and_run(
             continue;
         }
 
-        // Add to history
-        let _ = rl.add_history_entry(&line);
-
-        let app_message = match command_parser(line.clone()) {
-            Ok(msg) => msg,
-            Err(err) => {
-                println!("{}", err.red());
-                continue;
+        // Credential commands prompt for the secret with masking and are never
+        // written to history; everything else parses normally and is recorded.
+        let cmd_word = line.split_whitespace().next().unwrap_or("").to_lowercase();
+        let app_message = if cmd_word == "login" || cmd_word == "new_user" {
+            match read_credential_command(&line) {
+                Ok(msg) => msg,
+                Err(err) => {
+                    println!("{}", err.red());
+                    continue;
+                }
+            }
+        } else {
+            let _ = rl.add_history_entry(&line);
+            match command_parser(line.clone()) {
+                Ok(msg) => msg,
+                Err(err) => {
+                    println!("{}", err.red());
+                    continue;
+                }
             }
         };
 
@@ -1126,6 +1154,43 @@ fn command_parser(input: String) -> Result<AppMessage, String> {
     Ok(AppMessage { cmd, data: args })
 }
 
+/// Build a login/new_user message, prompting for the password with masking so
+/// it never appears on screen or in shell history.
+fn read_credential_command(line: &str) -> Result<AppMessage, String> {
+    let parts: Vec<&str> = line.split_whitespace().collect();
+    match parts.first().map(|s| s.to_lowercase()).as_deref() {
+        Some("login") => {
+            let user = parts.get(1).ok_or("usage: login <username>")?.to_string();
+            let pass = match parts.get(2) {
+                Some(p) => p.to_string(),
+                None => rpassword::prompt_password("password: ")
+                    .map_err(|e| format!("password read failed: {}", e))?,
+            };
+            Ok(AppMessage {
+                cmd: Cmd::Login,
+                data: vec![user, pass],
+            })
+        }
+        Some("new_user") => {
+            let name = parts
+                .get(1)
+                .ok_or("usage: new_user <username> <group>")?
+                .to_string();
+            let group = parts
+                .get(2)
+                .ok_or("usage: new_user <username> <group>")?
+                .to_string();
+            let pass = rpassword::prompt_password("password: ")
+                .map_err(|e| format!("password read failed: {}", e))?;
+            Ok(AppMessage {
+                cmd: Cmd::NewUser,
+                data: vec![name, pass, group],
+            })
+        }
+        _ => Err("unknown credential command".into()),
+    }
+}
+
 use aes_gcm::aead::{Aead, AeadCore};
 use aes_gcm::{Aes256Gcm, Key, KeyInit, Nonce};
 use hkdf::Hkdf;
@@ -1204,9 +1269,11 @@ fn print_help() {
     println!("    -h, --help          Print help information");
     println!("    -v, --verbose       Enable verbose output");
     println!("    -q, --quiet         Suppress non-essential output");
-    println!("    -t, --tls           Use TLS (wss://) connection");
+    println!("    -t, --tls           Force TLS (wss://) — on by default");
+    println!("    -k, --insecure      Use plaintext ws:// (local dev only)");
     println!();
     println!("ENVIRONMENT:");
     println!("    SERVER_ADDR         Default server address");
-    println!("    USE_TLS             Enable TLS (set to 1 or true)");
+    println!("    USE_TLS             Force TLS (set to 1 or true)");
+    println!("    ALLOW_INSECURE      Use plaintext ws:// (set to 1 or true)");
 }

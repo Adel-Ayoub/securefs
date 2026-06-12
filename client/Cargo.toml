@@ -27,6 +27,7 @@ base64 = "0.22"
 rustyline = { version = "14.0", features = ["derive"] }
 colored = "2.0"
 dirs = "5"
+rpassword = "7"
 
 # Internal dependencies
 securefs-model = { path = "../model" }
