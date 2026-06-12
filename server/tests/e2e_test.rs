@@ -85,7 +85,7 @@ async fn e2e_flow(addr: &str, user: &str, pass: &str) -> Result<String, String> 
     let mut ws: Ws = {
         let mut last = String::new();
         let mut connected = None;
-        for _ in 0..50 {
+        for _ in 0..100 {
             match connect_async(url.as_str()).await {
                 Ok((s, _)) => {
                     connected = Some(s);
@@ -186,6 +186,11 @@ async fn test_login_e2e() {
         Command::new(env!("CARGO_BIN_EXE_securefs-server"))
             .env("ALLOW_INSECURE", "1")
             .env("SERVER_ADDR", &addr)
+            .env("DB_HOST", "localhost")
+            .env("DB_PORT", "5431")
+            .env("DB_NAME", "securefs")
+            .env("DB_USER", "securefs_user")
+            .env("DB_CONN_PASSWORD", "securefs_password")
             .env("DB_PASS", "securefs")
             .stdout(Stdio::null())
             .stderr(Stdio::null())
