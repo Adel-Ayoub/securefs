@@ -75,7 +75,7 @@ impl NumArgs for Cmd {
             "cat" => Ok(2),
             "cd" => Ok(2),
             "echo" => Ok(usize::MAX),
-            "login" => Ok(2),
+            "login" => Ok(3),
             "get_encrypted_filename" => Ok(usize::MAX),
             "ls" => Ok(1),
             "mkdir" => Ok(2),
