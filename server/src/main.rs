@@ -118,6 +118,10 @@ async fn main() -> Result<(), String> {
         .create_pool(Some(Runtime::Tokio1), NoTls)
         .map_err(|e| format!("pool creation failed: {}", e))?;
 
+    dao::init_db(&pool)
+        .await
+        .map_err(|e| format!("database init failed: {}", e))?;
+
     let bind_addr = env::var("SERVER_ADDR").unwrap_or_else(|_| "127.0.0.1:8080".to_string());
     let listener = TcpListener::bind(&bind_addr)
         .await
