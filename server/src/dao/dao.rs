@@ -472,25 +472,28 @@ pub async fn update_path(
 ) -> Result<(), DaoError> {
     let client = conn(pool).await?;
     let db_pass = get_db_pass();
+    // Match the node itself or anything strictly beneath it (prefix + '/'),
+    // never a prefix-sibling. Plain string ops only — no regex metacharacters.
     client
         .execute(
-            "UPDATE fnode SET path =
-        pgp_sym_encrypt(
-            regexp_replace(
-                pgp_sym_decrypt(path ::bytea, $4 ::text),
-            $1, $2, 'g'),
-        $4 ::text)
-        WHERE pgp_sym_decrypt(path ::bytea, $4 ::text) ~ $3",
-            &[
-                &format!("^{}", file_path),
-                &new_file_path,
-                &format!("^{}", file_path),
-                &db_pass,
-            ],
+            "UPDATE fnode SET path = pgp_sym_encrypt(
+                 $2 || substring(pgp_sym_decrypt(path::bytea, $3::text) from length($1) + 1),
+                 $3::text)
+             WHERE pgp_sym_decrypt(path::bytea, $3::text) = $1
+                OR left(pgp_sym_decrypt(path::bytea, $3::text), length($1) + 1) = $1 || '/'",
+            &[&file_path, &new_file_path, &db_pass],
+        )
+        .await
+        .map_err(|e| DaoError::QueryFailed(format!("update path: {}", e)))?;
+    client
+        .execute(
+            "UPDATE fnode SET parent = $2 || substring(parent from length($1) + 1)
+             WHERE parent = $1 OR left(parent, length($1) + 1) = $1 || '/'",
+            &[&file_path, &new_file_path],
         )
         .await
         .map(|_| ())
-        .map_err(|e| DaoError::QueryFailed(format!("update path: {}", e)))
+        .map_err(|e| DaoError::QueryFailed(format!("update parent: {}", e)))
 }
 
 /// Delete every `fnode` whose path matches the provided prefix.
@@ -499,9 +502,10 @@ pub async fn delete_path(pool: &Pool, file_path: String) -> Result<(), DaoError>
     let db_pass = get_db_pass();
     client
         .execute(
-            "
-        DELETE FROM fnode WHERE pgp_sym_decrypt(path ::bytea, $2 ::text) ~ $1",
-            &[&format!("^{}", file_path), &db_pass],
+            "DELETE FROM fnode
+             WHERE pgp_sym_decrypt(path::bytea, $2::text) = $1
+                OR left(pgp_sym_decrypt(path::bytea, $2::text), length($1) + 1) = $1 || '/'",
+            &[&file_path, &db_pass],
         )
         .await
         .map(|_| ())
