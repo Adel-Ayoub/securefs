@@ -499,19 +499,27 @@ pub async fn delete(data: Vec<String>, session: &Session, pool: &Pool) -> AppMes
                 errors.push(format!("{}: directory not empty", name));
                 continue;
             }
-            let storage_path = format!("storage{}", path);
-            if Path::new(&storage_path).exists() {
-                let _ = stdfs::remove_file(&storage_path)
-                    .or_else(|_| stdfs::remove_dir_all(&storage_path));
-            }
-            let parent_remove =
-                dao::remove_file_from_parent(pool, session.current_path.clone(), name.clone())
-                    .await;
-            let del = dao::delete_path(pool, path.clone()).await;
-            if parent_remove.is_ok() && del.is_ok() {
-                deleted += 1;
-            } else {
-                errors.push(format!("{}: delete failed", name));
+            match dao::delete_node(
+                pool,
+                session.current_path.clone(),
+                name.clone(),
+                path.clone(),
+            )
+            .await
+            {
+                Ok(_) => {
+                    // Remove backing storage only after the DB change commits.
+                    let storage_path = format!("storage{}", path);
+                    if Path::new(&storage_path).exists() {
+                        let _ = stdfs::remove_file(&storage_path)
+                            .or_else(|_| stdfs::remove_dir_all(&storage_path));
+                    }
+                    deleted += 1;
+                }
+                Err(e) => {
+                    log::warn!("delete failed: {}", e);
+                    errors.push(format!("{}: delete failed", name));
+                }
             }
         } else {
             errors.push(format!("{}: not found", name));
@@ -584,33 +592,36 @@ pub async fn mv(data: Vec<String>, session: &Session, pool: &Pool) -> AppMessage
                 session.current_user_group.as_ref(),
                 owner_group.as_ref(),
             ) {
-                let res = dao::update_path(pool, old_path.clone(), new_path.clone()).await;
-                let name_res = dao::update_fnode_name_if_path_is_already_updated(
+                match dao::rename_node(
                     pool,
+                    session.current_path.clone(),
+                    old_path.clone(),
                     new_path.clone(),
+                    src.clone(),
                     dst.clone(),
                 )
-                .await;
-                let enc_res = dao::update_fnode_enc_name(pool, new_path.clone(), dst.clone()).await;
-                let parent_remove =
-                    dao::remove_file_from_parent(pool, session.current_path.clone(), src.clone())
-                        .await;
-                let parent_add =
-                    dao::add_file_to_parent(pool, session.current_path.clone(), dst.clone()).await;
-                if res.is_ok()
-                    && name_res.is_ok()
-                    && enc_res.is_ok()
-                    && parent_remove.is_ok()
-                    && parent_add.is_ok()
+                .await
                 {
-                    AppMessage {
-                        cmd: Cmd::Mv,
-                        data: vec!["ok".to_string()],
+                    Ok(_) => {
+                        // Move backing storage so file content follows the rename.
+                        let old_storage = format!("storage{}", old_path);
+                        let new_storage = format!("storage{}", new_path);
+                        if Path::new(&old_storage).exists() {
+                            if let Err(e) = stdfs::rename(&old_storage, &new_storage) {
+                                log::warn!("mv storage move failed: {}", e);
+                            }
+                        }
+                        AppMessage {
+                            cmd: Cmd::Mv,
+                            data: vec!["ok".to_string()],
+                        }
                     }
-                } else {
-                    AppMessage {
-                        cmd: Cmd::Failure,
-                        data: vec!["mv failed".to_string()],
+                    Err(e) => {
+                        log::warn!("mv failed: {}", e);
+                        AppMessage {
+                            cmd: Cmd::Failure,
+                            data: vec!["mv failed".to_string()],
+                        }
                     }
                 }
             } else {

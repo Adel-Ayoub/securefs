@@ -48,7 +48,7 @@ INSERT INTO fnode (name, path, owner, hash, parent, dir, u, g, o, children, encr
     pgp_sym_encrypt('/home', 'TEMP'),
     pgp_sym_encrypt('admin', 'TEMP'),
     '',
-    '/',
+    pgp_sym_encrypt('/', 'TEMP'),
     true,
     '7', '5', '5',
     ARRAY[]::VARCHAR[],

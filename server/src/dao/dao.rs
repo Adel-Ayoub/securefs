@@ -284,25 +284,6 @@ pub async fn add_file_to_parent(
         .map_err(|e| DaoError::QueryFailed(format!("add to parent: {}", e)))
 }
 
-/// Remove a child entry from the parent's `children` array.
-pub async fn remove_file_from_parent(
-    pool: &Pool,
-    parent_path: String,
-    f_node_name: String,
-) -> Result<(), DaoError> {
-    let client = conn(pool).await?;
-    let db_pass = get_db_pass();
-    client.execute("UPDATE fnode
-        SET children =
-            (SELECT array_agg(pgp_sym_encrypt(child1::text, $3::text)) FROM unnest
-                (ARRAY_REMOVE((SELECT array_agg(pgp_sym_decrypt(child ::bytea, $3::text)) FROM unnest(children) AS child), $1)
-            ) AS child1)
-            WHERE pgp_sym_decrypt(path ::bytea, $3 ::text)=$2",
-    &[&f_node_name, &parent_path, &db_pass]).await
-        .map(|_| ())
-        .map_err(|e| DaoError::QueryFailed(format!("remove from parent: {}", e)))
-}
-
 /// Fetch a decrypted `FNode` by path.
 pub async fn get_f_node(pool: &Pool, path: String) -> Result<Option<FNode>, DaoError> {
     let client = conn(pool).await?;
@@ -313,7 +294,7 @@ pub async fn get_f_node(pool: &Pool, path: String) -> Result<Option<FNode>, DaoE
         pgp_sym_decrypt(path ::bytea, $2 ::text) AS path,
         pgp_sym_decrypt(owner ::bytea, $2 ::text) AS owner,
         hash,
-        parent,
+        pgp_sym_decrypt(parent ::bytea, $2 ::text) AS parent,
         dir,
         CAST (pgp_sym_decrypt(u ::bytea, $2 ::text) AS SMALLINT) AS u,
         CAST (pgp_sym_decrypt(g ::bytea, $2 ::text) AS SMALLINT) AS g,
@@ -364,7 +345,7 @@ pub async fn get_children(pool: &Pool, parent_path: String) -> Result<Vec<FNode>
         pgp_sym_decrypt(name ::bytea, $2 ::text) AS name,
         pgp_sym_decrypt(path ::bytea, $2 ::text) AS path,
         pgp_sym_decrypt(owner ::bytea, $2 ::text) AS owner,
-        hash, parent, dir,
+        hash, pgp_sym_decrypt(parent ::bytea, $2 ::text) AS parent, dir,
         CAST (pgp_sym_decrypt(u ::bytea, $2 ::text) AS SMALLINT) AS u,
         CAST (pgp_sym_decrypt(g ::bytea, $2 ::text) AS SMALLINT) AS g,
         CAST (pgp_sym_decrypt(o ::bytea, $2 ::text) AS SMALLINT) AS o,
@@ -412,7 +393,7 @@ pub async fn get_subtree(pool: &Pool, path_prefix: String) -> Result<Vec<FNode>,
         pgp_sym_decrypt(name ::bytea, $2 ::text) AS name,
         pgp_sym_decrypt(path ::bytea, $2 ::text) AS path,
         pgp_sym_decrypt(owner ::bytea, $2 ::text) AS owner,
-        hash, parent, dir,
+        hash, pgp_sym_decrypt(parent ::bytea, $2 ::text) AS parent, dir,
         CAST (pgp_sym_decrypt(u ::bytea, $2 ::text) AS SMALLINT) AS u,
         CAST (pgp_sym_decrypt(g ::bytea, $2 ::text) AS SMALLINT) AS g,
         CAST (pgp_sym_decrypt(o ::bytea, $2 ::text) AS SMALLINT) AS o,
@@ -482,38 +463,6 @@ pub async fn change_file_perms(
         .map_err(|e| DaoError::QueryFailed(format!("change perms: {}", e)))
 }
 
-/// Rewrite stored paths for a subtree, replacing prefixes in bulk.
-pub async fn update_path(
-    pool: &Pool,
-    file_path: String,
-    new_file_path: String,
-) -> Result<(), DaoError> {
-    let client = conn(pool).await?;
-    let db_pass = get_db_pass();
-    // Match the node itself or anything strictly beneath it (prefix + '/'),
-    // never a prefix-sibling. Plain string ops only — no regex metacharacters.
-    client
-        .execute(
-            "UPDATE fnode SET path = pgp_sym_encrypt(
-                 $2 || substring(pgp_sym_decrypt(path::bytea, $3::text) from length($1) + 1),
-                 $3::text)
-             WHERE pgp_sym_decrypt(path::bytea, $3::text) = $1
-                OR left(pgp_sym_decrypt(path::bytea, $3::text), length($1) + 1) = $1 || '/'",
-            &[&file_path, &new_file_path, &db_pass],
-        )
-        .await
-        .map_err(|e| DaoError::QueryFailed(format!("update path: {}", e)))?;
-    client
-        .execute(
-            "UPDATE fnode SET parent = $2 || substring(parent from length($1) + 1)
-             WHERE parent = $1 OR left(parent, length($1) + 1) = $1 || '/'",
-            &[&file_path, &new_file_path],
-        )
-        .await
-        .map(|_| ())
-        .map_err(|e| DaoError::QueryFailed(format!("update parent: {}", e)))
-}
-
 /// Delete every `fnode` whose path matches the provided prefix.
 pub async fn delete_path(pool: &Pool, file_path: String) -> Result<(), DaoError> {
     let client = conn(pool).await?;
@@ -530,38 +479,118 @@ pub async fn delete_path(pool: &Pool, file_path: String) -> Result<(), DaoError>
         .map_err(|e| DaoError::QueryFailed(format!("delete path: {}", e)))
 }
 
-/// Update only the display name after a path rename has occurred.
-pub async fn update_fnode_name_if_path_is_already_updated(
+/// Rename/move a node and its subtree atomically: rewrite the node's path and
+/// every descendant's path and parent pointer, update the node's name, and fix
+/// the parent's children array — all in one transaction so a partial failure
+/// rolls back instead of corrupting the tree.
+pub async fn rename_node(
     pool: &Pool,
-    path: String,
+    parent_path: String,
+    old_path: String,
+    new_path: String,
+    old_name: String,
     new_name: String,
 ) -> Result<(), DaoError> {
-    let client = conn(pool).await?;
+    let mut client = conn(pool).await?;
     let db_pass = get_db_pass();
-    client
-        .execute(
-            "UPDATE fnode SET name =
-        pgp_sym_encrypt($2 ::text, $3 ::text)
-        WHERE pgp_sym_decrypt(path::bytea, $3::text) = $1",
-            &[&path, &new_name, &db_pass],
-        )
+    let tx = client
+        .transaction()
         .await
-        .map(|_| ())
-        .map_err(|e| DaoError::QueryFailed(format!("update name: {}", e)))
+        .map_err(|e| DaoError::QueryFailed(format!("begin tx: {}", e)))?;
+
+    tx.execute(
+        "UPDATE fnode SET path = pgp_sym_encrypt(
+             $2 || substring(pgp_sym_decrypt(path::bytea, $3::text) from length($1) + 1),
+             $3::text)
+         WHERE pgp_sym_decrypt(path::bytea, $3::text) = $1
+            OR left(pgp_sym_decrypt(path::bytea, $3::text), length($1) + 1) = $1 || '/'",
+        &[&old_path, &new_path, &db_pass],
+    )
+    .await
+    .map_err(|e| DaoError::QueryFailed(format!("rename path: {}", e)))?;
+
+    // Parent is stored encrypted; rewrite it for descendants (already moved
+    // under new_path by the previous statement), decrypting/re-encrypting.
+    tx.execute(
+        "UPDATE fnode SET parent = pgp_sym_encrypt(
+             $2 || substring(pgp_sym_decrypt(parent::bytea, $3::text) from length($1) + 1),
+             $3::text)
+         WHERE left(pgp_sym_decrypt(path::bytea, $3::text), length($2) + 1) = $2 || '/'",
+        &[&old_path, &new_path, &db_pass],
+    )
+    .await
+    .map_err(|e| DaoError::QueryFailed(format!("rename parent: {}", e)))?;
+
+    tx.execute(
+        "UPDATE fnode SET name = pgp_sym_encrypt($2::text, $3::text), encrypted_name = $2
+         WHERE pgp_sym_decrypt(path::bytea, $3::text) = $1",
+        &[&new_path, &new_name, &db_pass],
+    )
+    .await
+    .map_err(|e| DaoError::QueryFailed(format!("rename name: {}", e)))?;
+
+    tx.execute(
+        "UPDATE fnode SET children =
+            (SELECT array_agg(pgp_sym_encrypt(child1::text, $3::text)) FROM unnest
+                (ARRAY_REMOVE((SELECT array_agg(pgp_sym_decrypt(child ::bytea, $3::text)) FROM unnest(children) AS child), $1)
+            ) AS child1)
+            WHERE pgp_sym_decrypt(path ::bytea, $3 ::text)=$2",
+        &[&old_name, &parent_path, &db_pass],
+    )
+    .await
+    .map_err(|e| DaoError::QueryFailed(format!("rename detach: {}", e)))?;
+
+    tx.execute(
+        "UPDATE fnode SET children =
+        ARRAY_APPEND(children, pgp_sym_encrypt($1 ::text, $3 ::text)::text)
+        WHERE pgp_sym_decrypt(path ::bytea, $3 ::text)=$2",
+        &[&new_name, &parent_path, &db_pass],
+    )
+    .await
+    .map_err(|e| DaoError::QueryFailed(format!("rename attach: {}", e)))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| DaoError::QueryFailed(format!("commit: {}", e)))
 }
 
-/// Update the encrypted on-disk name for a node.
-pub async fn update_fnode_enc_name(
+/// Detach a node from its parent and delete it (plus any subtree) atomically.
+pub async fn delete_node(
     pool: &Pool,
+    parent_path: String,
+    name: String,
     path: String,
-    new_enc_name: String,
 ) -> Result<(), DaoError> {
-    let client = conn(pool).await?;
+    let mut client = conn(pool).await?;
     let db_pass = get_db_pass();
-    client.execute("UPDATE fnode SET encrypted_name = $2 WHERE pgp_sym_decrypt(path ::bytea, $3 ::text) = $1",
-    &[&path, &new_enc_name, &db_pass]).await
-        .map(|_| ())
-        .map_err(|e| DaoError::QueryFailed(format!("update enc name: {}", e)))
+    let tx = client
+        .transaction()
+        .await
+        .map_err(|e| DaoError::QueryFailed(format!("begin tx: {}", e)))?;
+
+    tx.execute(
+        "UPDATE fnode SET children =
+            (SELECT array_agg(pgp_sym_encrypt(child1::text, $3::text)) FROM unnest
+                (ARRAY_REMOVE((SELECT array_agg(pgp_sym_decrypt(child ::bytea, $3::text)) FROM unnest(children) AS child), $1)
+            ) AS child1)
+            WHERE pgp_sym_decrypt(path ::bytea, $3 ::text)=$2",
+        &[&name, &parent_path, &db_pass],
+    )
+    .await
+    .map_err(|e| DaoError::QueryFailed(format!("delete detach: {}", e)))?;
+
+    tx.execute(
+        "DELETE FROM fnode
+         WHERE pgp_sym_decrypt(path::bytea, $2::text) = $1
+            OR left(pgp_sym_decrypt(path::bytea, $2::text), length($1) + 1) = $1 || '/'",
+        &[&path, &db_pass],
+    )
+    .await
+    .map_err(|e| DaoError::QueryFailed(format!("delete rows: {}", e)))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| DaoError::QueryFailed(format!("commit: {}", e)))
 }
 
 /// Fetch a user record; decrypt the key with `DB_PASS`.
