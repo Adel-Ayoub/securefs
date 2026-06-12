@@ -1006,6 +1006,7 @@ async fn connect_and_run(
                 let b64 = base64::engine::general_purpose::STANDARD;
                 let chunk_size = 64 * 1024;
                 let total_chunks = local_data.len().div_ceil(chunk_size);
+                let mut complete = true;
                 for (i, chunk) in local_data.chunks(chunk_size).enumerate() {
                     let chunk_msg = AppMessage {
                         cmd: Cmd::UploadChunk,
@@ -1015,6 +1016,7 @@ async fn connect_and_run(
                     let cr = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
                     if cr.cmd != Cmd::UploadChunk {
                         println!("{}", format!("chunk {} failed: {:?}", i, cr.data).red());
+                        complete = false;
                         break;
                     }
                     if !quiet {
@@ -1027,6 +1029,13 @@ async fn connect_and_run(
                 }
                 if !quiet {
                     println!();
+                }
+
+                if !complete {
+                    // Never finalize a truncated upload; the server discards the
+                    // partial buffer when the session ends.
+                    println!("{}", "upload aborted; file not saved".red());
+                    continue;
                 }
 
                 // Send UploadEnd
@@ -1073,10 +1082,12 @@ async fn connect_and_run(
                     reply.data.first().and_then(|s| s.parse().ok()).unwrap_or(0);
                 let total_bytes: usize =
                     reply.data.get(1).and_then(|s| s.parse().ok()).unwrap_or(0);
+                let expected_hash = reply.data.get(2).cloned();
 
                 // Fetch each chunk
                 let b64 = base64::engine::general_purpose::STANDARD;
                 let mut content = Vec::with_capacity(total_bytes);
+                let mut complete = true;
                 for i in 0..total_chunks {
                     let chunk_msg = AppMessage {
                         cmd: Cmd::DownloadChunk,
@@ -1086,11 +1097,15 @@ async fn connect_and_run(
                     let cr = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
                     if cr.cmd != Cmd::DownloadChunk {
                         println!("{}", format!("chunk {} failed: {:?}", i, cr.data).red());
+                        complete = false;
                         break;
                     }
-                    if let Some(b64_data) = cr.data.get(1) {
-                        if let Ok(bytes) = b64.decode(b64_data) {
-                            content.extend_from_slice(&bytes);
+                    match cr.data.get(1).and_then(|d| b64.decode(d).ok()) {
+                        Some(bytes) => content.extend_from_slice(&bytes),
+                        None => {
+                            println!("{}", format!("chunk {} decode failed", i).red());
+                            complete = false;
+                            break;
                         }
                     }
                     if !quiet {
@@ -1105,7 +1120,7 @@ async fn connect_and_run(
                     println!();
                 }
 
-                // Send DownloadEnd
+                // Always release the server's download buffer.
                 let end_msg = AppMessage {
                     cmd: Cmd::DownloadEnd,
                     data: vec![],
@@ -1113,13 +1128,25 @@ async fn connect_and_run(
                 send(&mut ws_stream, &end_msg, shared_secret_key.as_ref()).await?;
                 let _ = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
 
-                // Write to local file
-                match stdfs::write(&file_name, &content) {
-                    Ok(_) => println!(
-                        "{}",
-                        format!("{} bytes saved to {}", content.len(), file_name).green()
-                    ),
-                    Err(e) => println!("{}", format!("write failed: {}", e).red()),
+                // Only persist a fully received, integrity-verified file.
+                let hash_ok = match &expected_hash {
+                    Some(h) if !h.is_empty() => {
+                        hex::encode(blake3::hash(&content).as_bytes()) == *h
+                    }
+                    _ => true,
+                };
+                if !complete || content.len() != total_bytes {
+                    println!("{}", "download incomplete; file not saved".red());
+                } else if !hash_ok {
+                    println!("{}", "integrity check failed; file not saved".red());
+                } else {
+                    match stdfs::write(&file_name, &content) {
+                        Ok(_) => println!(
+                            "{}",
+                            format!("{} bytes saved to {}", content.len(), file_name).green()
+                        ),
+                        Err(e) => println!("{}", format!("write failed: {}", e).red()),
+                    }
                 }
             }
             _ => {
