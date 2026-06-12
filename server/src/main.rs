@@ -110,12 +110,15 @@ async fn main() -> Result<(), String> {
     let db_name = env::var("DB_NAME").unwrap_or_else(|_| "db".to_string());
     let db_user = env::var("DB_USER").unwrap_or_else(|_| "USER".to_string());
     let db_port = env::var("DB_PORT").unwrap_or_else(|_| "5431".to_string());
+    // The Postgres connection password can differ from DB_PASS (the pgcrypto
+    // data key); fall back to DB_PASS when not set.
+    let db_conn_pass = env::var("DB_CONN_PASSWORD").unwrap_or_else(|_| db_pass.clone());
 
     let mut pool_cfg = Config::new();
     pool_cfg.host = Some(db_host);
     pool_cfg.dbname = Some(db_name);
     pool_cfg.user = Some(db_user);
-    pool_cfg.password = Some(db_pass);
+    pool_cfg.password = Some(db_conn_pass);
     pool_cfg.port = Some(db_port.parse().unwrap_or(5431));
     pool_cfg.manager = Some(ManagerConfig {
         recycling_method: RecyclingMethod::Fast,
