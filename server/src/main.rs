@@ -10,16 +10,16 @@ use std::sync::Arc;
 use deadpool_postgres::{Config, ManagerConfig, Pool, RecyclingMethod, Runtime};
 use futures_util::{SinkExt, StreamExt};
 use log::{info, warn};
+use rustls_pki_types::pem::PemObject;
+use rustls_pki_types::{CertificateDer, PrivateKeyDer};
 use securefs_model::protocol::{AppMessage, Cmd};
 use securefs_model::secure_channel::SecureChannel;
 use std::collections::HashMap;
-use std::fs as stdfs;
-use std::io::BufReader;
 use std::net::IpAddr;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
 use tokio_postgres::NoTls;
-use tokio_rustls::rustls::{self, pki_types::CertificateDer};
+use tokio_rustls::rustls;
 use tokio_rustls::TlsAcceptor;
 use tokio_tungstenite::accept_async;
 use tokio_tungstenite::tungstenite::Message;
@@ -64,24 +64,16 @@ use session::{RateLimiter, Session, SessionInfo, SessionRegistry};
 
 /// Load TLS configuration from certificate and key files.
 fn load_tls_config(cert_path: &str, key_path: &str) -> Result<TlsAcceptor, String> {
-    let cert_file =
-        stdfs::File::open(cert_path).map_err(|e| format!("failed to open cert file: {}", e))?;
-    let key_file =
-        stdfs::File::open(key_path).map_err(|e| format!("failed to open key file: {}", e))?;
-
-    let mut cert_reader = BufReader::new(cert_file);
-    let mut key_reader = BufReader::new(key_file);
-
-    let certs: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut cert_reader)
-        .filter_map(|r| r.ok())
-        .collect();
+    let certs = CertificateDer::pem_file_iter(cert_path)
+        .map_err(|e| format!("failed to read cert file: {}", e))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("failed to parse certs: {}", e))?;
     if certs.is_empty() {
         return Err("no certificates found in cert file".to_string());
     }
 
-    let key = rustls_pemfile::private_key(&mut key_reader)
-        .map_err(|e| format!("failed to parse key: {}", e))?
-        .ok_or("no private key found in key file")?;
+    let key = PrivateKeyDer::from_pem_file(key_path)
+        .map_err(|e| format!("failed to read private key: {}", e))?;
 
     let config = rustls::ServerConfig::builder()
         .with_no_client_auth()
@@ -261,7 +253,7 @@ where
         None => serde_json::to_string(&resp).map_err(|e| e.to_string())?,
     };
     ws_stream
-        .send(Message::Text(payload))
+        .send(Message::Text(payload.into()))
         .await
         .map_err(|e| format!("send failed: {}", e))
 }

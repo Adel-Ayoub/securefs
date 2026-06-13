@@ -1232,7 +1232,7 @@ async fn send(
         Some(ch) => ch.seal(msg)?,
         None => serde_json::to_string(msg).map_err(|e| e.to_string())?,
     };
-    ws.send(Message::Text(payload))
+    ws.send(Message::Text(payload.into()))
         .await
         .map_err(|e| format!("send failed: {}", e))
 }

@@ -38,7 +38,9 @@ fn free_port() -> u16 {
 
 async fn send_plain(ws: &mut Ws, msg: &AppMessage) -> Result<(), String> {
     let s = serde_json::to_string(msg).map_err(|e| e.to_string())?;
-    ws.send(Message::Text(s)).await.map_err(|e| e.to_string())
+    ws.send(Message::Text(s.into()))
+        .await
+        .map_err(|e| e.to_string())
 }
 
 async fn recv_plain(ws: &mut Ws) -> Result<AppMessage, String> {
@@ -52,7 +54,7 @@ async fn recv_plain(ws: &mut Ws) -> Result<AppMessage, String> {
 }
 
 async fn send_sealed(ws: &mut Ws, ch: &mut SecureChannel, msg: &AppMessage) -> Result<(), String> {
-    ws.send(Message::Text(ch.seal(msg)?))
+    ws.send(Message::Text(ch.seal(msg)?.into()))
         .await
         .map_err(|e| e.to_string())
 }
