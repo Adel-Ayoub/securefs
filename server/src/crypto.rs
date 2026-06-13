@@ -2,42 +2,9 @@ use aes_gcm::aead::{Aead, AeadCore};
 use aes_gcm::{Aes256Gcm, Key, KeyInit, Nonce};
 use hkdf::Hkdf;
 use rand_core::OsRng;
-use securefs_model::protocol::AppMessage;
 use sha2::Sha256;
 
 use securefs_server::dao;
-
-/// Encrypt an AppMessage using AES-256-GCM.
-/// Returns a tuple of (ciphertext_hex, nonce_bytes).
-pub fn encrypt_app_message(
-    key: &Key<Aes256Gcm>,
-    msg: &AppMessage,
-) -> Result<(String, [u8; 12]), String> {
-    let cipher = Aes256Gcm::new(key);
-    let nonce = Aes256Gcm::generate_nonce(OsRng);
-    let payload = serde_json::to_string(msg).map_err(|e| e.to_string())?;
-    let ciphertext = cipher
-        .encrypt(&nonce, payload.as_bytes())
-        .map_err(|e| format!("encryption failed: {}", e))?;
-    Ok((hex::encode(ciphertext), nonce.into()))
-}
-
-/// Decrypt a message using AES-256-GCM.
-pub fn decrypt_app_message(
-    key: &Key<Aes256Gcm>,
-    msg_tuple: &(String, [u8; 12]),
-) -> Result<AppMessage, String> {
-    let (ciphertext_hex, nonce_bytes) = msg_tuple;
-    let cipher = Aes256Gcm::new(key);
-    let nonce = Nonce::from_slice(nonce_bytes);
-    let ciphertext =
-        hex::decode(ciphertext_hex).map_err(|_| "invalid ciphertext hex".to_string())?;
-    let plaintext = cipher
-        .decrypt(nonce, ciphertext.as_ref())
-        .map_err(|e| format!("decryption failed: {}", e))?;
-    let plaintext_str = String::from_utf8(plaintext).map_err(|_| "invalid utf8".to_string())?;
-    serde_json::from_str(&plaintext_str).map_err(|e| format!("json decode failed: {}", e))
-}
 
 /// Derive a key for file-at-rest encryption using HKDF.
 /// Uses DATA_KEY (dev-only fallback to DB_PASS); production requires DATA_KEY,

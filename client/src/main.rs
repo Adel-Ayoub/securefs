@@ -19,6 +19,7 @@ use rustyline::validate::Validator;
 use rustyline::{CompletionType, Config, Context, Editor, Helper};
 use securefs_model::cmd::{MapStr, NumArgs};
 use securefs_model::protocol::{AppMessage, Cmd};
+use securefs_model::secure_channel::{Role, SecureChannel, PROTOCOL_VERSION};
 use tokio::runtime::Runtime;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
@@ -232,17 +233,23 @@ async fn connect_and_run(
         println!("{}", "Initiating key exchange...".cyan());
     }
 
-    // Send our public key to server
+    // Send our public key and protocol version to the server
     let key_exchange_msg = AppMessage {
         cmd: Cmd::KeyExchangeInit,
-        data: vec![hex::encode(client_public.as_bytes())],
+        data: vec![
+            hex::encode(client_public.as_bytes()),
+            PROTOCOL_VERSION.to_string(),
+        ],
     };
     send(&mut ws_stream, &key_exchange_msg, None).await?;
 
-    // Receive server's public key
+    // Receive server's public key and version
     let reply = recv(&mut ws_stream, None).await?;
-    let _shared_secret = match reply.cmd {
+    let shared_secret = match reply.cmd {
         Cmd::KeyExchangeResponse => {
+            if reply.data.get(1).and_then(|v| v.parse::<u8>().ok()) != Some(PROTOCOL_VERSION) {
+                return Err("server uses an incompatible protocol version".into());
+            }
             let server_pubkey_hex = reply.data.first().cloned().unwrap_or_default();
             let server_bytes =
                 hex::decode(&server_pubkey_hex).map_err(|_| "invalid server public key")?;
@@ -269,12 +276,8 @@ async fn connect_and_run(
         _ => return Err("unexpected response to key exchange".into()),
     };
 
-    // Derive session key using HKDF-SHA256 (must match server derivation)
-    let hkdf = Hkdf::<Sha256>::new(None, _shared_secret.as_bytes());
-    let mut okm = [0u8; 32];
-    hkdf.expand(b"securefs-session-key-v1", &mut okm)
-        .expect("32 bytes is valid output length for HKDF-SHA256");
-    let shared_secret_key: Option<Key<Aes256Gcm>> = Some(*Key::<Aes256Gcm>::from_slice(&okm));
+    let mut channel: Option<SecureChannel> =
+        Some(SecureChannel::new(shared_secret.as_bytes(), Role::Client));
 
     if !quiet {
         // Use environment variable for server address in prompt or default
@@ -370,8 +373,8 @@ async fn connect_and_run(
 
         match app_message.cmd {
             Cmd::Login => {
-                send(&mut ws_stream, &app_message, shared_secret_key.as_ref()).await?;
-                let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
+                send(&mut ws_stream, &app_message, channel.as_mut()).await?;
+                let reply = recv(&mut ws_stream, channel.as_mut()).await?;
                 match reply.cmd {
                     Cmd::Login => {
                         let default_admin = "false".to_string();
@@ -387,9 +390,8 @@ async fn connect_and_run(
                                 cmd: Cmd::TotpVerify,
                                 data: vec![code.trim().to_string()],
                             };
-                            send(&mut ws_stream, &totp_msg, shared_secret_key.as_ref()).await?;
-                            let totp_reply =
-                                recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
+                            send(&mut ws_stream, &totp_msg, channel.as_mut()).await?;
+                            let totp_reply = recv(&mut ws_stream, channel.as_mut()).await?;
                             match totp_reply.cmd {
                                 Cmd::TotpVerify => {
                                     println!("{} (is_admin: {})", "login ok".green(), is_admin);
@@ -420,8 +422,8 @@ async fn connect_and_run(
                 }
             }
             Cmd::LsUsers => {
-                send(&mut ws_stream, &app_message, shared_secret_key.as_ref()).await?;
-                let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
+                send(&mut ws_stream, &app_message, channel.as_mut()).await?;
+                let reply = recv(&mut ws_stream, channel.as_mut()).await?;
                 match reply.cmd {
                     Cmd::LsUsers => {
                         if reply.data.is_empty() {
@@ -441,8 +443,8 @@ async fn connect_and_run(
                 }
             }
             Cmd::LsGroups => {
-                send(&mut ws_stream, &app_message, shared_secret_key.as_ref()).await?;
-                let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
+                send(&mut ws_stream, &app_message, channel.as_mut()).await?;
+                let reply = recv(&mut ws_stream, channel.as_mut()).await?;
                 match reply.cmd {
                     Cmd::LsGroups => {
                         if reply.data.is_empty() {
@@ -470,8 +472,8 @@ async fn connect_and_run(
                 return Ok(());
             }
             Cmd::NewUser => {
-                send(&mut ws_stream, &app_message, shared_secret_key.as_ref()).await?;
-                let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
+                send(&mut ws_stream, &app_message, channel.as_mut()).await?;
+                let reply = recv(&mut ws_stream, channel.as_mut()).await?;
                 match reply.cmd {
                     Cmd::NewUser => println!(
                         "user created: {}",
@@ -485,8 +487,8 @@ async fn connect_and_run(
                 }
             }
             Cmd::NewGroup => {
-                send(&mut ws_stream, &app_message, shared_secret_key.as_ref()).await?;
-                let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
+                send(&mut ws_stream, &app_message, channel.as_mut()).await?;
+                let reply = recv(&mut ws_stream, channel.as_mut()).await?;
                 match reply.cmd {
                     Cmd::NewGroup => println!(
                         "group created: {}",
@@ -504,8 +506,8 @@ async fn connect_and_run(
                 }
             }
             Cmd::Cd => {
-                send(&mut ws_stream, &app_message, shared_secret_key.as_ref()).await?;
-                let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
+                send(&mut ws_stream, &app_message, channel.as_mut()).await?;
+                let reply = recv(&mut ws_stream, channel.as_mut()).await?;
                 match reply.cmd {
                     Cmd::Cd => println!("{}", reply.data.first().unwrap_or(&"/".into()).blue()),
                     Cmd::Failure => println!(
@@ -516,8 +518,8 @@ async fn connect_and_run(
                 }
             }
             Cmd::Pwd => {
-                send(&mut ws_stream, &app_message, shared_secret_key.as_ref()).await?;
-                let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
+                send(&mut ws_stream, &app_message, channel.as_mut()).await?;
+                let reply = recv(&mut ws_stream, channel.as_mut()).await?;
                 match reply.cmd {
                     Cmd::Pwd => {
                         let default_path = "/".to_string();
@@ -534,8 +536,8 @@ async fn connect_and_run(
                 }
             }
             Cmd::Ls => {
-                send(&mut ws_stream, &app_message, shared_secret_key.as_ref()).await?;
-                let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
+                send(&mut ws_stream, &app_message, channel.as_mut()).await?;
+                let reply = recv(&mut ws_stream, channel.as_mut()).await?;
                 match reply.cmd {
                     Cmd::Ls => {
                         if reply.data.is_empty() {
@@ -562,8 +564,8 @@ async fn connect_and_run(
                 }
             }
             Cmd::Mkdir => {
-                send(&mut ws_stream, &app_message, shared_secret_key.as_ref()).await?;
-                let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
+                send(&mut ws_stream, &app_message, channel.as_mut()).await?;
+                let reply = recv(&mut ws_stream, channel.as_mut()).await?;
                 match reply.cmd {
                     Cmd::Mkdir => println!("{}", "ok".green()),
                     Cmd::Failure => {
@@ -576,8 +578,8 @@ async fn connect_and_run(
                 }
             }
             Cmd::Touch => {
-                send(&mut ws_stream, &app_message, shared_secret_key.as_ref()).await?;
-                let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
+                send(&mut ws_stream, &app_message, channel.as_mut()).await?;
+                let reply = recv(&mut ws_stream, channel.as_mut()).await?;
                 match reply.cmd {
                     Cmd::Touch => println!("{}", "ok".green()),
                     Cmd::Failure => println!(
@@ -588,8 +590,8 @@ async fn connect_and_run(
                 }
             }
             Cmd::Mv => {
-                send(&mut ws_stream, &app_message, shared_secret_key.as_ref()).await?;
-                let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
+                send(&mut ws_stream, &app_message, channel.as_mut()).await?;
+                let reply = recv(&mut ws_stream, channel.as_mut()).await?;
                 match reply.cmd {
                     Cmd::Mv => println!("{}", "ok".green()),
                     Cmd::Failure => println!(
@@ -600,8 +602,8 @@ async fn connect_and_run(
                 }
             }
             Cmd::Delete => {
-                send(&mut ws_stream, &app_message, shared_secret_key.as_ref()).await?;
-                let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
+                send(&mut ws_stream, &app_message, channel.as_mut()).await?;
+                let reply = recv(&mut ws_stream, channel.as_mut()).await?;
                 match reply.cmd {
                     Cmd::Delete => println!("{}", "ok".green()),
                     Cmd::Failure => println!(
@@ -612,8 +614,8 @@ async fn connect_and_run(
                 }
             }
             Cmd::Cat => {
-                send(&mut ws_stream, &app_message, shared_secret_key.as_ref()).await?;
-                let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
+                send(&mut ws_stream, &app_message, channel.as_mut()).await?;
+                let reply = recv(&mut ws_stream, channel.as_mut()).await?;
                 match reply.cmd {
                     Cmd::Cat => println!("{}", reply.data.first().unwrap_or(&"".into())),
                     Cmd::Failure => println!(
@@ -625,8 +627,8 @@ async fn connect_and_run(
             }
             Cmd::Echo => {
                 // echo "<data>" filename
-                send(&mut ws_stream, &app_message, shared_secret_key.as_ref()).await?;
-                let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
+                send(&mut ws_stream, &app_message, channel.as_mut()).await?;
+                let reply = recv(&mut ws_stream, channel.as_mut()).await?;
                 match reply.cmd {
                     Cmd::Echo => println!("{}", "ok".green()),
                     Cmd::Failure => println!(
@@ -637,8 +639,8 @@ async fn connect_and_run(
                 }
             }
             Cmd::Chmod => {
-                send(&mut ws_stream, &app_message, shared_secret_key.as_ref()).await?;
-                let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
+                send(&mut ws_stream, &app_message, channel.as_mut()).await?;
+                let reply = recv(&mut ws_stream, channel.as_mut()).await?;
                 match reply.cmd {
                     Cmd::Chmod => println!("{}", "ok".green()),
                     Cmd::Failure => println!(
@@ -649,8 +651,8 @@ async fn connect_and_run(
                 }
             }
             Cmd::Scan => {
-                send(&mut ws_stream, &app_message, shared_secret_key.as_ref()).await?;
-                let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
+                send(&mut ws_stream, &app_message, channel.as_mut()).await?;
+                let reply = recv(&mut ws_stream, channel.as_mut()).await?;
                 match reply.cmd {
                     Cmd::Scan => println!(
                         "{}",
@@ -664,8 +666,8 @@ async fn connect_and_run(
                 }
             }
             Cmd::GetEncryptedFile => {
-                send(&mut ws_stream, &app_message, shared_secret_key.as_ref()).await?;
-                let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
+                send(&mut ws_stream, &app_message, channel.as_mut()).await?;
+                let reply = recv(&mut ws_stream, channel.as_mut()).await?;
                 match reply.cmd {
                     Cmd::GetEncryptedFile => {
                         println!("encrypted path: {}", reply.data.join("/").blue());
@@ -682,8 +684,8 @@ async fn connect_and_run(
                 }
             }
             Cmd::Cp => {
-                send(&mut ws_stream, &app_message, shared_secret_key.as_ref()).await?;
-                let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
+                send(&mut ws_stream, &app_message, channel.as_mut()).await?;
+                let reply = recv(&mut ws_stream, channel.as_mut()).await?;
                 match reply.cmd {
                     Cmd::Cp => println!("{}", "ok".green()),
                     Cmd::Failure => println!(
@@ -694,8 +696,8 @@ async fn connect_and_run(
                 }
             }
             Cmd::Find => {
-                send(&mut ws_stream, &app_message, shared_secret_key.as_ref()).await?;
-                let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
+                send(&mut ws_stream, &app_message, channel.as_mut()).await?;
+                let reply = recv(&mut ws_stream, channel.as_mut()).await?;
                 match reply.cmd {
                     Cmd::Find => {
                         for path in &reply.data {
@@ -710,8 +712,8 @@ async fn connect_and_run(
                 }
             }
             Cmd::Chown => {
-                send(&mut ws_stream, &app_message, shared_secret_key.as_ref()).await?;
-                let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
+                send(&mut ws_stream, &app_message, channel.as_mut()).await?;
+                let reply = recv(&mut ws_stream, channel.as_mut()).await?;
                 match reply.cmd {
                     Cmd::Chown => {
                         println!("{}", reply.data.first().unwrap_or(&"ok".into()).green())
@@ -724,8 +726,8 @@ async fn connect_and_run(
                 }
             }
             Cmd::Chgrp => {
-                send(&mut ws_stream, &app_message, shared_secret_key.as_ref()).await?;
-                let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
+                send(&mut ws_stream, &app_message, channel.as_mut()).await?;
+                let reply = recv(&mut ws_stream, channel.as_mut()).await?;
                 match reply.cmd {
                     Cmd::Chgrp => {
                         println!("{}", reply.data.first().unwrap_or(&"ok".into()).green())
@@ -738,8 +740,8 @@ async fn connect_and_run(
                 }
             }
             Cmd::AddUserToGroup => {
-                send(&mut ws_stream, &app_message, shared_secret_key.as_ref()).await?;
-                let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
+                send(&mut ws_stream, &app_message, channel.as_mut()).await?;
+                let reply = recv(&mut ws_stream, channel.as_mut()).await?;
                 match reply.cmd {
                     Cmd::AddUserToGroup => {
                         println!("{}", reply.data.first().unwrap_or(&"ok".into()).green())
@@ -751,8 +753,8 @@ async fn connect_and_run(
                 }
             }
             Cmd::RemoveUserFromGroup => {
-                send(&mut ws_stream, &app_message, shared_secret_key.as_ref()).await?;
-                let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
+                send(&mut ws_stream, &app_message, channel.as_mut()).await?;
+                let reply = recv(&mut ws_stream, channel.as_mut()).await?;
                 match reply.cmd {
                     Cmd::RemoveUserFromGroup => {
                         println!("{}", reply.data.first().unwrap_or(&"ok".into()).green())
@@ -764,8 +766,8 @@ async fn connect_and_run(
                 }
             }
             Cmd::Whoami => {
-                send(&mut ws_stream, &app_message, shared_secret_key.as_ref()).await?;
-                let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
+                send(&mut ws_stream, &app_message, channel.as_mut()).await?;
+                let reply = recv(&mut ws_stream, channel.as_mut()).await?;
                 match reply.cmd {
                     Cmd::Whoami => {
                         let user = reply.data.first().cloned().unwrap_or_default();
@@ -780,8 +782,8 @@ async fn connect_and_run(
                 }
             }
             Cmd::Tree => {
-                send(&mut ws_stream, &app_message, shared_secret_key.as_ref()).await?;
-                let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
+                send(&mut ws_stream, &app_message, channel.as_mut()).await?;
+                let reply = recv(&mut ws_stream, channel.as_mut()).await?;
                 match reply.cmd {
                     Cmd::Tree => {
                         for line in &reply.data {
@@ -796,8 +798,8 @@ async fn connect_and_run(
                 }
             }
             Cmd::Stat => {
-                send(&mut ws_stream, &app_message, shared_secret_key.as_ref()).await?;
-                let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
+                send(&mut ws_stream, &app_message, channel.as_mut()).await?;
+                let reply = recv(&mut ws_stream, channel.as_mut()).await?;
                 match reply.cmd {
                     Cmd::Stat => {
                         for line in &reply.data {
@@ -812,8 +814,8 @@ async fn connect_and_run(
                 }
             }
             Cmd::Du => {
-                send(&mut ws_stream, &app_message, shared_secret_key.as_ref()).await?;
-                let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
+                send(&mut ws_stream, &app_message, channel.as_mut()).await?;
+                let reply = recv(&mut ws_stream, channel.as_mut()).await?;
                 match reply.cmd {
                     Cmd::Du => println!("{}", reply.data.first().unwrap_or(&"0 B".into())),
                     Cmd::Failure => println!(
@@ -824,8 +826,8 @@ async fn connect_and_run(
                 }
             }
             Cmd::Head => {
-                send(&mut ws_stream, &app_message, shared_secret_key.as_ref()).await?;
-                let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
+                send(&mut ws_stream, &app_message, channel.as_mut()).await?;
+                let reply = recv(&mut ws_stream, channel.as_mut()).await?;
                 match reply.cmd {
                     Cmd::Head => println!("{}", reply.data.first().unwrap_or(&"".into())),
                     Cmd::Failure => println!(
@@ -836,8 +838,8 @@ async fn connect_and_run(
                 }
             }
             Cmd::Tail => {
-                send(&mut ws_stream, &app_message, shared_secret_key.as_ref()).await?;
-                let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
+                send(&mut ws_stream, &app_message, channel.as_mut()).await?;
+                let reply = recv(&mut ws_stream, channel.as_mut()).await?;
                 match reply.cmd {
                     Cmd::Tail => println!("{}", reply.data.first().unwrap_or(&"".into())),
                     Cmd::Failure => println!(
@@ -848,8 +850,8 @@ async fn connect_and_run(
                 }
             }
             Cmd::AuditLog => {
-                send(&mut ws_stream, &app_message, shared_secret_key.as_ref()).await?;
-                let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
+                send(&mut ws_stream, &app_message, channel.as_mut()).await?;
+                let reply = recv(&mut ws_stream, channel.as_mut()).await?;
                 match reply.cmd {
                     Cmd::AuditLog => {
                         for line in &reply.data {
@@ -868,8 +870,8 @@ async fn connect_and_run(
                 }
             }
             Cmd::TotpSetup => {
-                send(&mut ws_stream, &app_message, shared_secret_key.as_ref()).await?;
-                let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
+                send(&mut ws_stream, &app_message, channel.as_mut()).await?;
+                let reply = recv(&mut ws_stream, channel.as_mut()).await?;
                 match reply.cmd {
                     Cmd::TotpSetup => {
                         println!("{}", "TOTP setup successful".green());
@@ -893,8 +895,8 @@ async fn connect_and_run(
                 }
             }
             Cmd::TotpVerify => {
-                send(&mut ws_stream, &app_message, shared_secret_key.as_ref()).await?;
-                let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
+                send(&mut ws_stream, &app_message, channel.as_mut()).await?;
+                let reply = recv(&mut ws_stream, channel.as_mut()).await?;
                 match reply.cmd {
                     Cmd::TotpVerify => println!("{}", "TOTP verified".green()),
                     Cmd::Failure => println!(
@@ -909,8 +911,8 @@ async fn connect_and_run(
                 }
             }
             Cmd::ListSessions => {
-                send(&mut ws_stream, &app_message, shared_secret_key.as_ref()).await?;
-                let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
+                send(&mut ws_stream, &app_message, channel.as_mut()).await?;
+                let reply = recv(&mut ws_stream, channel.as_mut()).await?;
                 match reply.cmd {
                     Cmd::ListSessions => {
                         for line in &reply.data {
@@ -929,8 +931,8 @@ async fn connect_and_run(
                 }
             }
             Cmd::ForceLogout => {
-                send(&mut ws_stream, &app_message, shared_secret_key.as_ref()).await?;
-                let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
+                send(&mut ws_stream, &app_message, channel.as_mut()).await?;
+                let reply = recv(&mut ws_stream, channel.as_mut()).await?;
                 match reply.cmd {
                     Cmd::ForceLogout => {
                         println!("{}", reply.data.first().unwrap_or(&"ok".into()).green())
@@ -947,8 +949,8 @@ async fn connect_and_run(
                 }
             }
             Cmd::Grep => {
-                send(&mut ws_stream, &app_message, shared_secret_key.as_ref()).await?;
-                let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
+                send(&mut ws_stream, &app_message, channel.as_mut()).await?;
+                let reply = recv(&mut ws_stream, channel.as_mut()).await?;
                 match reply.cmd {
                     Cmd::Grep => {
                         for line in &reply.data {
@@ -963,8 +965,8 @@ async fn connect_and_run(
                 }
             }
             Cmd::Ln => {
-                send(&mut ws_stream, &app_message, shared_secret_key.as_ref()).await?;
-                let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
+                send(&mut ws_stream, &app_message, channel.as_mut()).await?;
+                let reply = recv(&mut ws_stream, channel.as_mut()).await?;
                 match reply.cmd {
                     Cmd::Ln => println!("{}", "ok".green()),
                     Cmd::Failure => println!(
@@ -988,8 +990,8 @@ async fn connect_and_run(
                 };
 
                 // Send UploadStart
-                send(&mut ws_stream, &app_message, shared_secret_key.as_ref()).await?;
-                let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
+                send(&mut ws_stream, &app_message, channel.as_mut()).await?;
+                let reply = recv(&mut ws_stream, channel.as_mut()).await?;
                 if reply.cmd != Cmd::UploadStart {
                     println!(
                         "{}",
@@ -1012,8 +1014,8 @@ async fn connect_and_run(
                         cmd: Cmd::UploadChunk,
                         data: vec![b64.encode(chunk)],
                     };
-                    send(&mut ws_stream, &chunk_msg, shared_secret_key.as_ref()).await?;
-                    let cr = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
+                    send(&mut ws_stream, &chunk_msg, channel.as_mut()).await?;
+                    let cr = recv(&mut ws_stream, channel.as_mut()).await?;
                     if cr.cmd != Cmd::UploadChunk {
                         println!("{}", format!("chunk {} failed: {:?}", i, cr.data).red());
                         complete = false;
@@ -1043,8 +1045,8 @@ async fn connect_and_run(
                     cmd: Cmd::UploadEnd,
                     data: vec![],
                 };
-                send(&mut ws_stream, &end_msg, shared_secret_key.as_ref()).await?;
-                let end_reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
+                send(&mut ws_stream, &end_msg, channel.as_mut()).await?;
+                let end_reply = recv(&mut ws_stream, channel.as_mut()).await?;
                 match end_reply.cmd {
                     Cmd::UploadEnd => {
                         println!("{}", end_reply.data.first().unwrap_or(&"ok".into()).green())
@@ -1064,8 +1066,8 @@ async fn connect_and_run(
                 let file_name = app_message.data.first().cloned().unwrap_or_default();
 
                 // Send DownloadStart
-                send(&mut ws_stream, &app_message, shared_secret_key.as_ref()).await?;
-                let reply = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
+                send(&mut ws_stream, &app_message, channel.as_mut()).await?;
+                let reply = recv(&mut ws_stream, channel.as_mut()).await?;
                 if reply.cmd != Cmd::DownloadStart {
                     println!(
                         "{}",
@@ -1093,8 +1095,8 @@ async fn connect_and_run(
                         cmd: Cmd::DownloadChunk,
                         data: vec![i.to_string()],
                     };
-                    send(&mut ws_stream, &chunk_msg, shared_secret_key.as_ref()).await?;
-                    let cr = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
+                    send(&mut ws_stream, &chunk_msg, channel.as_mut()).await?;
+                    let cr = recv(&mut ws_stream, channel.as_mut()).await?;
                     if cr.cmd != Cmd::DownloadChunk {
                         println!("{}", format!("chunk {} failed: {:?}", i, cr.data).red());
                         complete = false;
@@ -1125,8 +1127,8 @@ async fn connect_and_run(
                     cmd: Cmd::DownloadEnd,
                     data: vec![],
                 };
-                send(&mut ws_stream, &end_msg, shared_secret_key.as_ref()).await?;
-                let _ = recv(&mut ws_stream, shared_secret_key.as_ref()).await?;
+                send(&mut ws_stream, &end_msg, channel.as_mut()).await?;
+                let _ = recv(&mut ws_stream, channel.as_mut()).await?;
 
                 // Only persist a fully received, integrity-verified file.
                 let hash_ok = match &expected_hash {
@@ -1218,42 +1220,29 @@ fn read_credential_command(line: &str) -> Result<AppMessage, String> {
     }
 }
 
-use aes_gcm::aead::{Aead, AeadCore};
-use aes_gcm::{Aes256Gcm, Key, KeyInit, Nonce};
-use hkdf::Hkdf;
-use sha2::Sha256;
-
-/// Encrypt and send message
+/// Seal and send a message over the secure channel (plaintext when None).
 async fn send(
     ws: &mut tokio_tungstenite::WebSocketStream<
         tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
     >,
     msg: &AppMessage,
-    key: Option<&Key<Aes256Gcm>>,
+    channel: Option<&mut SecureChannel>,
 ) -> Result<(), String> {
-    let payload = if let Some(k) = key {
-        let cipher = Aes256Gcm::new(k);
-        let nonce = Aes256Gcm::generate_nonce(OsRng);
-        let msg_str = serde_json::to_string(msg).map_err(|e| e.to_string())?;
-        let ciphertext = cipher
-            .encrypt(&nonce, msg_str.as_bytes())
-            .map_err(|e| format!("encryption failed: {}", e))?;
-        let tuple = (hex::encode(ciphertext), Into::<[u8; 12]>::into(nonce));
-        serde_json::to_string(&tuple).map_err(|e| e.to_string())?
-    } else {
-        serde_json::to_string(msg).map_err(|e| e.to_string())?
+    let payload = match channel {
+        Some(ch) => ch.seal(msg)?,
+        None => serde_json::to_string(msg).map_err(|e| e.to_string())?,
     };
     ws.send(Message::Text(payload))
         .await
         .map_err(|e| format!("send failed: {}", e))
 }
 
-/// Receive and decrypt message
+/// Receive and open a message from the secure channel (plaintext when None).
 async fn recv(
     ws: &mut tokio_tungstenite::WebSocketStream<
         tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
     >,
-    key: Option<&Key<Aes256Gcm>>,
+    channel: Option<&mut SecureChannel>,
 ) -> Result<AppMessage, String> {
     let msg = ws
         .next()
@@ -1265,20 +1254,9 @@ async fn recv(
     }
     let text = msg.to_text().unwrap();
 
-    if let Some(k) = key {
-        let (ciphertext_hex, nonce_bytes): (String, [u8; 12]) =
-            serde_json::from_str(text).map_err(|e| format!("encrypted decode failed: {}", e))?;
-        let cipher = Aes256Gcm::new(k);
-        let nonce = Nonce::from_slice(&nonce_bytes);
-        let ciphertext =
-            hex::decode(ciphertext_hex).map_err(|_| "invalid ciphertext hex".to_string())?;
-        let plaintext = cipher
-            .decrypt(nonce, ciphertext.as_ref())
-            .map_err(|e| format!("decryption failed: {}", e))?;
-        let plaintext_str = String::from_utf8(plaintext).map_err(|_| "invalid utf8".to_string())?;
-        serde_json::from_str(&plaintext_str).map_err(|e| format!("json decode failed: {}", e))
-    } else {
-        serde_json::from_str(text).map_err(|e| format!("decode failed: {}", e))
+    match channel {
+        Some(ch) => ch.open(text),
+        None => serde_json::from_str(text).map_err(|e| format!("decode failed: {}", e)),
     }
 }
 

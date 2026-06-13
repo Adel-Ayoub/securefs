@@ -1,10 +1,8 @@
-use aes_gcm::{Aes256Gcm, Key};
 use deadpool_postgres::Pool;
-use hkdf::Hkdf;
 use log::{info, warn};
 use rand_core::OsRng;
 use securefs_model::protocol::{AppMessage, Cmd};
-use sha2::Sha256;
+use securefs_model::secure_channel::{Role, SecureChannel, PROTOCOL_VERSION};
 use std::net::IpAddr;
 use std::time::Instant;
 use totp_rs::{Algorithm, Secret, TOTP};
@@ -310,15 +308,26 @@ pub async fn totp_verify(
     }
 }
 
-/// Perform X25519 key exchange. Returns the reply message and an optional
-/// shared secret to use for subsequent message encryption.
-pub fn key_exchange(data: Vec<String>) -> (AppMessage, Option<Key<Aes256Gcm>>) {
+/// Perform X25519 key exchange. Returns the reply message and, on success, the
+/// server-side secure channel for all subsequent traffic.
+pub fn key_exchange(data: Vec<String>) -> (AppMessage, Option<SecureChannel>) {
     let client_pubkey_hex = data.first().cloned().unwrap_or_default();
-    if client_pubkey_hex.is_empty() || client_pubkey_hex.len() != 64 {
+    if client_pubkey_hex.len() != 64 {
         return (
             AppMessage {
                 cmd: Cmd::Failure,
                 data: vec!["invalid public key".to_string()],
+            },
+            None,
+        );
+    }
+
+    // Reject peers that don't speak our framing version before deriving keys.
+    if data.get(1).and_then(|v| v.parse::<u8>().ok()) != Some(PROTOCOL_VERSION) {
+        return (
+            AppMessage {
+                cmd: Cmd::Failure,
+                data: vec!["unsupported protocol version; upgrade the client".to_string()],
             },
             None,
         );
@@ -332,23 +341,20 @@ pub fn key_exchange(data: Vec<String>) -> (AppMessage, Option<Key<Aes256Gcm>>) {
             let mut client_pubkey_bytes = [0u8; 32];
             client_pubkey_bytes.copy_from_slice(&bytes);
             let client_public = PublicKey::from(client_pubkey_bytes);
-            let client_shared = server_secret.diffie_hellman(&client_public);
+            let shared = server_secret.diffie_hellman(&client_public);
 
-            // Derive session key using HKDF-SHA256
-            let hkdf = Hkdf::<Sha256>::new(None, client_shared.as_bytes());
-            let mut okm = [0u8; 32];
-            hkdf.expand(b"securefs-session-key-v1", &mut okm)
-                .expect("32 bytes is valid output length for HKDF-SHA256");
-            let final_secret = *Key::<Aes256Gcm>::from_slice(&okm);
-
+            let channel = SecureChannel::new(shared.as_bytes(), Role::Server);
             info!("Key exchange completed with client");
 
             (
                 AppMessage {
                     cmd: Cmd::KeyExchangeResponse,
-                    data: vec![hex::encode(server_public.as_bytes())],
+                    data: vec![
+                        hex::encode(server_public.as_bytes()),
+                        PROTOCOL_VERSION.to_string(),
+                    ],
                 },
-                Some(final_secret),
+                Some(channel),
             )
         }
         _ => (

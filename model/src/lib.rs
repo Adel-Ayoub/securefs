@@ -5,6 +5,7 @@
 
 pub mod cmd;
 pub mod protocol;
+pub mod secure_channel;
 
 use serde::{Deserialize, Serialize};
 use std::fmt;

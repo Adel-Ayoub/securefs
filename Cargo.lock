@@ -1643,7 +1643,12 @@ dependencies = [
 name = "securefs-model"
 version = "0.1.0"
 dependencies = [
+ "aes-gcm",
+ "hex",
+ "hkdf",
  "serde",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]

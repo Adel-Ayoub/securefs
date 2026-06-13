@@ -7,11 +7,11 @@
 use std::env;
 use std::sync::Arc;
 
-use aes_gcm::{Aes256Gcm, Key};
 use deadpool_postgres::{Config, ManagerConfig, Pool, RecyclingMethod, Runtime};
 use futures_util::{SinkExt, StreamExt};
 use log::{info, warn};
 use securefs_model::protocol::{AppMessage, Cmd};
+use securefs_model::secure_channel::SecureChannel;
 use std::collections::HashMap;
 use std::fs as stdfs;
 use std::io::BufReader;
@@ -251,16 +251,14 @@ async fn handle_connection(
 async fn send_app_message<S>(
     ws_stream: &mut WebSocketStream<S>,
     resp: AppMessage,
-    key: Option<&Key<Aes256Gcm>>,
+    channel: Option<&mut SecureChannel>,
 ) -> Result<(), String>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
-    let payload = if let Some(k) = key {
-        let enc_tuple = crypto::encrypt_app_message(k, &resp)?;
-        serde_json::to_string(&enc_tuple).map_err(|e| e.to_string())?
-    } else {
-        serde_json::to_string(&resp).map_err(|e| e.to_string())?
+    let payload = match channel {
+        Some(ch) => ch.seal(&resp)?,
+        None => serde_json::to_string(&resp).map_err(|e| e.to_string())?,
     };
     ws_stream
         .send(Message::Text(payload))
@@ -282,7 +280,7 @@ where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
     let mut session = Session::new();
-    let mut shared_secret: Option<Key<Aes256Gcm>> = None;
+    let mut channel: Option<SecureChannel> = None;
     let mut last_activity = std::time::Instant::now();
     let session_id = uuid::Uuid::new_v4().to_string();
 
@@ -292,18 +290,13 @@ where
             continue;
         }
 
-        // Decrypt if we have a shared secret, otherwise parse as plaintext
-        let incoming: AppMessage = if let Some(key) = &shared_secret {
-            let text = msg
-                .to_text()
-                .map_err(|e| format!("ws message error: {}", e))?;
-            let enc_tuple: (String, [u8; 12]) = serde_json::from_str(text)
-                .map_err(|e| format!("encrypted decode failed: {}", e))?;
-            crypto::decrypt_app_message(key, &enc_tuple)?
+        // Decrypt over the secure channel once established, else parse plaintext
+        let text = msg
+            .to_text()
+            .map_err(|e| format!("ws message error: {}", e))?;
+        let incoming: AppMessage = if let Some(ch) = channel.as_mut() {
+            ch.open(text)?
         } else {
-            let text = msg
-                .to_text()
-                .map_err(|e| format!("ws message error: {}", e))?;
             serde_json::from_str(text).map_err(|e| format!("decode failed: {}", e))?
         };
 
@@ -332,7 +325,7 @@ where
                         cmd: Cmd::Logout,
                         data: vec!["session terminated by admin".into()],
                     };
-                    send_app_message(&mut ws_stream, reply, shared_secret.as_ref()).await?;
+                    send_app_message(&mut ws_stream, reply, channel.as_mut()).await?;
                     break;
                 }
             }
@@ -347,9 +340,7 @@ where
 
         // Require an established secure channel before anything but the
         // handshake — credentials must never travel over plaintext.
-        if shared_secret.is_none()
-            && !matches!(incoming.cmd, Cmd::NewConnection | Cmd::KeyExchangeInit)
-        {
+        if channel.is_none() && !matches!(incoming.cmd, Cmd::NewConnection | Cmd::KeyExchangeInit) {
             let reply = AppMessage {
                 cmd: Cmd::Failure,
                 data: vec!["secure channel required: perform key exchange first".into()],
@@ -364,7 +355,7 @@ where
                 cmd: Cmd::Failure,
                 data: vec!["totp verification required".into()],
             };
-            send_app_message(&mut ws_stream, reply, shared_secret.as_ref()).await?;
+            send_app_message(&mut ws_stream, reply, channel.as_mut()).await?;
             continue;
         }
 
@@ -534,10 +525,10 @@ where
         }
 
         let is_logout = matches!(reply.cmd, Cmd::Logout);
-        send_app_message(&mut ws_stream, reply, shared_secret.as_ref()).await?;
+        send_app_message(&mut ws_stream, reply, channel.as_mut()).await?;
 
         if let Some(s) = new_secret {
-            shared_secret = Some(s);
+            channel = Some(s);
         }
 
         if !session.authenticated && is_logout {

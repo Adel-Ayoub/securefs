@@ -1,15 +1,12 @@
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
-use aes_gcm::aead::{Aead, AeadCore};
-use aes_gcm::{Aes256Gcm, Key, KeyInit, Nonce};
 use deadpool_postgres::{Config, ManagerConfig, Pool, RecyclingMethod, Runtime};
 use futures_util::{SinkExt, StreamExt};
-use hkdf::Hkdf;
 use rand_core::OsRng;
 use securefs_model::protocol::{AppMessage, Cmd};
+use securefs_model::secure_channel::{Role, SecureChannel, PROTOCOL_VERSION};
 use securefs_server::dao;
-use sha2::Sha256;
 use tokio_postgres::NoTls;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
@@ -44,38 +41,30 @@ async fn send_plain(ws: &mut Ws, msg: &AppMessage) -> Result<(), String> {
     ws.send(Message::Text(s)).await.map_err(|e| e.to_string())
 }
 
-async fn send_enc(ws: &mut Ws, key: &Key<Aes256Gcm>, msg: &AppMessage) -> Result<(), String> {
-    let cipher = Aes256Gcm::new(key);
-    let nonce = Aes256Gcm::generate_nonce(OsRng);
-    let pt = serde_json::to_string(msg).map_err(|e| e.to_string())?;
-    let ct = cipher
-        .encrypt(&nonce, pt.as_bytes())
-        .map_err(|e| e.to_string())?;
-    let tuple = (hex::encode(ct), Into::<[u8; 12]>::into(nonce));
-    let s = serde_json::to_string(&tuple).map_err(|e| e.to_string())?;
-    ws.send(Message::Text(s)).await.map_err(|e| e.to_string())
-}
-
-async fn recv_msg(ws: &mut Ws, key: Option<&Key<Aes256Gcm>>) -> Result<AppMessage, String> {
+async fn recv_plain(ws: &mut Ws) -> Result<AppMessage, String> {
     let msg = ws
         .next()
         .await
         .ok_or("connection closed")?
         .map_err(|e| e.to_string())?;
     let text = msg.into_text().map_err(|e| e.to_string())?;
-    match key {
-        Some(k) => {
-            let (ct_hex, nonce): (String, [u8; 12]) =
-                serde_json::from_str(&text).map_err(|e| e.to_string())?;
-            let cipher = Aes256Gcm::new(k);
-            let ct = hex::decode(&ct_hex).map_err(|e| e.to_string())?;
-            let pt = cipher
-                .decrypt(Nonce::from_slice(&nonce), ct.as_ref())
-                .map_err(|e| e.to_string())?;
-            serde_json::from_slice(&pt).map_err(|e| e.to_string())
-        }
-        None => serde_json::from_str(&text).map_err(|e| e.to_string()),
-    }
+    serde_json::from_str(&text).map_err(|e| e.to_string())
+}
+
+async fn send_sealed(ws: &mut Ws, ch: &mut SecureChannel, msg: &AppMessage) -> Result<(), String> {
+    ws.send(Message::Text(ch.seal(msg)?))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+async fn recv_opened(ws: &mut Ws, ch: &mut SecureChannel) -> Result<AppMessage, String> {
+    let msg = ws
+        .next()
+        .await
+        .ok_or("connection closed")?
+        .map_err(|e| e.to_string())?;
+    let text = msg.into_text().map_err(|e| e.to_string())?;
+    ch.open(&text)
 }
 
 // Connect (retrying until the server binds), perform the X25519/HKDF handshake,
@@ -106,11 +95,11 @@ async fn e2e_flow(addr: &str, user: &str, pass: &str) -> Result<String, String> 
         &mut ws,
         &AppMessage {
             cmd: Cmd::KeyExchangeInit,
-            data: vec![hex::encode(public.as_bytes())],
+            data: vec![hex::encode(public.as_bytes()), PROTOCOL_VERSION.to_string()],
         },
     )
     .await?;
-    let reply = recv_msg(&mut ws, None).await?;
+    let reply = recv_plain(&mut ws).await?;
     if reply.cmd != Cmd::KeyExchangeResponse {
         return Err(format!("unexpected handshake reply: {:?}", reply.cmd));
     }
@@ -122,36 +111,32 @@ async fn e2e_flow(addr: &str, user: &str, pass: &str) -> Result<String, String> 
     let mut sb = [0u8; 32];
     sb.copy_from_slice(&server_bytes);
     let shared = secret.diffie_hellman(&PublicKey::from(sb));
-    let hk = Hkdf::<Sha256>::new(None, shared.as_bytes());
-    let mut okm = [0u8; 32];
-    hk.expand(b"securefs-session-key-v1", &mut okm)
-        .map_err(|e| e.to_string())?;
-    let key = *Key::<Aes256Gcm>::from_slice(&okm);
+    let mut ch = SecureChannel::new(shared.as_bytes(), Role::Client);
 
-    send_enc(
+    send_sealed(
         &mut ws,
-        &key,
+        &mut ch,
         &AppMessage {
             cmd: Cmd::Login,
             data: vec![user.into(), pass.into()],
         },
     )
     .await?;
-    let login = recv_msg(&mut ws, Some(&key)).await?;
+    let login = recv_opened(&mut ws, &mut ch).await?;
     if login.cmd != Cmd::Login {
         return Err(format!("login failed: {:?} {:?}", login.cmd, login.data));
     }
 
-    send_enc(
+    send_sealed(
         &mut ws,
-        &key,
+        &mut ch,
         &AppMessage {
             cmd: Cmd::Pwd,
             data: vec![],
         },
     )
     .await?;
-    let pwd = recv_msg(&mut ws, Some(&key)).await?;
+    let pwd = recv_opened(&mut ws, &mut ch).await?;
     if pwd.cmd != Cmd::Pwd {
         return Err(format!("pwd failed: {:?}", pwd.cmd));
     }
