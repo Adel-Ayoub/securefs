@@ -155,8 +155,11 @@ async fn main() -> Result<(), String> {
             Some(acceptor)
         }
         _ if allow_insecure => {
-            warn!("[SECURITY WARNING] TLS disabled via ALLOW_INSECURE=1");
-            warn!("[SECURITY WARNING] Do NOT use this in production");
+            eprintln!("============================================================");
+            eprintln!("[SECURITY WARNING] ALLOW_INSECURE=1 — TLS is DISABLED.");
+            eprintln!("[SECURITY WARNING] Traffic is UNENCRYPTED in transit.");
+            eprintln!("[SECURITY WARNING] For local development ONLY — never in production.");
+            eprintln!("============================================================");
             None
         }
         _ => {
