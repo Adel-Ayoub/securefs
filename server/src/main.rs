@@ -99,12 +99,31 @@ async fn main() -> Result<(), String> {
 
     // NOTE: Default env fallbacks are for local/dev usage; production
     // deployments should provide explicit values.
+    let allow_insecure = env::var("ALLOW_INSECURE").unwrap_or_default() == "1";
+
     let db_pass = dao::get_db_pass();
-    if db_pass == "TEMP" && env::var("ALLOW_INSECURE").unwrap_or_default() != "1" {
+    if db_pass == "TEMP" && !allow_insecure {
         return Err(
             "refusing to start with the default DB_PASS; set a strong DB_PASS (or ALLOW_INSECURE=1 for development)"
                 .into(),
         );
+    }
+
+    // At-rest file encryption uses its own secret; never silently reuse DB_PASS.
+    match dao::data_key_secret() {
+        Some(k) if k == "TEMP" && !allow_insecure => {
+            return Err(
+                "refusing to start with a default DATA_KEY; set a strong DATA_KEY (or ALLOW_INSECURE=1 for development)"
+                    .into(),
+            );
+        }
+        None if !allow_insecure => {
+            return Err(
+                "refusing to start without DATA_KEY; set DATA_KEY or DATA_KEY_FILE to a strong secret (or ALLOW_INSECURE=1 for development)"
+                    .into(),
+            );
+        }
+        _ => {}
     }
     let db_host = env::var("DB_HOST").unwrap_or_else(|_| "localhost".to_string());
     let db_name = env::var("DB_NAME").unwrap_or_else(|_| "db".to_string());
@@ -137,7 +156,6 @@ async fn main() -> Result<(), String> {
         .map_err(|e| format!("bind failed: {}", e))?;
 
     // TLS configuration — required unless ALLOW_INSECURE=1 is set
-    let allow_insecure = env::var("ALLOW_INSECURE").unwrap_or_default() == "1";
     let tls_acceptor: Option<TlsAcceptor> = match (env::var("TLS_CERT"), env::var("TLS_KEY")) {
         (Ok(cert_path), Ok(key_path)) => {
             let acceptor = load_tls_config(&cert_path, &key_path)?;

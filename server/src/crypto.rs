@@ -40,11 +40,10 @@ pub fn decrypt_app_message(
 }
 
 /// Derive a key for file-at-rest encryption using HKDF.
-/// Uses DATA_KEY when set, otherwise DB_PASS, so files stay readable
-/// across restarts as long as the same secret is provided.
+/// Uses DATA_KEY (dev-only fallback to DB_PASS); production requires DATA_KEY,
+/// enforced at startup. Files stay readable across restarts under the same key.
 fn get_file_encryption_key() -> Key<Aes256Gcm> {
-    // Prefer a dedicated at-rest key; fall back to DB_PASS for back-compat.
-    let secret = std::env::var("DATA_KEY").unwrap_or_else(|_| dao::get_db_pass());
+    let secret = dao::get_data_key();
     let hkdf = Hkdf::<Sha256>::new(None, secret.as_bytes());
     let mut okm = [0u8; 32];
     hkdf.expand(b"securefs-file-encryption-key-v1", &mut okm)

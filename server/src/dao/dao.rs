@@ -50,12 +50,32 @@ async fn conn(pool: &Pool) -> Result<deadpool_postgres::Object, DaoError> {
 
 static WARN_DEFAULT_PASS: Once = Once::new();
 
-/// Get database encryption password from environment.
-/// Warns loudly if using default (insecure for production).
+// Read a secret from env var `var`, or from the file named by `file_var`
+// (contents trimmed). Lets deployments mount secrets as files instead of
+// passing them through the environment. None if neither yields a value.
+fn read_secret(var: &str, file_var: &str) -> Option<String> {
+    if let Ok(v) = env::var(var) {
+        if !v.is_empty() {
+            return Some(v);
+        }
+    }
+    if let Ok(path) = env::var(file_var) {
+        if let Ok(contents) = std::fs::read_to_string(&path) {
+            let trimmed = contents.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    None
+}
+
+// Database/pgcrypto secret, from DB_PASS or DB_PASS_FILE. Warns and uses an
+// insecure default when unset; startup refuses this default outside dev.
 pub fn get_db_pass() -> String {
-    match env::var("DB_PASS") {
-        Ok(pass) => pass,
-        Err(_) => {
+    match read_secret("DB_PASS", "DB_PASS_FILE") {
+        Some(pass) => pass,
+        None => {
             WARN_DEFAULT_PASS.call_once(|| {
                 eprintln!("[SECURITY WARNING] DB_PASS not set, using insecure default!");
                 eprintln!("[SECURITY WARNING] Set DB_PASS environment variable for production.");
@@ -63,6 +83,19 @@ pub fn get_db_pass() -> String {
             "TEMP".to_string()
         }
     }
+}
+
+// At-rest data-encryption secret if explicitly configured (DATA_KEY or
+// DATA_KEY_FILE). No fallback to DB_PASS — production startup refuses to run
+// without it.
+pub fn data_key_secret() -> Option<String> {
+    read_secret("DATA_KEY", "DATA_KEY_FILE")
+}
+
+// At-rest data-encryption key for runtime use. Prefers DATA_KEY; falls back to
+// DB_PASS for development only (production requires DATA_KEY, checked at boot).
+pub fn get_data_key() -> String {
+    data_key_secret().unwrap_or_else(get_db_pass)
 }
 
 /// Hash and salt a plaintext password using Argon2.
@@ -802,6 +835,84 @@ pub async fn remove_user_from_group(
         .map_err(|e| DaoError::QueryFailed(format!("remove user from group: {}", e)))
 }
 
+// Arbitrary fixed key so concurrent server starts serialize on the same
+// advisory lock while bootstrapping the admin account.
+const ADMIN_BOOTSTRAP_LOCK: i64 = 776_655_001;
+
+// Generate a strong random password as 32 hex-encoded random bytes.
+fn generate_admin_password() -> String {
+    let key = Aes256Gcm::generate_key(&mut OsRng);
+    let bytes: [u8; 32] = key.into();
+    hex::encode(bytes)
+}
+
+// Create the admin group and admin user on first boot, keyed by the live
+// secret. Password comes from ADMIN_PASSWORD or is randomly generated and
+// printed once. Guarded by an advisory lock and existence checks so it is
+// idempotent and safe against concurrent starts.
+async fn bootstrap_admin(pool: &Pool) -> Result<(), DaoError> {
+    let mut client = conn(pool).await?;
+    let tx = client
+        .transaction()
+        .await
+        .map_err(|e| DaoError::QueryFailed(format!("begin tx: {}", e)))?;
+
+    tx.execute("SELECT pg_advisory_xact_lock($1)", &[&ADMIN_BOOTSTRAP_LOCK])
+        .await
+        .map_err(|e| DaoError::QueryFailed(format!("bootstrap lock: {}", e)))?;
+
+    let has_group = tx
+        .query_opt("SELECT 1 FROM groups WHERE g_name = 'admin_group'", &[])
+        .await
+        .map_err(|e| DaoError::QueryFailed(format!("check admin group: {}", e)))?
+        .is_some();
+    if !has_group {
+        tx.execute(
+            "INSERT INTO groups (g_name, users) VALUES ('admin_group', $1)",
+            &[&Vec::<String>::new()],
+        )
+        .await
+        .map_err(|e| DaoError::QueryFailed(format!("create admin group: {}", e)))?;
+    }
+
+    let has_admin = tx
+        .query_opt("SELECT 1 FROM users WHERE user_name = 'admin'", &[])
+        .await
+        .map_err(|e| DaoError::QueryFailed(format!("check admin user: {}", e)))?
+        .is_some();
+    if !has_admin {
+        let pass = match env::var("ADMIN_PASSWORD") {
+            Ok(p) if !p.is_empty() => p,
+            _ => {
+                let generated = generate_admin_password();
+                eprintln!(
+                    "[SECUREFS] No ADMIN_PASSWORD set — generated an initial admin password."
+                );
+                eprintln!("[SECUREFS] Log in as  admin  with password:  {}", generated);
+                eprintln!(
+                    "[SECUREFS] Save it now and change it after first login; shown only once."
+                );
+                generated
+            }
+        };
+        let salt = salt_pass(pass)?;
+        let key = key_gen()
+            .map_err(|_| DaoError::ParseError("could not serialize symmetric key".into()))?;
+        let db_pass = get_db_pass();
+        tx.execute(
+            "INSERT INTO users (user_name, group_name, salt, key, is_admin)
+             VALUES ('admin', 'admin_group', $1, pgp_sym_encrypt($2 ::text, $3 ::text), true)",
+            &[&salt, &key, &db_pass],
+        )
+        .await
+        .map_err(|e| DaoError::QueryFailed(format!("create admin: {}", e)))?;
+    }
+
+    tx.commit()
+        .await
+        .map_err(|e| DaoError::QueryFailed(format!("commit: {}", e)))
+}
+
 /// Ensure required seed data and tables exist.
 pub async fn init_db(pool: &Pool) -> Result<(), DaoError> {
     let client = conn(pool).await?;
@@ -875,6 +986,8 @@ pub async fn init_db(pool: &Pool) -> Result<(), DaoError> {
         )
         .await?;
     }
+
+    bootstrap_admin(pool).await?;
     Ok(())
 }
 
