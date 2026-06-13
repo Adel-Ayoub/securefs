@@ -35,3 +35,6 @@ zstd = "0.13"
 
 # Internal dependencies
 securefs-model = { path = "../model" }
+
+[dev-dependencies]
+rcgen = { version = "0.14", default-features = false, features = ["pem", "aws_lc_rs"] }
