@@ -1,3 +1,6 @@
+-- Base table definitions. All seed data and migrations (added columns,
+-- indexes, the admin account, the /home root) are owned by init_db so there is
+-- a single source of truth applied on every boot.
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 CREATE TABLE if not exists fnode  (
     id BIGSERIAL PRIMARY KEY,
@@ -16,7 +19,8 @@ CREATE TABLE if not exists fnode  (
     size_bytes BIGINT DEFAULT 0,
     created_at BIGINT DEFAULT 0,
     modified_at BIGINT DEFAULT 0,
-    link_target VARCHAR
+    link_target VARCHAR,
+    path_digest BYTEA
 );
 
 CREATE TABLE groups (
@@ -32,18 +36,4 @@ CREATE TABLE users (
     key VARCHAR,
     salt VARCHAR,
     is_admin BOOLEAN
-);
-
-INSERT INTO groups (users, g_name) VALUES (ARRAY[]::VARCHAR[], 'admin_group');
-
-INSERT INTO fnode (name, path, owner, hash, parent, dir, u, g, o, children, encrypted_name) VALUES (
-    pgp_sym_encrypt('home', 'TEMP'),
-    pgp_sym_encrypt('/home', 'TEMP'),
-    pgp_sym_encrypt('admin', 'TEMP'),
-    '',
-    pgp_sym_encrypt('/', 'TEMP'),
-    true,
-    '7', '5', '5',
-    ARRAY[]::VARCHAR[],
-    'home'
 );

@@ -1986,6 +1986,7 @@ dependencies = [
  "globset",
  "hex",
  "hkdf",
+ "hmac 0.12.1",
  "log",
  "rand_core 0.6.4",
  "rcgen",

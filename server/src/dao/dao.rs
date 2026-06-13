@@ -13,9 +13,11 @@ use argon2::{
     Argon2,
 };
 use deadpool_postgres::Pool;
+use hmac::{Hmac, Mac};
 use rand_core::OsRng;
 use securefs_model::protocol::{FNode, User};
 use serde_json;
+use sha2::Sha256;
 
 /// Typed error for all DAO operations.
 #[derive(Debug)]
@@ -96,6 +98,18 @@ pub fn data_key_secret() -> Option<String> {
 // DB_PASS for development only (production requires DATA_KEY, checked at boot).
 pub fn get_data_key() -> String {
     data_key_secret().unwrap_or_else(get_db_pass)
+}
+
+// Deterministic keyed digest of a plaintext path for indexed exact-match
+// lookups. HMAC-SHA256 keyed by DB_PASS, so the digest reveals nothing about
+// the path without the secret yet the same path always maps to the same value.
+// Must match Postgres `hmac(path, db_pass, 'sha256')` so SQL-side maintenance
+// (inserts, renames, backfill) and Rust-side lookups agree.
+pub fn path_digest(path: &str) -> Vec<u8> {
+    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(get_db_pass().as_bytes())
+        .expect("HMAC accepts a key of any length");
+    mac.update(path.as_bytes());
+    mac.finalize().into_bytes().to_vec()
 }
 
 /// Hash and salt a plaintext password using Argon2.
@@ -193,7 +207,7 @@ pub async fn add_file(pool: &Pool, file: FNode) -> Result<String, DaoError> {
         .execute(
             "INSERT INTO fnode
     (name, path, owner, hash, parent, dir, u, g, o, children, encrypted_name,
-     file_group, size_bytes, created_at, modified_at, link_target)
+     file_group, size_bytes, created_at, modified_at, link_target, path_digest)
     VALUES (
         pgp_sym_encrypt($1 ::text, $12 ::text),
         pgp_sym_encrypt($2 ::text, $12 ::text),
@@ -206,7 +220,8 @@ pub async fn add_file(pool: &Pool, file: FNode) -> Result<String, DaoError> {
         pgp_sym_encrypt($9 ::text, $12 ::text),
         $10,
         $11,
-        $13, $14, $15, $16, $17)",
+        $13, $14, $15, $16, $17,
+        hmac($2 ::text, $12 ::text, 'sha256'))",
             &[
                 &file.name,
                 &file.path,
@@ -240,11 +255,11 @@ pub async fn update_hash(
     hash: String,
 ) -> Result<String, DaoError> {
     let client = conn(pool).await?;
-    let db_pass = get_db_pass();
+    let digest = path_digest(&path);
     client
         .execute(
-            "UPDATE fnode SET hash = $1 WHERE pgp_sym_decrypt(path ::bytea, $3 ::text)=$2",
-            &[&hash, &path, &db_pass],
+            "UPDATE fnode SET hash = $1 WHERE path_digest = $2",
+            &[&hash, &digest],
         )
         .await
         .map(|_| path)
@@ -255,17 +270,14 @@ pub async fn update_hash(
 /// Prevents concurrent writes to the same file.
 pub async fn update_hash_locked(pool: &Pool, path: String, hash: String) -> Result<(), DaoError> {
     let mut client = conn(pool).await?;
-    let db_pass = get_db_pass();
+    let digest = path_digest(&path);
     let tx = client
         .transaction()
         .await
         .map_err(|e| DaoError::QueryFailed(format!("begin tx: {}", e)))?;
     // Look up fnode id for the advisory lock key
     let row = tx
-        .query_opt(
-            "SELECT id FROM fnode WHERE pgp_sym_decrypt(path ::bytea, $2 ::text) = $1",
-            &[&path, &db_pass],
-        )
+        .query_opt("SELECT id FROM fnode WHERE path_digest = $1", &[&digest])
         .await
         .map_err(|e| DaoError::QueryFailed(format!("lock lookup: {}", e)))?;
     let id: i64 = match row {
@@ -284,8 +296,8 @@ pub async fn update_hash_locked(pool: &Pool, path: String, hash: String) -> Resu
         ));
     }
     tx.execute(
-        "UPDATE fnode SET hash = $1 WHERE pgp_sym_decrypt(path ::bytea, $3 ::text) = $2",
-        &[&hash, &path, &db_pass],
+        "UPDATE fnode SET hash = $1 WHERE path_digest = $2",
+        &[&hash, &digest],
     )
     .await
     .map_err(|e| DaoError::QueryFailed(format!("update hash: {}", e)))?;
@@ -303,14 +315,15 @@ pub async fn add_file_to_parent(
 ) -> Result<(), DaoError> {
     let client = conn(pool).await?;
     let db_pass = get_db_pass();
+    let digest = path_digest(&parent_path);
     client
         .execute(
             "UPDATE fnode SET children =
         ARRAY_APPEND(children,
             pgp_sym_encrypt($1 ::text, $3 ::text)::text
         )
-        WHERE pgp_sym_decrypt(path ::bytea, $3 ::text)=$2",
-            &[&new_f_node_name, &parent_path, &db_pass],
+        WHERE path_digest = $2",
+            &[&new_f_node_name, &digest, &db_pass],
         )
         .await
         .map(|_| ())
@@ -321,6 +334,7 @@ pub async fn add_file_to_parent(
 pub async fn get_f_node(pool: &Pool, path: String) -> Result<Option<FNode>, DaoError> {
     let client = conn(pool).await?;
     let db_pass = get_db_pass();
+    let digest = path_digest(&path);
     let e = client.query_opt("SELECT
         id,
         pgp_sym_decrypt(name ::bytea, $2 ::text) AS name,
@@ -339,8 +353,8 @@ pub async fn get_f_node(pool: &Pool, path: String) -> Result<Option<FNode>, DaoE
         created_at,
         modified_at,
         link_target
-    FROM fnode WHERE pgp_sym_decrypt(path::bytea, $2::text) = $1",
-        &[&path, &db_pass]).await;
+    FROM fnode WHERE path_digest = $1",
+        &[&digest, &db_pass]).await;
     match e {
         Ok(Some(row)) => {
             let fnode = FNode {
@@ -475,6 +489,7 @@ pub async fn change_file_perms(
 ) -> Result<(), DaoError> {
     let client = conn(pool).await?;
     let db_pass = get_db_pass();
+    let digest = path_digest(&file_path);
     client
         .execute(
             "
@@ -482,9 +497,9 @@ pub async fn change_file_perms(
             u=pgp_sym_encrypt($2 ::text, $5 ::text),
             g=pgp_sym_encrypt($3 ::text, $5 ::text),
             o=pgp_sym_encrypt($4 ::text, $5 ::text)
-        WHERE pgp_sym_decrypt(path ::bytea, $5 ::text)=$1",
+        WHERE path_digest = $1",
             &[
-                &file_path,
+                &digest,
                 &u.to_string(),
                 &g.to_string(),
                 &o.to_string(),
@@ -526,15 +541,21 @@ pub async fn rename_node(
 ) -> Result<(), DaoError> {
     let mut client = conn(pool).await?;
     let db_pass = get_db_pass();
+    let new_path_digest = path_digest(&new_path);
+    let parent_digest = path_digest(&parent_path);
     let tx = client
         .transaction()
         .await
         .map_err(|e| DaoError::QueryFailed(format!("begin tx: {}", e)))?;
 
     tx.execute(
-        "UPDATE fnode SET path = pgp_sym_encrypt(
-             $2 || substring(pgp_sym_decrypt(path::bytea, $3::text) from length($1) + 1),
-             $3::text)
+        "UPDATE fnode SET
+             path = pgp_sym_encrypt(
+                 $2 || substring(pgp_sym_decrypt(path::bytea, $3::text) from length($1) + 1),
+                 $3::text),
+             path_digest = hmac(
+                 $2 || substring(pgp_sym_decrypt(path::bytea, $3::text) from length($1) + 1),
+                 $3::text, 'sha256')
          WHERE pgp_sym_decrypt(path::bytea, $3::text) = $1
             OR left(pgp_sym_decrypt(path::bytea, $3::text), length($1) + 1) = $1 || '/'",
         &[&old_path, &new_path, &db_pass],
@@ -556,8 +577,8 @@ pub async fn rename_node(
 
     tx.execute(
         "UPDATE fnode SET name = pgp_sym_encrypt($2::text, $3::text), encrypted_name = $2
-         WHERE pgp_sym_decrypt(path::bytea, $3::text) = $1",
-        &[&new_path, &new_name, &db_pass],
+         WHERE path_digest = $1",
+        &[&new_path_digest, &new_name, &db_pass],
     )
     .await
     .map_err(|e| DaoError::QueryFailed(format!("rename name: {}", e)))?;
@@ -567,8 +588,8 @@ pub async fn rename_node(
             (SELECT array_agg(pgp_sym_encrypt(child1::text, $3::text)) FROM unnest
                 (ARRAY_REMOVE((SELECT array_agg(pgp_sym_decrypt(child ::bytea, $3::text)) FROM unnest(children) AS child), $1)
             ) AS child1)
-            WHERE pgp_sym_decrypt(path ::bytea, $3 ::text)=$2",
-        &[&old_name, &parent_path, &db_pass],
+            WHERE path_digest = $2",
+        &[&old_name, &parent_digest, &db_pass],
     )
     .await
     .map_err(|e| DaoError::QueryFailed(format!("rename detach: {}", e)))?;
@@ -576,8 +597,8 @@ pub async fn rename_node(
     tx.execute(
         "UPDATE fnode SET children =
         ARRAY_APPEND(children, pgp_sym_encrypt($1 ::text, $3 ::text)::text)
-        WHERE pgp_sym_decrypt(path ::bytea, $3 ::text)=$2",
-        &[&new_name, &parent_path, &db_pass],
+        WHERE path_digest = $2",
+        &[&new_name, &parent_digest, &db_pass],
     )
     .await
     .map_err(|e| DaoError::QueryFailed(format!("rename attach: {}", e)))?;
@@ -596,6 +617,7 @@ pub async fn delete_node(
 ) -> Result<(), DaoError> {
     let mut client = conn(pool).await?;
     let db_pass = get_db_pass();
+    let parent_digest = path_digest(&parent_path);
     let tx = client
         .transaction()
         .await
@@ -606,8 +628,8 @@ pub async fn delete_node(
             (SELECT array_agg(pgp_sym_encrypt(child1::text, $3::text)) FROM unnest
                 (ARRAY_REMOVE((SELECT array_agg(pgp_sym_decrypt(child ::bytea, $3::text)) FROM unnest(children) AS child), $1)
             ) AS child1)
-            WHERE pgp_sym_decrypt(path ::bytea, $3 ::text)=$2",
-        &[&name, &parent_path, &db_pass],
+            WHERE path_digest = $2",
+        &[&name, &parent_digest, &db_pass],
     )
     .await
     .map_err(|e| DaoError::QueryFailed(format!("delete detach: {}", e)))?;
@@ -706,10 +728,13 @@ pub async fn change_owner(
 ) -> Result<(), DaoError> {
     let client = conn(pool).await?;
     let db_pass = get_db_pass();
-    client.execute(
-        "UPDATE fnode SET owner = pgp_sym_encrypt($2 ::text, $3 ::text) WHERE pgp_sym_decrypt(path ::bytea, $3 ::text) = $1",
-        &[&file_path, &new_owner, &db_pass]
-    ).await
+    let digest = path_digest(&file_path);
+    client
+        .execute(
+            "UPDATE fnode SET owner = pgp_sym_encrypt($2 ::text, $3 ::text) WHERE path_digest = $1",
+            &[&digest, &new_owner, &db_pass],
+        )
+        .await
         .map(|_| ())
         .map_err(|e| DaoError::QueryFailed(format!("change owner: {}", e)))
 }
@@ -745,11 +770,11 @@ pub async fn change_file_group(
     new_group: String,
 ) -> Result<(), DaoError> {
     let client = conn(pool).await?;
-    let db_pass = get_db_pass();
+    let digest = path_digest(&file_path);
     client
         .execute(
-            "UPDATE fnode SET file_group = $2 WHERE pgp_sym_decrypt(path ::bytea, $3 ::text) = $1",
-            &[&file_path, &new_group, &db_pass],
+            "UPDATE fnode SET file_group = $2 WHERE path_digest = $1",
+            &[&digest, &new_group],
         )
         .await
         .map(|_| ())
@@ -846,11 +871,11 @@ fn generate_admin_password() -> String {
     hex::encode(bytes)
 }
 
-// Create the admin group and admin user on first boot, keyed by the live
-// secret. Password comes from ADMIN_PASSWORD or is randomly generated and
-// printed once. Guarded by an advisory lock and existence checks so it is
-// idempotent and safe against concurrent starts.
-async fn bootstrap_admin(pool: &Pool) -> Result<(), DaoError> {
+// Seed the admin group, the /home root, and the admin user on first boot,
+// keyed by the live secret. The admin password comes from ADMIN_PASSWORD or is
+// randomly generated and printed once. An advisory lock plus existence checks
+// keep it idempotent and safe against concurrent starts.
+async fn bootstrap(pool: &Pool) -> Result<(), DaoError> {
     let mut client = conn(pool).await?;
     let tx = client
         .transaction()
@@ -860,6 +885,8 @@ async fn bootstrap_admin(pool: &Pool) -> Result<(), DaoError> {
     tx.execute("SELECT pg_advisory_xact_lock($1)", &[&ADMIN_BOOTSTRAP_LOCK])
         .await
         .map_err(|e| DaoError::QueryFailed(format!("bootstrap lock: {}", e)))?;
+
+    let db_pass = get_db_pass();
 
     let has_group = tx
         .query_opt("SELECT 1 FROM groups WHERE g_name = 'admin_group'", &[])
@@ -874,6 +901,23 @@ async fn bootstrap_admin(pool: &Pool) -> Result<(), DaoError> {
         .await
         .map_err(|e| DaoError::QueryFailed(format!("create admin group: {}", e)))?;
     }
+
+    // /home root directory; idempotent on the unique path digest.
+    tx.execute(
+        "INSERT INTO fnode
+            (name, path, owner, hash, parent, dir, u, g, o, children,
+             encrypted_name, size_bytes, created_at, modified_at, path_digest)
+         SELECT pgp_sym_encrypt('home', $1::text), pgp_sym_encrypt('/home', $1::text),
+                pgp_sym_encrypt('', $1::text), '', pgp_sym_encrypt('', $1::text), true,
+                pgp_sym_encrypt('4', $1::text), pgp_sym_encrypt('4', $1::text),
+                pgp_sym_encrypt('4', $1::text), ARRAY[]::VARCHAR[], '', 0, 0, 0,
+                hmac('/home', $1::text, 'sha256')
+         WHERE NOT EXISTS (
+             SELECT 1 FROM fnode WHERE path_digest = hmac('/home', $1::text, 'sha256'))",
+        &[&db_pass],
+    )
+    .await
+    .map_err(|e| DaoError::QueryFailed(format!("seed home: {}", e)))?;
 
     let has_admin = tx
         .query_opt("SELECT 1 FROM users WHERE user_name = 'admin'", &[])
@@ -898,7 +942,6 @@ async fn bootstrap_admin(pool: &Pool) -> Result<(), DaoError> {
         let salt = salt_pass(pass)?;
         let key = key_gen()
             .map_err(|_| DaoError::ParseError("could not serialize symmetric key".into()))?;
-        let db_pass = get_db_pass();
         tx.execute(
             "INSERT INTO users (user_name, group_name, salt, key, is_admin)
              VALUES ('admin', 'admin_group', $1, pgp_sym_encrypt($2 ::text, $3 ::text), true)",
@@ -954,40 +997,42 @@ pub async fn init_db(pool: &Pool) -> Result<(), DaoError> {
         "ALTER TABLE fnode ADD COLUMN IF NOT EXISTS created_at BIGINT DEFAULT 0",
         "ALTER TABLE fnode ADD COLUMN IF NOT EXISTS modified_at BIGINT DEFAULT 0",
         "ALTER TABLE fnode ADD COLUMN IF NOT EXISTS link_target VARCHAR",
+        "ALTER TABLE fnode ADD COLUMN IF NOT EXISTS path_digest BYTEA",
     ] {
         let _ = client.execute(ddl, &[]).await;
     }
 
+    // Backfill the keyed path digest for rows that predate the column, then
+    // enforce uniqueness on it and on user names. A collision here means
+    // genuinely duplicate paths/users (corruption) and fails the build loudly.
+    let db_pass = get_db_pass();
+    client
+        .execute(
+            "UPDATE fnode
+             SET path_digest = hmac(pgp_sym_decrypt(path ::bytea, $1 ::text), $1 ::text, 'sha256')
+             WHERE path_digest IS NULL",
+            &[&db_pass],
+        )
+        .await
+        .map_err(|e| DaoError::QueryFailed(format!("backfill path_digest: {}", e)))?;
+    client
+        .execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_fnode_path_digest ON fnode(path_digest)",
+            &[],
+        )
+        .await
+        .map_err(|e| DaoError::QueryFailed(format!("create path_digest index: {}", e)))?;
+    client
+        .execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_user_name ON users(user_name)",
+            &[],
+        )
+        .await
+        .map_err(|e| DaoError::QueryFailed(format!("create user_name index: {}", e)))?;
+
     drop(client);
 
-    let does_home_exist = get_f_node(pool, "/home".to_string()).await?.is_some();
-    if !does_home_exist {
-        add_file(
-            pool,
-            FNode {
-                id: -1,
-                name: "home".to_string(),
-                path: "/home".to_string(),
-                owner: "".to_string(),
-                hash: "".to_string(),
-                parent: "".to_string(),
-                dir: true,
-                u: 4,
-                g: 4,
-                o: 4,
-                children: vec![],
-                encrypted_name: "".to_string(),
-                size: 0,
-                created_at: 0,
-                modified_at: 0,
-                file_group: None,
-                link_target: None,
-            },
-        )
-        .await?;
-    }
-
-    bootstrap_admin(pool).await?;
+    bootstrap(pool).await?;
     Ok(())
 }
 
