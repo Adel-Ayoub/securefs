@@ -17,11 +17,12 @@ use securefs_model::secure_channel::SecureChannel;
 use std::collections::HashMap;
 use std::net::IpAddr;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Semaphore};
 use tokio_postgres::NoTls;
 use tokio_rustls::rustls;
 use tokio_rustls::TlsAcceptor;
-use tokio_tungstenite::accept_async;
+use tokio_tungstenite::accept_async_with_config;
+use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
 
@@ -61,6 +62,41 @@ macro_rules! audit {
 mod handlers;
 
 use session::{RateLimiter, Session, SessionInfo, SessionRegistry};
+
+// DoS limits.
+const MAX_MESSAGE_SIZE: usize = 1 << 20; // 1 MiB cap per WebSocket message/frame
+const MAX_CONNECTIONS: usize = 1024; // concurrent connections accepted at once
+const CONNECTION_IDLE_TIMEOUT_SECS: u64 = 1800; // close a connection idle this long
+const SHUTDOWN_GRACE_SECS: u64 = 10; // drain window for in-flight connections
+
+// WebSocket config bounding message/frame size to limit per-connection memory.
+fn ws_config() -> WebSocketConfig {
+    WebSocketConfig::default()
+        .max_message_size(Some(MAX_MESSAGE_SIZE))
+        .max_frame_size(Some(MAX_MESSAGE_SIZE))
+}
+
+// Resolves when the process receives SIGINT (Ctrl-C) or, on Unix, SIGTERM.
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut sig) => {
+                sig.recv().await;
+            }
+            Err(_) => std::future::pending::<()>().await,
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+    tokio::select! {
+        _ = ctrl_c => {}
+        _ = terminate => {}
+    }
+}
 
 /// Load TLS configuration from certificate and key files.
 fn load_tls_config(cert_path: &str, key_path: &str) -> Result<TlsAcceptor, String> {
@@ -188,8 +224,39 @@ async fn main() -> Result<(), String> {
     }
 
     let session_registry: SessionRegistry = Arc::new(Mutex::new(HashMap::new()));
+    let conn_limit = Arc::new(Semaphore::new(MAX_CONNECTIONS));
 
-    while let Ok((stream, addr)) = listener.accept().await {
+    let shutdown = shutdown_signal();
+    tokio::pin!(shutdown);
+
+    loop {
+        let (stream, addr) = tokio::select! {
+            biased;
+            _ = &mut shutdown => {
+                info!("Shutdown signal received; no longer accepting connections");
+                break;
+            }
+            accepted = listener.accept() => match accepted {
+                Ok(pair) => pair,
+                Err(e) => {
+                    warn!("accept failed: {}", e);
+                    continue;
+                }
+            },
+        };
+
+        // Bound concurrent connections; refuse (and close) when at capacity.
+        let permit = match conn_limit.clone().try_acquire_owned() {
+            Ok(p) => p,
+            Err(_) => {
+                warn!(
+                    "connection limit ({}) reached; refusing {}",
+                    MAX_CONNECTIONS, addr
+                );
+                continue;
+            }
+        };
+
         info!("New connection from: {}", addr);
         let pg = pool.clone();
         let rl = rate_limiter.clone();
@@ -197,6 +264,7 @@ async fn main() -> Result<(), String> {
         let ip = addr.ip();
         let tls = tls_acceptor.clone();
         tokio::spawn(async move {
+            let _permit = permit; // released when the connection ends
             let result = if let Some(acceptor) = tls {
                 match acceptor.accept(stream).await {
                     Ok(tls_stream) => handle_tls_connection(tls_stream, pg, rl, sr, ip).await,
@@ -211,6 +279,17 @@ async fn main() -> Result<(), String> {
         });
     }
 
+    // Best-effort graceful drain: wait for in-flight connections to finish.
+    let in_flight = MAX_CONNECTIONS - conn_limit.available_permits();
+    if in_flight > 0 {
+        info!("Draining {} in-flight connection(s)...", in_flight);
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(SHUTDOWN_GRACE_SECS),
+            conn_limit.acquire_many(MAX_CONNECTIONS as u32),
+        )
+        .await;
+    }
+    info!("Shutdown complete");
     Ok(())
 }
 
@@ -222,7 +301,7 @@ async fn handle_tls_connection(
     session_registry: SessionRegistry,
     client_ip: IpAddr,
 ) -> Result<(), String> {
-    let ws_stream = accept_async(stream)
+    let ws_stream = accept_async_with_config(stream, Some(ws_config()))
         .await
         .map_err(|e| format!("TLS handshake failed: {}", e))?;
     handle_ws_stream(ws_stream, pool, rate_limiter, session_registry, client_ip).await
@@ -236,7 +315,7 @@ async fn handle_connection(
     session_registry: SessionRegistry,
     client_ip: IpAddr,
 ) -> Result<(), String> {
-    let ws_stream = accept_async(stream)
+    let ws_stream = accept_async_with_config(stream, Some(ws_config()))
         .await
         .map_err(|e| format!("handshake failed: {}", e))?;
     handle_ws_stream(ws_stream, pool, rate_limiter, session_registry, client_ip).await
@@ -279,8 +358,23 @@ where
     let mut last_activity = std::time::Instant::now();
     let session_id = uuid::Uuid::new_v4().to_string();
 
-    while let Some(msg) = ws_stream.next().await {
-        let msg = msg.map_err(|e| format!("ws read failed: {}", e))?;
+    loop {
+        let msg = match tokio::time::timeout(
+            std::time::Duration::from_secs(CONNECTION_IDLE_TIMEOUT_SECS),
+            ws_stream.next(),
+        )
+        .await
+        {
+            Ok(Some(m)) => m.map_err(|e| format!("ws read failed: {}", e))?,
+            Ok(None) => break,
+            Err(_) => {
+                warn!(
+                    "connection idle timeout ({}s)",
+                    CONNECTION_IDLE_TIMEOUT_SECS
+                );
+                break;
+            }
+        };
         if !msg.is_text() {
             continue;
         }
