@@ -1,5 +1,5 @@
 # --- Builder stage: compiles the server binary ---
-FROM rust:1-slim-bookworm AS builder
+FROM rust:1-slim-bookworm@sha256:c8a94a78f67ec8c4d474ec7f71e0720f21eb7e584e158daec0874cafa7c30e4d AS builder
 WORKDIR /app
 
 # Install build-time dependencies.
@@ -35,18 +35,27 @@ RUN touch server/src/main.rs server/src/lib.rs model/src/lib.rs \
 RUN ldd target/release/securefs-server || true
 
 # --- Runtime stage: minimal image with binary only ---
-FROM debian:bookworm-slim AS runtime
+FROM debian:bookworm-slim@sha256:96e378d7e6531ac9a15ad505478fcc2e69f371b10f5cdf87857c4b8188404716 AS runtime
 WORKDIR /app
 
 # ca-certificates is needed for TLS certificate verification at runtime.
 # libssl3 is omitted since tokio-rustls is pure Rust and does not link libssl;
-# verify with `ldd securefs-server` in builder — add libssl3 if libssl.so appears.
+# verify with `ldd securefs-server` in builder, add libssl3 if libssl.so appears.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
+# Run unprivileged under a fixed uid/gid; pre-create the storage dir the server
+# writes to so a mounted volume inherits this ownership on first use.
+RUN groupadd --system --gid 10001 securefs \
+    && useradd --system --uid 10001 --gid 10001 --home-dir /app --no-create-home securefs \
+    && mkdir -p /app/storage \
+    && chown -R securefs:securefs /app
+
 COPY --from=builder /app/target/release/securefs-server /usr/local/bin/securefs-server
 
+USER securefs:securefs
 EXPOSE 8080
 
+# No HEALTHCHECK yet; it lands with the server's /health endpoint.
 ENTRYPOINT ["/usr/local/bin/securefs-server"]

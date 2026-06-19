@@ -1,0 +1,12 @@
+# Allowlist: ignore the whole build context, then re-include only the workspace
+# sources the image build needs. Everything else (build output, local tooling,
+# secrets, scratch) is excluded without being enumerated here.
+*
+!Cargo.toml
+!Cargo.lock
+!model
+!server
+!client
+
+# Re-exclude nested build output that lives under the re-included crates.
+**/target

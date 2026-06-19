@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   postgres:
     image: postgres:15-alpine
@@ -7,7 +5,7 @@ services:
     environment:
       POSTGRES_DB: securefs
       POSTGRES_USER: securefs_user
-      POSTGRES_PASSWORD: securefs_password
+      POSTGRES_PASSWORD: ${DB_CONN_PASSWORD:-securefs_password}
       POSTGRES_INITDB_ARGS: "--encoding=UTF-8"
     ports:
       - "5431:5432"
@@ -15,12 +13,55 @@ services:
       - postgres_data:/var/lib/postgresql/data
       - ./db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
     healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -U securefs_user -d securefs" ]
+      test: ["CMD-SHELL", "pg_isready -U securefs_user -d securefs"]
       interval: 10s
       timeout: 5s
       retries: 5
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+  server:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.server
+    image: securefs-server
+    container_name: securefs_server
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_NAME: securefs
+      DB_USER: securefs_user
+      # Secrets: supply via the shell or a local .env (never commit real values).
+      # DB_PASS and DATA_KEY have no safe default, so startup fails fast if unset.
+      DB_CONN_PASSWORD: ${DB_CONN_PASSWORD:-securefs_password}
+      DB_PASS: ${DB_PASS:?DB_PASS is required}
+      DATA_KEY: ${DATA_KEY:?DATA_KEY is required}
+      TLS_CERT: ${TLS_CERT:-/app/certs/server.crt}
+      TLS_KEY: ${TLS_KEY:-/app/certs/server.key}
+      # Optional: if unset the server generates an admin password and prints it once.
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      # For local dev without certs, set ALLOW_INSECURE=1 (dev-only, loud banner).
+      ALLOW_INSECURE: ${ALLOW_INSECURE:-}
+    ports:
+      - "8080:8080"
+    volumes:
+      - securefs_storage:/app/storage
+      - ./certs:/app/certs:ro
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     restart: unless-stopped
 
 volumes:
   postgres_data:
+    driver: local
+  securefs_storage:
     driver: local
