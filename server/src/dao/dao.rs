@@ -990,6 +990,12 @@ pub async fn init_db(pool: &Pool) -> Result<(), DaoError> {
             &[],
         )
         .await;
+    let _ = client
+        .execute(
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_last_step BIGINT",
+            &[],
+        )
+        .await;
 
     // Persist FNode metadata that older schemas lacked (idempotent).
     for ddl in [
@@ -1118,6 +1124,22 @@ pub async fn set_totp_secret(pool: &Pool, user_name: &str, secret: &str) -> Resu
         .await
         .map(|_| ())
         .map_err(|e| DaoError::QueryFailed(format!("set totp: {}", e)))
+}
+
+// Atomically record a used TOTP time-step. Returns true only when `step` is
+// newer than any step already consumed for the user; false means the code was
+// already used (on this or any other connection) and must be rejected.
+pub async fn consume_totp_step(pool: &Pool, user_name: &str, step: i64) -> Result<bool, DaoError> {
+    let client = conn(pool).await?;
+    let n = client
+        .execute(
+            "UPDATE users SET totp_last_step = $2
+             WHERE user_name = $1 AND (totp_last_step IS NULL OR totp_last_step < $2)",
+            &[&user_name.to_string(), &step],
+        )
+        .await
+        .map_err(|e| DaoError::QueryFailed(format!("consume totp step: {}", e)))?;
+    Ok(n == 1)
 }
 
 /// Recursively copy a file or directory tree.

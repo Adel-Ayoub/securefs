@@ -4,7 +4,7 @@ use rand_core::OsRng;
 use securefs_model::protocol::{AppMessage, Cmd};
 use securefs_model::secure_channel::{Role, SecureChannel, PROTOCOL_VERSION};
 use std::net::IpAddr;
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use totp_rs::{Algorithm, Secret, TOTP};
 use x25519_dalek::{EphemeralSecret, PublicKey};
 
@@ -13,6 +13,7 @@ use securefs_server::dao;
 use crate::session::{RateLimiter, Session, RATE_LIMIT_WINDOW_SECS};
 
 const MAX_LOGIN_ATTEMPTS: u8 = 5;
+const TOTP_STEP_SECS: u64 = 30;
 
 pub fn new_connection() -> AppMessage {
     AppMessage {
@@ -198,6 +199,18 @@ pub async fn totp_setup(session: &Session, pool: &Pool) -> AppMessage {
     }
 }
 
+// Recover the time-step a valid code matched, for one-time-use bookkeeping.
+// Mirrors check()'s skew=1 window so any code accepted by check() is found here.
+fn matched_totp_step(totp: &TOTP, code: &str, now_secs: u64) -> Option<i64> {
+    let cur = now_secs / TOTP_STEP_SECS;
+    for s in [cur.saturating_sub(1), cur, cur + 1] {
+        if totp.generate(s * TOTP_STEP_SECS) == code {
+            return Some(s as i64);
+        }
+    }
+    None
+}
+
 /// Verify a TOTP code. On success, clears the totp_required flag.
 pub async fn totp_verify(
     data: Vec<String>,
@@ -275,35 +288,56 @@ pub async fn totp_verify(
         }
     };
 
-    match totp.check_current(&code) {
-        Ok(true) => {
-            session.totp_required = false;
-            session.totp_attempts = 0;
-            audit!(pool, "TOTP_VERIFY", user, "-", "success");
-            AppMessage {
-                cmd: Cmd::TotpVerify,
-                data: vec!["ok".into()],
-            }
+    let now_secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let valid = totp.check(&code, now_secs);
+    // A valid code is accepted only once: consuming its time-step fails if that
+    // step (or a newer one) was already used on any connection.
+    let consumed = if valid {
+        match matched_totp_step(&totp, &code, now_secs) {
+            Some(step) => dao::consume_totp_step(pool, user, step)
+                .await
+                .unwrap_or(false),
+            None => false,
         }
-        _ => {
-            {
-                let mut rl = rate_limiter.lock().await;
-                let entry = rl.entry(client_ip).or_insert((0, Instant::now()));
-                entry.0 = entry.0.saturating_add(1);
-            }
-            session.totp_attempts = session.totp_attempts.saturating_add(1);
-            audit!(pool, "TOTP_VERIFY", user, "-", "invalid code");
-            if session.totp_attempts >= MAX_LOGIN_ATTEMPTS {
-                session.reset();
-                return AppMessage {
-                    cmd: Cmd::Failure,
-                    data: vec!["too many totp attempts; please log in again".into()],
-                };
-            }
-            AppMessage {
+    } else {
+        false
+    };
+
+    if consumed {
+        session.totp_required = false;
+        session.totp_attempts = 0;
+        audit!(pool, "TOTP_VERIFY", user, "-", "success");
+        AppMessage {
+            cmd: Cmd::TotpVerify,
+            data: vec!["ok".into()],
+        }
+    } else {
+        {
+            let mut rl = rate_limiter.lock().await;
+            let entry = rl.entry(client_ip).or_insert((0, Instant::now()));
+            entry.0 = entry.0.saturating_add(1);
+        }
+        session.totp_attempts = session.totp_attempts.saturating_add(1);
+        let reason = if valid { "replay" } else { "invalid code" };
+        audit!(pool, "TOTP_VERIFY", user, "-", reason);
+        if session.totp_attempts >= MAX_LOGIN_ATTEMPTS {
+            session.reset();
+            return AppMessage {
                 cmd: Cmd::Failure,
-                data: vec!["invalid totp code".into()],
-            }
+                data: vec!["too many totp attempts; please log in again".into()],
+            };
+        }
+        let msg = if valid {
+            "totp code already used"
+        } else {
+            "invalid totp code"
+        };
+        AppMessage {
+            cmd: Cmd::Failure,
+            data: vec![msg.into()],
         }
     }
 }
