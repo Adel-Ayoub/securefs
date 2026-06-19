@@ -1,29 +1,31 @@
+use crate::metrics::SharedMetrics;
 use deadpool_postgres::Pool;
 use log::{info, warn};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
-// Minimal, dependency-free HTTP/1.1 health server on its own plaintext port,
-// separate from the TLS WebSocket port. GET /health is liveness; GET /ready
-// checks the database so a load balancer can drain a node that lost its DB.
-pub async fn serve(pool: Pool, addr: String) {
+// Minimal, dependency-free HTTP/1.1 server on its own plaintext port, separate
+// from the TLS WebSocket port. GET /health is liveness; GET /ready checks the
+// database; GET /metrics exposes Prometheus counters.
+pub async fn serve(pool: Pool, addr: String, metrics: SharedMetrics) {
     match TcpListener::bind(&addr).await {
         Ok(listener) => {
             info!("Health endpoint on http://{}/health", addr);
-            serve_on(listener, pool).await;
+            serve_on(listener, pool, metrics).await;
         }
         Err(e) => warn!("health server bind failed on {}: {}", addr, e),
     }
 }
 
-pub async fn serve_on(listener: TcpListener, pool: Pool) {
+pub async fn serve_on(listener: TcpListener, pool: Pool, metrics: SharedMetrics) {
     loop {
         match listener.accept().await {
             Ok((stream, _)) => {
                 let pool = pool.clone();
+                let metrics = metrics.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = handle(stream, pool).await {
+                    if let Err(e) = handle(stream, pool, metrics).await {
                         warn!("health request failed: {}", e);
                     }
                 });
@@ -33,7 +35,7 @@ pub async fn serve_on(listener: TcpListener, pool: Pool) {
     }
 }
 
-async fn handle(mut stream: TcpStream, pool: Pool) -> std::io::Result<()> {
+async fn handle(mut stream: TcpStream, pool: Pool, metrics: SharedMetrics) -> std::io::Result<()> {
     let mut buf = [0u8; 1024];
     let n = match tokio::time::timeout(Duration::from_secs(5), stream.read(&mut buf)).await {
         Ok(Ok(n)) => n,
@@ -45,21 +47,27 @@ async fn handle(mut stream: TcpStream, pool: Pool) -> std::io::Result<()> {
         .and_then(|line| line.split_whitespace().nth(1))
         .unwrap_or("");
 
-    let (status, body) = match path {
-        "/health" => ("200 OK", "ok"),
+    let (status, ctype, body) = match path {
+        "/health" => ("200 OK", "text/plain", "ok".to_string()),
         "/ready" => {
             if db_ok(&pool).await {
-                ("200 OK", "ready")
+                ("200 OK", "text/plain", "ready".to_string())
             } else {
-                ("503 Service Unavailable", "not ready")
+                (
+                    "503 Service Unavailable",
+                    "text/plain",
+                    "not ready".to_string(),
+                )
             }
         }
-        _ => ("404 Not Found", "not found"),
+        "/metrics" => ("200 OK", "text/plain; version=0.0.4", metrics.render()),
+        _ => ("404 Not Found", "text/plain", "not found".to_string()),
     };
 
     let resp = format!(
-        "HTTP/1.1 {}\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        "HTTP/1.1 {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
         status,
+        ctype,
         body.len(),
         body
     );

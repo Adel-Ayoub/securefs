@@ -5,6 +5,7 @@
 //! changes.
 
 use std::env;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use deadpool_postgres::{Config, ManagerConfig, Pool, RecyclingMethod, Runtime};
@@ -29,6 +30,7 @@ use tokio_tungstenite::WebSocketStream;
 use securefs_server::dao;
 use securefs_server::health;
 use securefs_server::logging;
+use securefs_server::metrics::{Metrics, SharedMetrics};
 
 mod crypto;
 mod session;
@@ -70,6 +72,23 @@ const MAX_MESSAGE_SIZE: usize = 1 << 20; // 1 MiB cap per WebSocket message/fram
 const MAX_CONNECTIONS: usize = 1024; // concurrent connections accepted at once
 const CONNECTION_IDLE_TIMEOUT_SECS: u64 = 1800; // close a connection idle this long
 const SHUTDOWN_GRACE_SECS: u64 = 10; // drain window for in-flight connections
+
+// RAII guard for the active-connections gauge: increment on creation, decrement
+// on drop, so the count stays correct even if a connection task panics.
+struct ActiveGuard(SharedMetrics);
+
+impl ActiveGuard {
+    fn new(metrics: SharedMetrics) -> Self {
+        metrics.connections_active.fetch_add(1, Ordering::Relaxed);
+        Self(metrics)
+    }
+}
+
+impl Drop for ActiveGuard {
+    fn drop(&mut self) {
+        self.0.connections_active.fetch_sub(1, Ordering::Relaxed);
+    }
+}
 
 // WebSocket config bounding message/frame size to limit per-connection memory.
 fn ws_config() -> WebSocketConfig {
@@ -231,11 +250,14 @@ async fn main() -> Result<(), String> {
         });
     }
 
-    // Plaintext liveness/readiness endpoint on its own port.
+    let metrics: SharedMetrics = Arc::new(Metrics::default());
+
+    // Plaintext liveness/readiness/metrics endpoint on its own port.
     {
         let health_addr = env::var("HEALTH_ADDR").unwrap_or_else(|_| "127.0.0.1:8081".to_string());
         let pool = pool.clone();
-        tokio::spawn(health::serve(pool, health_addr));
+        let metrics = metrics.clone();
+        tokio::spawn(health::serve(pool, health_addr, metrics));
     }
 
     let session_registry: SessionRegistry = Arc::new(Mutex::new(HashMap::new()));
@@ -264,6 +286,9 @@ async fn main() -> Result<(), String> {
         let permit = match conn_limit.clone().try_acquire_owned() {
             Ok(p) => p,
             Err(_) => {
+                metrics
+                    .connections_rejected_total
+                    .fetch_add(1, Ordering::Relaxed);
                 warn!(
                     "connection limit ({}) reached; refusing {}",
                     MAX_CONNECTIONS, addr
@@ -273,6 +298,8 @@ async fn main() -> Result<(), String> {
         };
 
         info!("New connection from: {}", addr);
+        metrics.connections_total.fetch_add(1, Ordering::Relaxed);
+        let active = ActiveGuard::new(metrics.clone());
         let pg = pool.clone();
         let rl = rate_limiter.clone();
         let sr = session_registry.clone();
@@ -280,6 +307,7 @@ async fn main() -> Result<(), String> {
         let tls = tls_acceptor.clone();
         tokio::spawn(async move {
             let _permit = permit; // released when the connection ends
+            let _active = active; // decrements the active gauge on drop
             let result = if let Some(acceptor) = tls {
                 match acceptor.accept(stream).await {
                     Ok(tls_stream) => handle_tls_connection(tls_stream, pg, rl, sr, ip).await,

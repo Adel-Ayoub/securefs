@@ -1,9 +1,11 @@
-// The plaintext health server answers liveness (/health) and readiness (/ready,
-// which checks the database), 404s anything else, and the healthcheck subcommand
-// client accepts a 200.
+// The plaintext health server answers liveness (/health), readiness (/ready,
+// which checks the database), /metrics, 404s anything else, and the healthcheck
+// subcommand client accepts a 200.
 
 use deadpool_postgres::{Config, ManagerConfig, Pool, RecyclingMethod, Runtime};
 use securefs_server::health;
+use securefs_server::metrics::Metrics;
+use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_postgres::NoTls;
@@ -34,16 +36,23 @@ async fn get(addr: &str, path: &str) -> String {
 }
 
 #[tokio::test]
-async fn health_ready_and_404() {
+async fn health_ready_metrics_and_404() {
     let pool = test_pool();
     // Bind first so queued connections are accepted with no startup race.
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap().to_string();
-    tokio::spawn(health::serve_on(listener, pool));
+    tokio::spawn(health::serve_on(
+        listener,
+        pool,
+        Arc::new(Metrics::default()),
+    ));
 
     let h = get(&addr, "/health").await;
-    let line = h.lines().next().unwrap_or("");
-    assert!(h.starts_with("HTTP/1.1 200"), "health status: {}", line);
+    assert!(
+        h.starts_with("HTTP/1.1 200"),
+        "health status: {}",
+        h.lines().next().unwrap_or("")
+    );
     assert!(h.trim_end().ends_with("ok"), "health body: {}", h);
 
     let r = get(&addr, "/ready").await;
@@ -51,6 +60,18 @@ async fn health_ready_and_404() {
         r.starts_with("HTTP/1.1 200"),
         "ready status: {}",
         r.lines().next().unwrap_or("")
+    );
+
+    let m = get(&addr, "/metrics").await;
+    assert!(
+        m.starts_with("HTTP/1.1 200"),
+        "metrics status: {}",
+        m.lines().next().unwrap_or("")
+    );
+    assert!(
+        m.contains("securefs_connections_total"),
+        "metrics body missing counter: {}",
+        m
     );
 
     let nf = get(&addr, "/nope").await;
