@@ -28,6 +28,7 @@ use tokio_tungstenite::WebSocketStream;
 
 use securefs_server::dao;
 use securefs_server::health;
+use securefs_server::logging;
 
 mod crypto;
 mod session;
@@ -129,7 +130,7 @@ async fn main() -> Result<(), String> {
         return health::run_healthcheck(&addr).await;
     }
 
-    env_logger::init();
+    logging::init();
     info!("Starting SecureFS server");
 
     // NOTE: Default env fallbacks are for local/dev usage; production
