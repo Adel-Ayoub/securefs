@@ -207,7 +207,8 @@ pub async fn add_file(pool: &Pool, file: FNode) -> Result<String, DaoError> {
         .execute(
             "INSERT INTO fnode
     (name, path, owner, hash, parent, dir, u, g, o, children, encrypted_name,
-     file_group, size_bytes, created_at, modified_at, link_target, path_digest)
+     file_group, size_bytes, created_at, modified_at, link_target, path_digest,
+     parent_digest)
     VALUES (
         pgp_sym_encrypt($1 ::text, $12 ::text),
         pgp_sym_encrypt($2 ::text, $12 ::text),
@@ -221,7 +222,8 @@ pub async fn add_file(pool: &Pool, file: FNode) -> Result<String, DaoError> {
         $10,
         $11,
         $13, $14, $15, $16, $17,
-        hmac($2 ::text, $12 ::text, 'sha256'))",
+        hmac($2 ::text, $12 ::text, 'sha256'),
+        hmac($5 ::text, $12 ::text, 'sha256'))",
             &[
                 &file.name,
                 &file.path,
@@ -387,6 +389,7 @@ pub async fn get_f_node(pool: &Pool, path: String) -> Result<Option<FNode>, DaoE
 pub async fn get_children(pool: &Pool, parent_path: String) -> Result<Vec<FNode>, DaoError> {
     let client = conn(pool).await?;
     let db_pass = get_db_pass();
+    let digest = path_digest(&parent_path);
     let rows = client.query("SELECT
         id,
         pgp_sym_decrypt(name ::bytea, $2 ::text) AS name,
@@ -403,8 +406,8 @@ pub async fn get_children(pool: &Pool, parent_path: String) -> Result<Vec<FNode>
         created_at,
         modified_at,
         link_target
-    FROM fnode WHERE pgp_sym_decrypt(parent ::bytea, $2 ::text) = $1",
-        &[&parent_path, &db_pass]).await
+    FROM fnode WHERE parent_digest = $1",
+        &[&digest, &db_pass]).await
         .map_err(|e| DaoError::QueryFailed(format!("get children: {}", e)))?;
     let nodes = rows
         .iter()
@@ -568,7 +571,10 @@ pub async fn rename_node(
     tx.execute(
         "UPDATE fnode SET parent = pgp_sym_encrypt(
              $2 || substring(pgp_sym_decrypt(parent::bytea, $3::text) from length($1) + 1),
-             $3::text)
+             $3::text),
+             parent_digest = hmac(
+                 $2 || substring(pgp_sym_decrypt(parent::bytea, $3::text) from length($1) + 1),
+                 $3::text, 'sha256')
          WHERE left(pgp_sym_decrypt(path::bytea, $3::text), length($2) + 1) = $2 || '/'",
         &[&old_path, &new_path, &db_pass],
     )
@@ -906,12 +912,14 @@ async fn bootstrap(pool: &Pool) -> Result<(), DaoError> {
     tx.execute(
         "INSERT INTO fnode
             (name, path, owner, hash, parent, dir, u, g, o, children,
-             encrypted_name, size_bytes, created_at, modified_at, path_digest)
+             encrypted_name, size_bytes, created_at, modified_at, path_digest,
+             parent_digest)
          SELECT pgp_sym_encrypt('home', $1::text), pgp_sym_encrypt('/home', $1::text),
                 pgp_sym_encrypt('', $1::text), '', pgp_sym_encrypt('', $1::text), true,
                 pgp_sym_encrypt('4', $1::text), pgp_sym_encrypt('4', $1::text),
                 pgp_sym_encrypt('4', $1::text), ARRAY[]::VARCHAR[], '', 0, 0, 0,
-                hmac('/home', $1::text, 'sha256')
+                hmac('/home', $1::text, 'sha256'),
+                hmac('', $1::text, 'sha256')
          WHERE NOT EXISTS (
              SELECT 1 FROM fnode WHERE path_digest = hmac('/home', $1::text, 'sha256'))",
         &[&db_pass],
@@ -1004,6 +1012,7 @@ pub async fn init_db(pool: &Pool) -> Result<(), DaoError> {
         "ALTER TABLE fnode ADD COLUMN IF NOT EXISTS modified_at BIGINT DEFAULT 0",
         "ALTER TABLE fnode ADD COLUMN IF NOT EXISTS link_target VARCHAR",
         "ALTER TABLE fnode ADD COLUMN IF NOT EXISTS path_digest BYTEA",
+        "ALTER TABLE fnode ADD COLUMN IF NOT EXISTS parent_digest BYTEA",
     ] {
         let _ = client.execute(ddl, &[]).await;
     }
@@ -1028,6 +1037,25 @@ pub async fn init_db(pool: &Pool) -> Result<(), DaoError> {
         )
         .await
         .map_err(|e| DaoError::QueryFailed(format!("create path_digest index: {}", e)))?;
+    // Keyed digest of each node's parent path, so listing a directory's children
+    // is an indexed lookup instead of a full-table decrypt scan. Not unique:
+    // siblings share a parent.
+    client
+        .execute(
+            "UPDATE fnode
+             SET parent_digest = hmac(pgp_sym_decrypt(parent ::bytea, $1 ::text), $1 ::text, 'sha256')
+             WHERE parent_digest IS NULL AND parent IS NOT NULL",
+            &[&db_pass],
+        )
+        .await
+        .map_err(|e| DaoError::QueryFailed(format!("backfill parent_digest: {}", e)))?;
+    client
+        .execute(
+            "CREATE INDEX IF NOT EXISTS idx_fnode_parent_digest ON fnode(parent_digest)",
+            &[],
+        )
+        .await
+        .map_err(|e| DaoError::QueryFailed(format!("create parent_digest index: {}", e)))?;
     client
         .execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_user_name ON users(user_name)",
