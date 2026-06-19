@@ -27,6 +27,7 @@ use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
 
+use securefs_server::config::NetConfig;
 use securefs_server::dao;
 use securefs_server::health;
 use securefs_server::logging;
@@ -180,10 +181,11 @@ async fn main() -> Result<(), String> {
         }
         _ => {}
     }
+    let net = NetConfig::from_env()?;
+
     let db_host = env::var("DB_HOST").unwrap_or_else(|_| "localhost".to_string());
     let db_name = env::var("DB_NAME").unwrap_or_else(|_| "db".to_string());
     let db_user = env::var("DB_USER").unwrap_or_else(|_| "USER".to_string());
-    let db_port = env::var("DB_PORT").unwrap_or_else(|_| "5431".to_string());
     // The Postgres connection password can differ from DB_PASS (the pgcrypto
     // data key); fall back to DB_PASS when not set.
     let db_conn_pass = env::var("DB_CONN_PASSWORD").unwrap_or_else(|_| db_pass.clone());
@@ -193,7 +195,7 @@ async fn main() -> Result<(), String> {
     pool_cfg.dbname = Some(db_name);
     pool_cfg.user = Some(db_user);
     pool_cfg.password = Some(db_conn_pass);
-    pool_cfg.port = Some(db_port.parse().unwrap_or(5431));
+    pool_cfg.port = Some(net.db_port);
     pool_cfg.manager = Some(ManagerConfig {
         recycling_method: RecyclingMethod::Fast,
     });
@@ -205,8 +207,7 @@ async fn main() -> Result<(), String> {
         .await
         .map_err(|e| format!("database init failed: {}", e))?;
 
-    let bind_addr = env::var("SERVER_ADDR").unwrap_or_else(|_| "127.0.0.1:8080".to_string());
-    let listener = TcpListener::bind(&bind_addr)
+    let listener = TcpListener::bind(net.server_addr)
         .await
         .map_err(|e| format!("bind failed: {}", e))?;
 
@@ -233,7 +234,7 @@ async fn main() -> Result<(), String> {
         }
     };
 
-    info!("Listening on: {}", bind_addr);
+    info!("Listening on: {}", net.server_addr);
 
     // Shared rate limiter for IP-based tracking
     let rate_limiter: RateLimiter = Arc::new(Mutex::new(HashMap::new()));
@@ -254,7 +255,7 @@ async fn main() -> Result<(), String> {
 
     // Plaintext liveness/readiness/metrics endpoint on its own port.
     {
-        let health_addr = env::var("HEALTH_ADDR").unwrap_or_else(|_| "127.0.0.1:8081".to_string());
+        let health_addr = net.health_addr.to_string();
         let pool = pool.clone();
         let metrics = metrics.clone();
         tokio::spawn(health::serve(pool, health_addr, metrics));
