@@ -1064,6 +1064,33 @@ pub async fn init_db(pool: &Pool) -> Result<(), DaoError> {
         .await
         .map_err(|e| DaoError::QueryFailed(format!("create user_name index: {}", e)))?;
 
+    // Identity columns must never be null.
+    client
+        .execute("ALTER TABLE users ALTER COLUMN user_name SET NOT NULL", &[])
+        .await
+        .map_err(|e| DaoError::QueryFailed(format!("user_name not null: {}", e)))?;
+    client
+        .execute("ALTER TABLE groups ALTER COLUMN g_name SET NOT NULL", &[])
+        .await
+        .map_err(|e| DaoError::QueryFailed(format!("g_name not null: {}", e)))?;
+
+    // Make the user->group reference explicit and safe: deleting a group nulls
+    // its members' group_name rather than cascading into user deletion, and a
+    // rename propagates. DROP+ADD inside one DO block is a single transaction,
+    // so it stays idempotent and safe even if two instances boot at once.
+    client
+        .execute(
+            "DO $$ BEGIN
+                ALTER TABLE users DROP CONSTRAINT IF EXISTS users_group_name_fkey;
+                ALTER TABLE users ADD CONSTRAINT users_group_name_fkey
+                    FOREIGN KEY (group_name) REFERENCES groups(g_name)
+                    ON UPDATE CASCADE ON DELETE SET NULL;
+            END $$;",
+            &[],
+        )
+        .await
+        .map_err(|e| DaoError::QueryFailed(format!("tighten group_name fk: {}", e)))?;
+
     drop(client);
 
     bootstrap(pool).await?;
