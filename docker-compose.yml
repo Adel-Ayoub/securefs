@@ -35,6 +35,8 @@ services:
       DB_PORT: "5432"
       DB_NAME: securefs
       DB_USER: securefs_user
+      # Bind all interfaces inside the container so the published port is reachable.
+      SERVER_ADDR: "0.0.0.0:8080"
       # Secrets: supply via the shell or a local .env (never commit real values).
       # DB_PASS and DATA_KEY have no safe default, so startup fails fast if unset.
       DB_CONN_PASSWORD: ${DB_CONN_PASSWORD:-securefs_password}

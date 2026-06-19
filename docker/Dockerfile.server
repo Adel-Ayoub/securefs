@@ -57,5 +57,9 @@ COPY --from=builder /app/target/release/securefs-server /usr/local/bin/securefs-
 USER securefs:securefs
 EXPOSE 8080
 
-# No HEALTHCHECK yet; it lands with the server's /health endpoint.
+# Probe the plaintext /health port via the binary's own subcommand, so the
+# minimal runtime image needs no curl/wget.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD ["/usr/local/bin/securefs-server", "healthcheck"]
+
 ENTRYPOINT ["/usr/local/bin/securefs-server"]
