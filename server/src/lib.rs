@@ -4,3 +4,4 @@
 //! WebSocket connections, command processing, and file system operations.
 
 pub mod dao;
+pub mod health;

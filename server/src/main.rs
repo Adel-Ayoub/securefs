@@ -27,6 +27,7 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
 
 use securefs_server::dao;
+use securefs_server::health;
 
 mod crypto;
 mod session;
@@ -122,6 +123,12 @@ fn load_tls_config(cert_path: &str, key_path: &str) -> Result<TlsAcceptor, Strin
 #[tokio::main]
 /// Launch the WebSocket server and connect to Postgres.
 async fn main() -> Result<(), String> {
+    // Subcommand used by the container HEALTHCHECK; probes /health and exits.
+    if std::env::args().nth(1).as_deref() == Some("healthcheck") {
+        let addr = env::var("HEALTH_ADDR").unwrap_or_else(|_| "127.0.0.1:8081".to_string());
+        return health::run_healthcheck(&addr).await;
+    }
+
     env_logger::init();
     info!("Starting SecureFS server");
 
@@ -221,6 +228,13 @@ async fn main() -> Result<(), String> {
                 session::cleanup_rate_limiter(&rl).await;
             }
         });
+    }
+
+    // Plaintext liveness/readiness endpoint on its own port.
+    {
+        let health_addr = env::var("HEALTH_ADDR").unwrap_or_else(|_| "127.0.0.1:8081".to_string());
+        let pool = pool.clone();
+        tokio::spawn(health::serve(pool, health_addr));
     }
 
     let session_registry: SessionRegistry = Arc::new(Mutex::new(HashMap::new()));
