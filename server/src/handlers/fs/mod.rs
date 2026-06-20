@@ -18,8 +18,13 @@ pub use transfer::*;
 pub use write::*;
 
 // Read and decrypt a file's content as raw bytes (binary-safe). Maps the logical
-// path to its blob key through the validated chokepoint, then decrypts.
-async fn read_file_bytes(store: &dyn Blobstore, path: &str) -> Result<Vec<u8>, AppMessage> {
+// path to its blob key through the validated chokepoint, then decrypts (envelope
+// files need their wrapped DEK; legacy files ignore it).
+async fn read_file_bytes(
+    store: &dyn Blobstore,
+    path: &str,
+    wrapped_dek: Option<&[u8]>,
+) -> Result<Vec<u8>, AppMessage> {
     let key = physical_key(path).map_err(|_| AppMessage {
         cmd: Cmd::Failure,
         data: vec!["invalid path".into()],
@@ -28,7 +33,7 @@ async fn read_file_bytes(store: &dyn Blobstore, path: &str) -> Result<Vec<u8>, A
         cmd: Cmd::Failure,
         data: vec!["file not found".into()],
     })?;
-    decrypt_file_content(&encrypted).map_err(|e| AppMessage {
+    decrypt_file_content(&encrypted, wrapped_dek).map_err(|e| AppMessage {
         cmd: Cmd::Failure,
         data: vec![e.to_string()],
     })

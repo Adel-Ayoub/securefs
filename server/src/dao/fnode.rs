@@ -428,6 +428,35 @@ pub async fn delete_node(
         .map_err(|e| DaoError::QueryFailed(format!("commit: {}", e)))
 }
 
+// Fetch a file's wrapped DEK (envelope encryption); None for directories and
+// legacy files still under the global key.
+pub async fn get_wrapped_dek(pool: &Pool, path: String) -> Result<Option<Vec<u8>>, DaoError> {
+    let client = conn(pool).await?;
+    let digest = path_digest(&path);
+    let row = client
+        .query_opt(
+            "SELECT wrapped_dek FROM fnode WHERE path_digest = $1",
+            &[&digest],
+        )
+        .await
+        .map_err(|e| DaoError::QueryFailed(format!("get wrapped_dek: {}", e)))?;
+    Ok(row.and_then(|r| r.get::<_, Option<Vec<u8>>>(0)))
+}
+
+// Persist a file's wrapped DEK.
+pub async fn set_wrapped_dek(pool: &Pool, path: String, wrapped: &[u8]) -> Result<(), DaoError> {
+    let client = conn(pool).await?;
+    let digest = path_digest(&path);
+    client
+        .execute(
+            "UPDATE fnode SET wrapped_dek = $2 WHERE path_digest = $1",
+            &[&digest, &wrapped],
+        )
+        .await
+        .map(|_| ())
+        .map_err(|e| DaoError::QueryFailed(format!("set wrapped_dek: {}", e)))
+}
+
 /// Recursively copy a file or directory tree.
 pub async fn copy_recursive(
     pool: &Pool,
@@ -507,6 +536,10 @@ pub async fn copy_recursive(
                     .copy(&src_key, &dst_key)
                     .await
                     .map_err(|e| DaoError::QueryFailed(format!("blob copy: {}", e)))?;
+                // The copy shares the source's DEK (same ciphertext bytes).
+                if let Some(dek) = get_wrapped_dek(pool, src.clone()).await? {
+                    set_wrapped_dek(pool, dst.clone(), &dek).await?;
+                }
             }
         }
     }

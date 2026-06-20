@@ -260,7 +260,7 @@ pub async fn echo(
                         }
                     }
                 };
-                let encrypted = encrypt_file_content(content.as_bytes());
+                let (encrypted, wrapped) = encrypt_file_content(content.as_bytes());
                 if store.put(&key, &encrypted).await.is_err() {
                     return AppMessage {
                         cmd: Cmd::Failure,
@@ -304,6 +304,18 @@ pub async fn echo(
                         file_name.clone(),
                     )
                     .await;
+                }
+
+                // Persist the wrapped DEK before the hash so a hash conflict
+                // still leaves the blob and its key consistent (readable).
+                if dao::set_wrapped_dek(pool, node_path.clone(), &wrapped)
+                    .await
+                    .is_err()
+                {
+                    return AppMessage {
+                        cmd: Cmd::Failure,
+                        data: vec!["echo failed".to_string()],
+                    };
                 }
 
                 // Use advisory lock for existing files.

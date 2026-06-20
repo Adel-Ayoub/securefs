@@ -302,8 +302,11 @@ pub async fn scan(
                         }
                     }
                 };
+                let wrapped = dao::get_wrapped_dek(pool, file_path.clone())
+                    .await
+                    .unwrap_or(None);
                 match store.get(&key).await {
-                    Ok(encrypted) => match decrypt_file_content(&encrypted) {
+                    Ok(encrypted) => match decrypt_file_content(&encrypted, wrapped.as_deref()) {
                         Ok(content) => {
                             let new_hash = hash_content(&content);
                             if new_hash == node.hash {

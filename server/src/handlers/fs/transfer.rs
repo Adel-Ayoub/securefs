@@ -160,7 +160,7 @@ pub async fn upload_end(session: &mut Session, pool: &Pool, store: &dyn Blobstor
     }
 
     // Encrypt (compress-then-encrypt handled by encrypt_file_content)
-    let encrypted = encrypt_file_content(&content);
+    let (encrypted, wrapped) = encrypt_file_content(&content);
     let hash = hash_content(&content);
 
     let node_path = format!("{}/{}", session.current_path, file_name);
@@ -211,6 +211,18 @@ pub async fn upload_end(session: &mut Session, pool: &Pool, store: &dyn Blobstor
         let _ = dao::add_file(pool, new_file).await;
         let _ =
             dao::add_file_to_parent(pool, session.current_path.clone(), file_name.clone()).await;
+    }
+
+    // Persist the wrapped DEK before the hash so that a hash conflict still
+    // leaves the blob and its key consistent (readable).
+    if dao::set_wrapped_dek(pool, node_path.clone(), &wrapped)
+        .await
+        .is_err()
+    {
+        return AppMessage {
+            cmd: Cmd::Failure,
+            data: vec!["upload write failed".into()],
+        };
     }
 
     // Use advisory lock for the hash update.
@@ -276,7 +288,10 @@ pub async fn download_start(
         };
     }
 
-    let content = match read_file_bytes(store, &node_path).await {
+    let wrapped = dao::get_wrapped_dek(pool, node_path.clone())
+        .await
+        .unwrap_or(None);
+    let content = match read_file_bytes(store, &node_path, wrapped.as_deref()).await {
         Ok(c) => c,
         Err(e) => return e,
     };
