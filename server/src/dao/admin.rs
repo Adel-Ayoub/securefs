@@ -6,9 +6,16 @@ use rand_core::OsRng;
 
 use super::{conn, get_db_pass, key_gen, salt_pass, DaoError};
 
+mod embedded {
+    refinery::embed_migrations!("migrations");
+}
+
 // Arbitrary fixed key so concurrent server starts serialize on the same
 // advisory lock while bootstrapping the admin account.
 const ADMIN_BOOTSTRAP_LOCK: i64 = 776_655_001;
+
+// Separate fixed key serializing schema migrations across concurrent starts.
+const MIGRATION_LOCK: i64 = 776_655_002;
 
 // Generate a strong random password as 32 hex-encoded random bytes.
 fn generate_admin_password() -> String {
@@ -103,62 +110,34 @@ async fn bootstrap(pool: &Pool) -> Result<(), DaoError> {
         .map_err(|e| DaoError::QueryFailed(format!("commit: {}", e)))
 }
 
-/// Ensure required seed data and tables exist.
+/// Apply schema migrations, then runtime backfills and seed data.
 pub async fn init_db(pool: &Pool) -> Result<(), DaoError> {
-    let client = conn(pool).await?;
-
-    // Create audit_log table if it doesn't exist
-    client
-        .execute(
-            "CREATE TABLE IF NOT EXISTS audit_log (
-                id BIGSERIAL PRIMARY KEY,
-                ts BIGINT NOT NULL,
-                event VARCHAR(64) NOT NULL,
-                username VARCHAR(64) NOT NULL,
-                resource VARCHAR(512) NOT NULL,
-                result VARCHAR(256) NOT NULL,
-                ip VARCHAR(45)
-            )",
-            &[],
-        )
-        .await
-        .map_err(|e| DaoError::QueryFailed(format!("create audit_log: {}", e)))?;
-    let _ = client
-        .execute(
-            "CREATE INDEX IF NOT EXISTS idx_audit_log_ts ON audit_log(ts DESC)",
-            &[],
-        )
-        .await;
-
-    // Add TOTP columns to users table (idempotent)
-    let _ = client
-        .execute(
-            "ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_secret VARCHAR DEFAULT NULL",
-            &[],
-        )
-        .await;
-    let _ = client
-        .execute(
-            "ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_last_step BIGINT",
-            &[],
-        )
-        .await;
-
-    // Persist FNode metadata that older schemas lacked (idempotent).
-    for ddl in [
-        "ALTER TABLE fnode ADD COLUMN IF NOT EXISTS size_bytes BIGINT DEFAULT 0",
-        "ALTER TABLE fnode ADD COLUMN IF NOT EXISTS created_at BIGINT DEFAULT 0",
-        "ALTER TABLE fnode ADD COLUMN IF NOT EXISTS modified_at BIGINT DEFAULT 0",
-        "ALTER TABLE fnode ADD COLUMN IF NOT EXISTS link_target VARCHAR",
-        "ALTER TABLE fnode ADD COLUMN IF NOT EXISTS path_digest BYTEA",
-        "ALTER TABLE fnode ADD COLUMN IF NOT EXISTS parent_digest BYTEA",
-    ] {
-        let _ = client.execute(ddl, &[]).await;
+    // Schema is owned by forward-only migrations under server/migrations. The
+    // baseline is idempotent, so this also adopts a database created by the
+    // pre-migration init path.
+    {
+        let mut client = conn(pool).await?;
+        // Serialize migrations across concurrent starts (parallel tests, and
+        // later multiple server instances) so refinery never races to apply the
+        // baseline. Session-level lock, released before the pooled connection
+        // is reused.
+        client
+            .execute("SELECT pg_advisory_lock($1)", &[&MIGRATION_LOCK])
+            .await
+            .map_err(|e| DaoError::QueryFailed(format!("migration lock: {}", e)))?;
+        let migrated = embedded::migrations::runner()
+            .run_async(&mut **client)
+            .await;
+        let _ = client
+            .execute("SELECT pg_advisory_unlock($1)", &[&MIGRATION_LOCK])
+            .await;
+        migrated.map_err(|e| DaoError::QueryFailed(format!("run migrations: {}", e)))?;
     }
 
-    // Backfill the keyed path digest for rows that predate the column, then
-    // enforce uniqueness on it and on user names. A collision here means
-    // genuinely duplicate paths/users (corruption) and fails the build loudly.
+    // Backfill keyed digests for rows that predate those columns. These use the
+    // live DB_PASS secret, so they stay in Rust rather than in static SQL. A
+    // genuinely duplicate path (corruption) trips the unique index and fails loud.
+    let client = conn(pool).await?;
     let db_pass = get_db_pass();
     client
         .execute(
@@ -171,16 +150,6 @@ pub async fn init_db(pool: &Pool) -> Result<(), DaoError> {
         .map_err(|e| DaoError::QueryFailed(format!("backfill path_digest: {}", e)))?;
     client
         .execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_fnode_path_digest ON fnode(path_digest)",
-            &[],
-        )
-        .await
-        .map_err(|e| DaoError::QueryFailed(format!("create path_digest index: {}", e)))?;
-    // Keyed digest of each node's parent path, so listing a directory's children
-    // is an indexed lookup instead of a full-table decrypt scan. Not unique:
-    // siblings share a parent.
-    client
-        .execute(
             "UPDATE fnode
              SET parent_digest = hmac(pgp_sym_decrypt(parent ::bytea, $1 ::text), $1 ::text, 'sha256')
              WHERE parent_digest IS NULL AND parent IS NOT NULL",
@@ -188,48 +157,6 @@ pub async fn init_db(pool: &Pool) -> Result<(), DaoError> {
         )
         .await
         .map_err(|e| DaoError::QueryFailed(format!("backfill parent_digest: {}", e)))?;
-    client
-        .execute(
-            "CREATE INDEX IF NOT EXISTS idx_fnode_parent_digest ON fnode(parent_digest)",
-            &[],
-        )
-        .await
-        .map_err(|e| DaoError::QueryFailed(format!("create parent_digest index: {}", e)))?;
-    client
-        .execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_user_name ON users(user_name)",
-            &[],
-        )
-        .await
-        .map_err(|e| DaoError::QueryFailed(format!("create user_name index: {}", e)))?;
-
-    // Identity columns must never be null.
-    client
-        .execute("ALTER TABLE users ALTER COLUMN user_name SET NOT NULL", &[])
-        .await
-        .map_err(|e| DaoError::QueryFailed(format!("user_name not null: {}", e)))?;
-    client
-        .execute("ALTER TABLE groups ALTER COLUMN g_name SET NOT NULL", &[])
-        .await
-        .map_err(|e| DaoError::QueryFailed(format!("g_name not null: {}", e)))?;
-
-    // Make the user->group reference explicit and safe: deleting a group nulls
-    // its members' group_name rather than cascading into user deletion, and a
-    // rename propagates. DROP+ADD inside one DO block is a single transaction,
-    // so it stays idempotent and safe even if two instances boot at once.
-    client
-        .execute(
-            "DO $$ BEGIN
-                ALTER TABLE users DROP CONSTRAINT IF EXISTS users_group_name_fkey;
-                ALTER TABLE users ADD CONSTRAINT users_group_name_fkey
-                    FOREIGN KEY (group_name) REFERENCES groups(g_name)
-                    ON UPDATE CASCADE ON DELETE SET NULL;
-            END $$;",
-            &[],
-        )
-        .await
-        .map_err(|e| DaoError::QueryFailed(format!("tighten group_name fk: {}", e)))?;
-
     drop(client);
 
     bootstrap(pool).await?;
