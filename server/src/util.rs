@@ -28,14 +28,7 @@ pub fn normalize_path(path: String) -> String {
     }
 }
 
-/// Check that a resolved path is safely within /home and contains no dangerous bytes.
-pub fn is_safe_path(path: &str) -> bool {
-    let under_home = path == "/home" || path.starts_with("/home/");
-    let no_null = !path.contains('\0');
-    let depth = path.split('/').filter(|s| !s.is_empty()).count();
-    let sane_depth = depth <= 64;
-    under_home && no_null && sane_depth
-}
+pub use securefs_server::storage::is_safe_path;
 
 /// Format ls entry with owner, group, permissions, and name.
 pub fn format_ls_entry(node: &FNode) -> String {
