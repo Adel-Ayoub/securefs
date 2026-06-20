@@ -18,10 +18,10 @@ fn accepts_valid_values() {
 fn rejects_malformed_values() {
     // A hostname is not an ip:port bind address.
     let e = parse_socket_addr("SERVER_ADDR", "localhost:8080").unwrap_err();
-    assert!(e.contains("SERVER_ADDR"), "{}", e);
+    assert!(e.to_string().contains("SERVER_ADDR"), "{}", e);
 
     let e = parse_port("DB_PORT", "not-a-port").unwrap_err();
-    assert!(e.contains("DB_PORT"), "{}", e);
+    assert!(e.to_string().contains("DB_PORT"), "{}", e);
 
     assert!(parse_port("DB_PORT", "70000").is_err(), "out of u16 range");
 }

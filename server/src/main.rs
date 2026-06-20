@@ -147,7 +147,9 @@ async fn main() -> Result<(), String> {
     // Subcommand used by the container HEALTHCHECK; probes /health and exits.
     if std::env::args().nth(1).as_deref() == Some("healthcheck") {
         let addr = env::var("HEALTH_ADDR").unwrap_or_else(|_| "127.0.0.1:8081".to_string());
-        return health::run_healthcheck(&addr).await;
+        return health::run_healthcheck(&addr)
+            .await
+            .map_err(|e| e.to_string());
     }
 
     logging::init();
@@ -181,7 +183,7 @@ async fn main() -> Result<(), String> {
         }
         _ => {}
     }
-    let net = NetConfig::from_env()?;
+    let net = NetConfig::from_env().map_err(|e| e.to_string())?;
 
     let db_host = env::var("DB_HOST").unwrap_or_else(|_| "localhost".to_string());
     let db_name = env::var("DB_NAME").unwrap_or_else(|_| "db".to_string());

@@ -82,28 +82,40 @@ async fn db_ok(pool: &Pool) -> bool {
     }
 }
 
+/// Error from the client-side container health probe.
+#[derive(Debug, thiserror::Error)]
+pub enum HealthCheckError {
+    #[error("health connect failed: {0}")]
+    Connect(std::io::Error),
+    #[error("health write failed: {0}")]
+    Write(std::io::Error),
+    #[error("health read failed: {0}")]
+    Read(std::io::Error),
+    #[error("health check failed: {0}")]
+    BadStatus(String),
+}
+
 // Client side of the container HEALTHCHECK: probe our own /health and map a 200
 // to exit 0, so the runtime image needs no curl/wget.
-pub async fn run_healthcheck(addr: &str) -> Result<(), String> {
+pub async fn run_healthcheck(addr: &str) -> Result<(), HealthCheckError> {
     let mut stream = TcpStream::connect(addr)
         .await
-        .map_err(|e| format!("health connect failed: {}", e))?;
+        .map_err(HealthCheckError::Connect)?;
     stream
         .write_all(b"GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
         .await
-        .map_err(|e| format!("health write failed: {}", e))?;
+        .map_err(HealthCheckError::Write)?;
     let mut buf = Vec::new();
     stream
         .read_to_end(&mut buf)
         .await
-        .map_err(|e| format!("health read failed: {}", e))?;
+        .map_err(HealthCheckError::Read)?;
     let head = String::from_utf8_lossy(&buf);
     if head.starts_with("HTTP/1.1 200") {
         Ok(())
     } else {
-        Err(format!(
-            "health check failed: {}",
-            head.lines().next().unwrap_or("no response")
+        Err(HealthCheckError::BadStatus(
+            head.lines().next().unwrap_or("no response").to_string(),
         ))
     }
 }
