@@ -74,9 +74,11 @@ async fn recv_plain(ws: &mut Ws) -> Result<AppMessage, String> {
 }
 
 async fn send_sealed(ws: &mut Ws, ch: &mut SecureChannel, msg: &AppMessage) -> Result<(), String> {
-    ws.send(Message::Text(ch.seal(msg)?.into()))
-        .await
-        .map_err(|e| e.to_string())
+    ws.send(Message::Text(
+        ch.seal(msg).map_err(|e| e.to_string())?.into(),
+    ))
+    .await
+    .map_err(|e| e.to_string())
 }
 
 async fn recv_opened(ws: &mut Ws, ch: &mut SecureChannel) -> Result<AppMessage, String> {
@@ -86,7 +88,7 @@ async fn recv_opened(ws: &mut Ws, ch: &mut SecureChannel) -> Result<AppMessage, 
         .ok_or("connection closed")?
         .map_err(|e| e.to_string())?;
     let text = msg.into_text().map_err(|e| e.to_string())?;
-    ch.open(&text)
+    ch.open(&text).map_err(|e| e.to_string())
 }
 
 // Connect over wss (retrying until the server binds), perform the handshake,

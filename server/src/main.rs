@@ -375,7 +375,7 @@ where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
     let payload = match channel {
-        Some(ch) => ch.seal(&resp)?,
+        Some(ch) => ch.seal(&resp).map_err(|e| e.to_string())?,
         None => serde_json::to_string(&resp).map_err(|e| e.to_string())?,
     };
     ws_stream
@@ -428,7 +428,7 @@ where
             .to_text()
             .map_err(|e| format!("ws message error: {}", e))?;
         let incoming: AppMessage = if let Some(ch) = channel.as_mut() {
-            ch.open(text)?
+            ch.open(text).map_err(|e| e.to_string())?
         } else {
             serde_json::from_str(text).map_err(|e| format!("decode failed: {}", e))?
         };

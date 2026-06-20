@@ -35,6 +35,23 @@ pub enum Role {
     Server,
 }
 
+/// Error from sealing or opening a secure-channel frame.
+#[derive(Debug, thiserror::Error)]
+pub enum SecureChannelError {
+    #[error("frame codec: {0}")]
+    Codec(#[from] serde_json::Error),
+    #[error("encryption failed")]
+    Encrypt,
+    #[error("authentication failed")]
+    Decrypt,
+    #[error("invalid ciphertext encoding")]
+    InvalidHex,
+    #[error("sequence mismatch (possible replay or reorder)")]
+    SequenceMismatch,
+    #[error("sequence overflow")]
+    SequenceOverflow,
+}
+
 /// Per-connection channel state: a key and monotonic counter for each
 /// direction.
 pub struct SecureChannel {
@@ -94,8 +111,8 @@ impl SecureChannel {
     }
 
     /// Encrypt a message into a wire frame, advancing the send counter.
-    pub fn seal(&mut self, msg: &AppMessage) -> Result<String, String> {
-        let plaintext = serde_json::to_vec(msg).map_err(|e| format!("serialize: {}", e))?;
+    pub fn seal(&mut self, msg: &AppMessage) -> Result<String, SecureChannelError> {
+        let plaintext = serde_json::to_vec(msg)?;
         let seq = self.send_seq;
         let nonce = nonce_for(seq);
         let aad = aad_for(self.send_dir, seq);
@@ -108,23 +125,24 @@ impl SecureChannel {
                     aad: &aad,
                 },
             )
-            .map_err(|_| "encryption failed".to_string())?;
-        let wire = serde_json::to_string(&(hex::encode(ciphertext), seq))
-            .map_err(|e| format!("frame: {}", e))?;
-        self.send_seq = seq.checked_add(1).ok_or("send sequence overflow")?;
+            .map_err(|_| SecureChannelError::Encrypt)?;
+        let wire = serde_json::to_string(&(hex::encode(ciphertext), seq))?;
+        self.send_seq = seq
+            .checked_add(1)
+            .ok_or(SecureChannelError::SequenceOverflow)?;
         Ok(wire)
     }
 
     /// Decrypt a wire frame, enforcing the expected sequence and advancing the
     /// receive counter. Errors leave the channel unchanged so the caller can
     /// fail the connection closed.
-    pub fn open(&mut self, wire: &str) -> Result<AppMessage, String> {
-        let (ciphertext_hex, seq): (String, u64) =
-            serde_json::from_str(wire).map_err(|e| format!("frame decode: {}", e))?;
+    pub fn open(&mut self, wire: &str) -> Result<AppMessage, SecureChannelError> {
+        let (ciphertext_hex, seq): (String, u64) = serde_json::from_str(wire)?;
         if seq != self.recv_seq {
-            return Err("sequence mismatch (possible replay or reorder)".to_string());
+            return Err(SecureChannelError::SequenceMismatch);
         }
-        let ciphertext = hex::decode(&ciphertext_hex).map_err(|_| "invalid ciphertext hex")?;
+        let ciphertext =
+            hex::decode(&ciphertext_hex).map_err(|_| SecureChannelError::InvalidHex)?;
         let nonce = nonce_for(seq);
         let aad = aad_for(self.recv_dir, seq);
         let cipher = Aes256Gcm::new(&self.recv_key);
@@ -136,9 +154,11 @@ impl SecureChannel {
                     aad: &aad,
                 },
             )
-            .map_err(|_| "authentication failed".to_string())?;
-        let msg = serde_json::from_slice(&plaintext).map_err(|e| format!("decode: {}", e))?;
-        self.recv_seq = seq.checked_add(1).ok_or("receive sequence overflow")?;
+            .map_err(|_| SecureChannelError::Decrypt)?;
+        let msg = serde_json::from_slice(&plaintext)?;
+        self.recv_seq = seq
+            .checked_add(1)
+            .ok_or(SecureChannelError::SequenceOverflow)?;
         Ok(msg)
     }
 }

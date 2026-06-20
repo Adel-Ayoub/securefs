@@ -1229,7 +1229,7 @@ async fn send(
     channel: Option<&mut SecureChannel>,
 ) -> Result<(), String> {
     let payload = match channel {
-        Some(ch) => ch.seal(msg)?,
+        Some(ch) => ch.seal(msg).map_err(|e| e.to_string())?,
         None => serde_json::to_string(msg).map_err(|e| e.to_string())?,
     };
     ws.send(Message::Text(payload.into()))
@@ -1255,7 +1255,7 @@ async fn recv(
     let text = msg.to_text().unwrap();
 
     match channel {
-        Some(ch) => ch.open(text),
+        Some(ch) => ch.open(text).map_err(|e| e.to_string()),
         None => serde_json::from_str(text).map_err(|e| format!("decode failed: {}", e)),
     }
 }
