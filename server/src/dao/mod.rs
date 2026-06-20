@@ -4,8 +4,6 @@
 //! that persist `FNode`, `User`, and `Group` records. Queries are kept
 //! thin here so the server loop can stay focused on protocol flow.
 
-use std::fmt;
-
 use deadpool_postgres::Pool;
 
 pub mod admin;
@@ -25,27 +23,20 @@ pub use secret::*;
 pub use users::*;
 
 /// Typed error for all DAO operations.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum DaoError {
     /// Row not found when one was expected.
+    #[error("not found")]
     NotFound,
     /// Query or execute failed at the database level.
+    #[error("query failed: {0}")]
     QueryFailed(String),
     /// Data could not be parsed (hash, key, JSON, etc.).
+    #[error("parse error: {0}")]
     ParseError(String),
     /// A constraint was violated (duplicate, FK, etc.).
+    #[error("conflict: {0}")]
     Conflict(String),
-}
-
-impl fmt::Display for DaoError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            DaoError::NotFound => write!(f, "not found"),
-            DaoError::QueryFailed(msg) => write!(f, "query failed: {}", msg),
-            DaoError::ParseError(msg) => write!(f, "parse error: {}", msg),
-            DaoError::Conflict(msg) => write!(f, "conflict: {}", msg),
-        }
-    }
 }
 
 /// Get a connection from the pool, mapping errors to DaoError.

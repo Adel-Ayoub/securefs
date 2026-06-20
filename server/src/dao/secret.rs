@@ -86,12 +86,9 @@ pub fn salt_pass(pass: String) -> Result<String, DaoError> {
 }
 
 /// Generate a random AES-256 key serialized to JSON for DB storage.
-#[allow(clippy::result_unit_err)]
-pub fn key_gen() -> Result<String, ()> {
+pub fn key_gen() -> Result<String, DaoError> {
     let key = Aes256Gcm::generate_key(&mut OsRng);
     let u8_32_arr: [u8; 32] = key.into();
-    match serde_json::to_string(&u8_32_arr) {
-        Ok(s) => Ok(s),
-        Err(_) => Err(()),
-    }
+    serde_json::to_string(&u8_32_arr)
+        .map_err(|_| DaoError::ParseError("could not serialize symmetric key".into()))
 }

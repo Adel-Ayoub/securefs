@@ -42,8 +42,7 @@ pub async fn create_user(
     let client = conn(pool).await?;
     let db_pass = get_db_pass();
     let salt = salt_pass(pass)?;
-    let key =
-        key_gen().map_err(|_| DaoError::ParseError("could not serialize symmetric key".into()))?;
+    let key = key_gen()?;
     let e = match group {
         Some(_) => client.execute("INSERT INTO users (user_name, group_name, salt, key, is_admin) VALUES ($1, $2, $3, pgp_sym_encrypt($4 ::text, $6 ::text), $5)",
     &[&user_name, &group, &salt, &key, &is_admin, &db_pass]).await,

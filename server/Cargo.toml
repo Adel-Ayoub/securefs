@@ -33,6 +33,7 @@ base64 = "0.22"
 globset = "0.4"
 totp-rs = { version = "5", features = ["gen_secret", "otpauth"] }
 zstd = "0.13"
+thiserror = "2"
 
 # Internal dependencies
 securefs-model = { path = "../model" }

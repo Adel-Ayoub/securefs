@@ -88,8 +88,7 @@ async fn bootstrap(pool: &Pool) -> Result<(), DaoError> {
             }
         };
         let salt = salt_pass(pass)?;
-        let key = key_gen()
-            .map_err(|_| DaoError::ParseError("could not serialize symmetric key".into()))?;
+        let key = key_gen()?;
         tx.execute(
             "INSERT INTO users (user_name, group_name, salt, key, is_admin)
              VALUES ('admin', 'admin_group', $1, pgp_sym_encrypt($2 ::text, $3 ::text), true)",
