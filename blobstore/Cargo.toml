@@ -1,0 +1,15 @@
+[package]
+name = "securefs-blobstore"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "Opaque-keyed blob storage abstraction for SecureFS"
+license.workspace = true
+
+[dependencies]
+async-trait = "0.1"
+thiserror = "2"
+tokio = { version = "1", features = ["fs"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["fs", "macros", "rt-multi-thread"] }
