@@ -3,19 +3,25 @@ use aes_gcm::{Aes256Gcm, Key, KeyInit, Nonce};
 use hkdf::Hkdf;
 use rand_core::OsRng;
 use sha2::Sha256;
+use zeroize::Zeroizing;
 
+use securefs_keyring::{KeyProvider, LocalKeyProvider};
 use securefs_server::dao;
 
 /// Derive a key for file-at-rest encryption using HKDF.
-/// Uses DATA_KEY (dev-only fallback to DB_PASS); production requires DATA_KEY,
-/// enforced at startup. Files stay readable across restarts under the same key.
+/// The master secret is sourced through the KeyProvider (DATA_KEY, dev-only
+/// fallback to DB_PASS; production requires DATA_KEY, enforced at startup).
+/// Derivation is unchanged, so files stay readable across restarts.
 fn get_file_encryption_key() -> Key<Aes256Gcm> {
-    let secret = dao::get_data_key();
-    let hkdf = Hkdf::<Sha256>::new(None, secret.as_bytes());
-    let mut okm = [0u8; 32];
-    hkdf.expand(b"securefs-file-encryption-key-v1", &mut okm)
+    let provider = LocalKeyProvider::new(dao::get_data_key());
+    let master = provider
+        .master_key()
+        .expect("local key provider yields the configured secret");
+    let hkdf = Hkdf::<Sha256>::new(None, &master);
+    let mut okm = Zeroizing::new([0u8; 32]);
+    hkdf.expand(b"securefs-file-encryption-key-v1", okm.as_mut_slice())
         .expect("32 bytes is valid output length for HKDF-SHA256");
-    *Key::<Aes256Gcm>::from_slice(&okm)
+    *Key::<Aes256Gcm>::from_slice(okm.as_slice())
 }
 
 // Version bytes for at-rest format evolution.

@@ -2,6 +2,7 @@
 members = [
   "model",
   "blobstore",
+  "keyring",
   "server",
   "client"
 ]

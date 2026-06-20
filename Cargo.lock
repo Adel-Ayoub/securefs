@@ -2023,6 +2023,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "securefs-keyring"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.18",
+ "zeroize",
+]
+
+[[package]]
 name = "securefs-model"
 version = "0.1.0"
 dependencies = [
@@ -2057,6 +2065,7 @@ dependencies = [
  "refinery",
  "rustls-pki-types",
  "securefs-blobstore",
+ "securefs-keyring",
  "securefs-model",
  "serde",
  "serde_json",
@@ -2069,6 +2078,7 @@ dependencies = [
  "totp-rs",
  "uuid",
  "x25519-dalek",
+ "zeroize",
  "zstd",
 ]
 

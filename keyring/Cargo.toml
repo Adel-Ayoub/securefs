@@ -1,0 +1,11 @@
+[package]
+name = "securefs-keyring"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "Key provider abstraction for SecureFS at-rest encryption"
+license.workspace = true
+
+[dependencies]
+thiserror = "2"
+zeroize = "1"

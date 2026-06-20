@@ -34,11 +34,13 @@ globset = "0.4"
 totp-rs = { version = "5", features = ["gen_secret", "otpauth"] }
 zstd = "0.13"
 thiserror = "2"
+zeroize = "1"
 refinery = { version = "0.8", features = ["tokio-postgres"] }
 
 # Internal dependencies
 securefs-model = { path = "../model" }
 securefs-blobstore = { path = "../blobstore" }
+securefs-keyring = { path = "../keyring" }
 
 [dev-dependencies]
 rcgen = { version = "0.14", default-features = false, features = ["pem", "aws_lc_rs"] }
