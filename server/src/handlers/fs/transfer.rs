@@ -1,10 +1,10 @@
 use base64::Engine;
 use deadpool_postgres::Pool;
+use securefs_blobstore::Blobstore;
 use securefs_model::protocol::{AppMessage, Cmd, FNode};
-use tokio::fs;
-use tokio::io::AsyncWriteExt;
 
 use securefs_server::dao;
+use securefs_server::storage::physical_key;
 
 use crate::crypto::{encrypt_file_content, hash_content};
 use crate::session::{DownloadState, Session, UploadState};
@@ -113,7 +113,7 @@ pub fn upload_chunk(data: Vec<String>, session: &mut Session) -> AppMessage {
     }
 }
 
-pub async fn upload_end(session: &mut Session, pool: &Pool) -> AppMessage {
+pub async fn upload_end(session: &mut Session, pool: &Pool, store: &dyn Blobstore) -> AppMessage {
     if !session.authenticated {
         return AppMessage {
             cmd: Cmd::Failure,
@@ -163,86 +163,78 @@ pub async fn upload_end(session: &mut Session, pool: &Pool) -> AppMessage {
     let encrypted = encrypt_file_content(&content);
     let hash = hash_content(&content);
 
-    let target_path = format!("storage{}", session.current_path);
-    let file_path = format!("{}/{}", target_path, file_name);
-    if fs::create_dir_all(&target_path).await.is_err() {
+    let node_path = format!("{}/{}", session.current_path, file_name);
+    let key = match physical_key(&node_path) {
+        Ok(k) => k,
+        Err(_) => {
+            return AppMessage {
+                cmd: Cmd::Failure,
+                data: vec!["upload failed".into()],
+            }
+        }
+    };
+    if store.put(&key, &encrypted).await.is_err() {
         return AppMessage {
             cmd: Cmd::Failure,
-            data: vec!["upload failed".into()],
+            data: vec!["upload write failed".into()],
         };
     }
 
-    match fs::File::create(&file_path).await {
-        Ok(mut f) => match f.write_all(&encrypted).await {
-            Ok(_) => {
-                let node_path = format!("{}/{}", session.current_path, file_name);
+    // Create FNode if it doesn't exist (new file upload)
+    if dao::get_f_node(pool, node_path.clone())
+        .await
+        .ok()
+        .flatten()
+        .is_none()
+    {
+        let owner = session.current_user.clone().unwrap_or_default();
+        let now = current_timestamp();
+        let new_file = FNode {
+            id: -1,
+            name: file_name.clone(),
+            path: node_path.clone(),
+            owner,
+            hash: hash.clone(),
+            parent: session.current_path.clone(),
+            dir: false,
+            u: 6,
+            g: 6,
+            o: 4,
+            children: vec![],
+            encrypted_name: file_name.clone(),
+            size: content.len() as i64,
+            created_at: now,
+            modified_at: now,
+            file_group: session.current_user_group.clone(),
+            link_target: None,
+        };
+        let _ = dao::add_file(pool, new_file).await;
+        let _ =
+            dao::add_file_to_parent(pool, session.current_path.clone(), file_name.clone()).await;
+    }
 
-                // Create FNode if it doesn't exist (new file upload)
-                if dao::get_f_node(pool, node_path.clone())
-                    .await
-                    .ok()
-                    .flatten()
-                    .is_none()
-                {
-                    let owner = session.current_user.clone().unwrap_or_default();
-                    let now = current_timestamp();
-                    let new_file = FNode {
-                        id: -1,
-                        name: file_name.clone(),
-                        path: node_path.clone(),
-                        owner,
-                        hash: hash.clone(),
-                        parent: session.current_path.clone(),
-                        dir: false,
-                        u: 6,
-                        g: 6,
-                        o: 4,
-                        children: vec![],
-                        encrypted_name: file_name.clone(),
-                        size: content.len() as i64,
-                        created_at: now,
-                        modified_at: now,
-                        file_group: session.current_user_group.clone(),
-                        link_target: None,
-                    };
-                    let _ = dao::add_file(pool, new_file).await;
-                    let _ = dao::add_file_to_parent(
-                        pool,
-                        session.current_path.clone(),
-                        file_name.clone(),
-                    )
-                    .await;
-                }
-
-                // Use advisory lock for the hash update
-                if let Err(e) = dao::update_hash_locked(pool, node_path.clone(), hash.clone()).await
-                {
-                    if matches!(e, dao::DaoError::Conflict(_)) {
-                        return AppMessage {
-                            cmd: Cmd::Failure,
-                            data: vec!["file is being modified, try again".into()],
-                        };
-                    }
-                    let _ = dao::update_hash(pool, node_path, file_name, hash).await;
-                }
-                AppMessage {
-                    cmd: Cmd::UploadEnd,
-                    data: vec![format!("{} bytes uploaded", content.len())],
-                }
-            }
-            Err(_) => AppMessage {
+    // Use advisory lock for the hash update.
+    if let Err(e) = dao::update_hash_locked(pool, node_path.clone(), hash.clone()).await {
+        if matches!(e, dao::DaoError::Conflict(_)) {
+            return AppMessage {
                 cmd: Cmd::Failure,
-                data: vec!["upload write failed".into()],
-            },
-        },
-        Err(_) => AppMessage {
-            cmd: Cmd::Failure,
-            data: vec!["upload failed".into()],
-        },
+                data: vec!["file is being modified, try again".into()],
+            };
+        }
+        let _ = dao::update_hash(pool, node_path, file_name, hash).await;
+    }
+    AppMessage {
+        cmd: Cmd::UploadEnd,
+        data: vec![format!("{} bytes uploaded", content.len())],
     }
 }
 
-pub async fn download_start(data: Vec<String>, session: &mut Session, pool: &Pool) -> AppMessage {
+pub async fn download_start(
+    data: Vec<String>,
+    session: &mut Session,
+    pool: &Pool,
+    store: &dyn Blobstore,
+) -> AppMessage {
     if !session.authenticated {
         return AppMessage {
             cmd: Cmd::Failure,
@@ -259,7 +251,7 @@ pub async fn download_start(data: Vec<String>, session: &mut Session, pool: &Poo
     }
 
     let node_path = format!("{}/{}", session.current_path, file_name);
-    let node = match dao::get_f_node(pool, node_path).await {
+    let node = match dao::get_f_node(pool, node_path.clone()).await {
         Ok(Some(n)) if !n.dir => n,
         _ => {
             return AppMessage {
@@ -284,8 +276,7 @@ pub async fn download_start(data: Vec<String>, session: &mut Session, pool: &Poo
         };
     }
 
-    let file_path = format!("storage{}/{}", session.current_path, file_name);
-    let content = match read_file_bytes(&file_path).await {
+    let content = match read_file_bytes(store, &node_path).await {
         Ok(c) => c,
         Err(e) => return e,
     };

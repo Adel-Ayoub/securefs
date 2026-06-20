@@ -1,11 +1,9 @@
 use deadpool_postgres::Pool;
+use securefs_blobstore::Blobstore;
 use securefs_model::protocol::{AppMessage, Cmd};
-use tokio::fs;
-use tokio::io::AsyncReadExt;
 
 use securefs_server::dao;
 
-use crate::crypto::decrypt_file_content;
 use crate::session::Session;
 use crate::util::*;
 
@@ -15,15 +13,20 @@ use super::read_file_bytes;
 const MAX_GREP_SCAN_BYTES: usize = 64 * 1024 * 1024;
 
 // Decrypt to UTF-8 text for the line-oriented commands (cat, head, tail, grep).
-async fn read_file_content(file_path: &str) -> Result<String, AppMessage> {
-    let bytes = read_file_bytes(file_path).await?;
+async fn read_file_content(store: &dyn Blobstore, path: &str) -> Result<String, AppMessage> {
+    let bytes = read_file_bytes(store, path).await?;
     String::from_utf8(bytes).map_err(|_| AppMessage {
         cmd: Cmd::Failure,
         data: vec!["binary file; use download".into()],
     })
 }
 
-pub async fn cat(data: Vec<String>, session: &Session, pool: &Pool) -> AppMessage {
+pub async fn cat(
+    data: Vec<String>,
+    session: &Session,
+    pool: &Pool,
+    store: &dyn Blobstore,
+) -> AppMessage {
     if !session.authenticated {
         return AppMessage {
             cmd: Cmd::Failure,
@@ -39,21 +42,20 @@ pub async fn cat(data: Vec<String>, session: &Session, pool: &Pool) -> AppMessag
         };
     }
 
-    let target_path = format!("storage{}", session.current_path);
-    let file_path = format!("{}/{}", target_path, file_name);
+    let node_path = format!("{}/{}", session.current_path, file_name);
 
-    match dao::get_f_node(pool, format!("{}/{}", session.current_path, file_name)).await {
+    match dao::get_f_node(pool, node_path.clone()).await {
         Ok(Some(node)) if node.dir => AppMessage {
             cmd: Cmd::Failure,
             data: vec!["cannot cat dir".into()],
         },
         Ok(Some(node)) => {
-            // Follow symlink to resolve actual file
-            let (resolved_node, resolved_phys) = if let Some(ref target) = node.link_target {
+            // Follow symlink to resolve the actual file's logical path.
+            let (resolved_node, resolved_path) = if let Some(ref target) = node.link_target {
                 match dao::get_f_node(pool, target.clone()).await {
                     Ok(Some(tgt)) if !tgt.dir => {
-                        let phys = format!("storage{}", tgt.path);
-                        (tgt, phys)
+                        let path = tgt.path.clone();
+                        (tgt, path)
                     }
                     Ok(Some(_)) => {
                         return AppMessage {
@@ -69,7 +71,7 @@ pub async fn cat(data: Vec<String>, session: &Session, pool: &Pool) -> AppMessag
                     }
                 }
             } else {
-                (node, file_path.clone())
+                (node, node_path.clone())
             };
 
             let owner_group = dao::get_file_group(
@@ -85,46 +87,21 @@ pub async fn cat(data: Vec<String>, session: &Session, pool: &Pool) -> AppMessag
                 session.current_user_group.as_ref(),
                 owner_group.as_ref(),
             ) {
-                let file_path = resolved_phys;
-                match fs::File::open(&file_path).await {
-                    Ok(mut f) => {
-                        let mut encrypted = Vec::new();
-                        match f.read_to_end(&mut encrypted).await {
-                            Ok(_) => match decrypt_file_content(&encrypted) {
-                                Ok(decrypted) => match String::from_utf8(decrypted) {
-                                    Ok(content) => {
-                                        audit!(
-                                            pool,
-                                            "FILE_READ",
-                                            session.current_user.as_deref().unwrap_or("-"),
-                                            &file_path,
-                                            "ok"
-                                        );
-                                        AppMessage {
-                                            cmd: Cmd::Cat,
-                                            data: vec![content],
-                                        }
-                                    }
-                                    Err(_) => AppMessage {
-                                        cmd: Cmd::Failure,
-                                        data: vec!["invalid utf-8".to_string()],
-                                    },
-                                },
-                                Err(e) => AppMessage {
-                                    cmd: Cmd::Failure,
-                                    data: vec![e.to_string()],
-                                },
-                            },
-                            Err(_) => AppMessage {
-                                cmd: Cmd::Failure,
-                                data: vec!["cat failed".to_string()],
-                            },
+                match read_file_content(store, &resolved_path).await {
+                    Ok(content) => {
+                        audit!(
+                            pool,
+                            "FILE_READ",
+                            session.current_user.as_deref().unwrap_or("-"),
+                            &resolved_path,
+                            "ok"
+                        );
+                        AppMessage {
+                            cmd: Cmd::Cat,
+                            data: vec![content],
                         }
                     }
-                    Err(_) => AppMessage {
-                        cmd: Cmd::Failure,
-                        data: vec!["cat failed".to_string()],
-                    },
+                    Err(e) => e,
                 }
             } else {
                 AppMessage {
@@ -140,7 +117,12 @@ pub async fn cat(data: Vec<String>, session: &Session, pool: &Pool) -> AppMessag
     }
 }
 
-pub async fn head(data: Vec<String>, session: &Session, pool: &Pool) -> AppMessage {
+pub async fn head(
+    data: Vec<String>,
+    session: &Session,
+    pool: &Pool,
+    store: &dyn Blobstore,
+) -> AppMessage {
     if !session.authenticated {
         return AppMessage {
             cmd: Cmd::Failure,
@@ -158,7 +140,7 @@ pub async fn head(data: Vec<String>, session: &Session, pool: &Pool) -> AppMessa
     }
 
     let node_path = format!("{}/{}", session.current_path, file_name);
-    match dao::get_f_node(pool, node_path).await {
+    match dao::get_f_node(pool, node_path.clone()).await {
         Ok(Some(node)) if node.dir => AppMessage {
             cmd: Cmd::Failure,
             data: vec!["cannot read directory".into()],
@@ -179,8 +161,7 @@ pub async fn head(data: Vec<String>, session: &Session, pool: &Pool) -> AppMessa
                     data: vec!["no read permission".into()],
                 };
             }
-            let file_path = format!("storage{}/{}", session.current_path, file_name);
-            match read_file_content(&file_path).await {
+            match read_file_content(store, &node_path).await {
                 Ok(content) => {
                     let lines: Vec<&str> = content.lines().take(n).collect();
                     AppMessage {
@@ -198,7 +179,12 @@ pub async fn head(data: Vec<String>, session: &Session, pool: &Pool) -> AppMessa
     }
 }
 
-pub async fn tail(data: Vec<String>, session: &Session, pool: &Pool) -> AppMessage {
+pub async fn tail(
+    data: Vec<String>,
+    session: &Session,
+    pool: &Pool,
+    store: &dyn Blobstore,
+) -> AppMessage {
     if !session.authenticated {
         return AppMessage {
             cmd: Cmd::Failure,
@@ -216,7 +202,7 @@ pub async fn tail(data: Vec<String>, session: &Session, pool: &Pool) -> AppMessa
     }
 
     let node_path = format!("{}/{}", session.current_path, file_name);
-    match dao::get_f_node(pool, node_path).await {
+    match dao::get_f_node(pool, node_path.clone()).await {
         Ok(Some(node)) if node.dir => AppMessage {
             cmd: Cmd::Failure,
             data: vec!["cannot read directory".into()],
@@ -237,8 +223,7 @@ pub async fn tail(data: Vec<String>, session: &Session, pool: &Pool) -> AppMessa
                     data: vec!["no read permission".into()],
                 };
             }
-            let file_path = format!("storage{}/{}", session.current_path, file_name);
-            match read_file_content(&file_path).await {
+            match read_file_content(store, &node_path).await {
                 Ok(content) => {
                     let all_lines: Vec<&str> = content.lines().collect();
                     let start = all_lines.len().saturating_sub(n);
@@ -258,7 +243,12 @@ pub async fn tail(data: Vec<String>, session: &Session, pool: &Pool) -> AppMessa
     }
 }
 
-pub async fn grep(data: Vec<String>, session: &Session, pool: &Pool) -> AppMessage {
+pub async fn grep(
+    data: Vec<String>,
+    session: &Session,
+    pool: &Pool,
+    store: &dyn Blobstore,
+) -> AppMessage {
     if !session.authenticated {
         return AppMessage {
             cmd: Cmd::Failure,
@@ -307,8 +297,7 @@ pub async fn grep(data: Vec<String>, session: &Session, pool: &Pool) -> AppMessa
             continue;
         }
 
-        let file_path = format!("storage{}", node.path);
-        if let Ok(content) = read_file_content(&file_path).await {
+        if let Ok(content) = read_file_content(store, &node.path).await {
             scanned += content.len();
             for (i, line) in content.lines().enumerate() {
                 if line.contains(&pattern) {

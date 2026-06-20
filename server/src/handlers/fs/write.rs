@@ -1,12 +1,10 @@
 use deadpool_postgres::Pool;
 use globset::GlobBuilder;
+use securefs_blobstore::Blobstore;
 use securefs_model::protocol::{AppMessage, Cmd, FNode};
-use std::fs as stdfs;
-use std::path::Path;
-use tokio::fs;
-use tokio::io::AsyncWriteExt;
 
 use securefs_server::dao;
+use securefs_server::storage::physical_key;
 
 use crate::crypto::{encrypt_file_content, hash_content};
 use crate::session::Session;
@@ -218,7 +216,12 @@ pub async fn touch(data: Vec<String>, session: &Session, pool: &Pool) -> AppMess
     }
 }
 
-pub async fn echo(data: Vec<String>, session: &Session, pool: &Pool) -> AppMessage {
+pub async fn echo(
+    data: Vec<String>,
+    session: &Session,
+    pool: &Pool,
+    store: &dyn Blobstore,
+) -> AppMessage {
     if !session.authenticated {
         return AppMessage {
             cmd: Cmd::Failure,
@@ -247,95 +250,86 @@ pub async fn echo(data: Vec<String>, session: &Session, pool: &Pool) -> AppMessa
                 session.current_user_group.as_ref(),
                 owner_group.as_ref(),
             ) {
-                let target_path = format!("storage{}", session.current_path);
-                let file_path = format!("{}/{}", target_path, file_name);
-                if fs::create_dir_all(&target_path).await.is_err() {
+                let node_path = format!("{}/{}", session.current_path, file_name);
+                let key = match physical_key(&node_path) {
+                    Ok(k) => k,
+                    Err(_) => {
+                        return AppMessage {
+                            cmd: Cmd::Failure,
+                            data: vec!["invalid path".to_string()],
+                        }
+                    }
+                };
+                let encrypted = encrypt_file_content(content.as_bytes());
+                if store.put(&key, &encrypted).await.is_err() {
                     return AppMessage {
                         cmd: Cmd::Failure,
                         data: vec!["echo failed".to_string()],
                     };
                 }
-                match fs::File::create(&file_path).await {
-                    Ok(mut f) => {
-                        let encrypted = encrypt_file_content(content.as_bytes());
-                        match f.write_all(&encrypted).await {
-                            Ok(_) => {
-                                let hash = hash_content(content.as_bytes());
-                                let node_path = format!("{}/{}", session.current_path, file_name);
-                                // Create the FNode if this is a new file; otherwise
-                                // echo writes ciphertext to disk with no visible node.
-                                if dao::get_f_node(pool, node_path.clone())
-                                    .await
-                                    .ok()
-                                    .flatten()
-                                    .is_none()
-                                {
-                                    let now = current_timestamp();
-                                    let new_file = FNode {
-                                        id: -1,
-                                        name: file_name.clone(),
-                                        path: node_path.clone(),
-                                        owner: session.current_user.clone().unwrap_or_default(),
-                                        hash: hash.clone(),
-                                        parent: session.current_path.clone(),
-                                        dir: false,
-                                        u: 6,
-                                        g: 6,
-                                        o: 4,
-                                        children: vec![],
-                                        encrypted_name: file_name.clone(),
-                                        size: content.len() as i64,
-                                        created_at: now,
-                                        modified_at: now,
-                                        file_group: session.current_user_group.clone(),
-                                        link_target: None,
-                                    };
-                                    let _ = dao::add_file(pool, new_file).await;
-                                    let _ = dao::add_file_to_parent(
-                                        pool,
-                                        session.current_path.clone(),
-                                        file_name.clone(),
-                                    )
-                                    .await;
-                                }
-                                // Use advisory lock for existing files
-                                if let Err(e) =
-                                    dao::update_hash_locked(pool, node_path.clone(), hash.clone())
-                                        .await
-                                {
-                                    if matches!(e, dao::DaoError::Conflict(_)) {
-                                        return AppMessage {
-                                            cmd: Cmd::Failure,
-                                            data: vec!["file is being modified, try again".into()],
-                                        };
-                                    }
-                                    // File may not exist yet — fall back to regular update
-                                    let _ =
-                                        dao::update_hash(pool, node_path, file_name.clone(), hash)
-                                            .await;
-                                }
-                                audit!(
-                                    pool,
-                                    "FILE_WRITE",
-                                    session.current_user.as_deref().unwrap_or("-"),
-                                    &file_path,
-                                    "ok"
-                                );
-                                AppMessage {
-                                    cmd: Cmd::Echo,
-                                    data: vec!["ok".to_string()],
-                                }
-                            }
-                            Err(_) => AppMessage {
-                                cmd: Cmd::Failure,
-                                data: vec!["echo failed".to_string()],
-                            },
-                        }
+
+                let hash = hash_content(content.as_bytes());
+                // Create the FNode if this is a new file; otherwise echo writes
+                // ciphertext to disk with no visible node.
+                if dao::get_f_node(pool, node_path.clone())
+                    .await
+                    .ok()
+                    .flatten()
+                    .is_none()
+                {
+                    let now = current_timestamp();
+                    let new_file = FNode {
+                        id: -1,
+                        name: file_name.clone(),
+                        path: node_path.clone(),
+                        owner: session.current_user.clone().unwrap_or_default(),
+                        hash: hash.clone(),
+                        parent: session.current_path.clone(),
+                        dir: false,
+                        u: 6,
+                        g: 6,
+                        o: 4,
+                        children: vec![],
+                        encrypted_name: file_name.clone(),
+                        size: content.len() as i64,
+                        created_at: now,
+                        modified_at: now,
+                        file_group: session.current_user_group.clone(),
+                        link_target: None,
+                    };
+                    let _ = dao::add_file(pool, new_file).await;
+                    let _ = dao::add_file_to_parent(
+                        pool,
+                        session.current_path.clone(),
+                        file_name.clone(),
+                    )
+                    .await;
+                }
+
+                // Use advisory lock for existing files.
+                if let Err(e) = dao::update_hash_locked(pool, node_path.clone(), hash.clone()).await
+                {
+                    if matches!(e, dao::DaoError::Conflict(_)) {
+                        return AppMessage {
+                            cmd: Cmd::Failure,
+                            data: vec!["file is being modified, try again".into()],
+                        };
                     }
-                    Err(_) => AppMessage {
-                        cmd: Cmd::Failure,
-                        data: vec!["echo failed".to_string()],
-                    },
+                    // File may not exist yet — fall back to regular update.
+                    let _ =
+                        dao::update_hash(pool, node_path.clone(), file_name.clone(), hash).await;
+                }
+
+                audit!(
+                    pool,
+                    "FILE_WRITE",
+                    session.current_user.as_deref().unwrap_or("-"),
+                    &node_path,
+                    "ok"
+                );
+                AppMessage {
+                    cmd: Cmd::Echo,
+                    data: vec!["ok".to_string()],
                 }
             } else {
                 AppMessage {
@@ -351,7 +345,12 @@ pub async fn echo(data: Vec<String>, session: &Session, pool: &Pool) -> AppMessa
     }
 }
 
-pub async fn delete(data: Vec<String>, session: &Session, pool: &Pool) -> AppMessage {
+pub async fn delete(
+    data: Vec<String>,
+    session: &Session,
+    pool: &Pool,
+    store: &dyn Blobstore,
+) -> AppMessage {
     if !session.authenticated {
         return AppMessage {
             cmd: Cmd::Failure,
@@ -429,11 +428,12 @@ pub async fn delete(data: Vec<String>, session: &Session, pool: &Pool) -> AppMes
             .await
             {
                 Ok(_) => {
-                    // Remove backing storage only after the DB change commits.
-                    let storage_path = format!("storage{}", path);
-                    if Path::new(&storage_path).exists() {
-                        let _ = stdfs::remove_file(&storage_path)
-                            .or_else(|_| stdfs::remove_dir_all(&storage_path));
+                    // Remove the backing blob only after the DB change commits.
+                    // Directories have no blob; deleting an absent key is a no-op.
+                    if !node.dir {
+                        if let Ok(key) = physical_key(&path) {
+                            let _ = store.delete(&key).await;
+                        }
                     }
                     deleted += 1;
                 }

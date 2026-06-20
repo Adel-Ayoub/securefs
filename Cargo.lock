@@ -2001,6 +2001,7 @@ dependencies = [
  "rand_core 0.6.4",
  "rcgen",
  "rustls-pki-types",
+ "securefs-blobstore",
  "securefs-model",
  "serde",
  "serde_json",

@@ -27,6 +27,7 @@ use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
 
+use securefs_blobstore::{Blobstore, LocalFs};
 use securefs_server::config::NetConfig;
 use securefs_server::dao;
 use securefs_server::health;
@@ -209,6 +210,11 @@ async fn main() -> Result<(), String> {
         .await
         .map_err(|e| format!("database init failed: {}", e))?;
 
+    // Single blob backend for the process; on-disk root is STORAGE_DIR (default
+    // "storage"). Logical paths are mapped to opaque keys at the chokepoint.
+    let storage_root = env::var("STORAGE_DIR").unwrap_or_else(|_| "storage".to_string());
+    let store: Arc<dyn Blobstore> = Arc::new(LocalFs::new(storage_root));
+
     let listener = TcpListener::bind(net.server_addr)
         .await
         .map_err(|e| format!("bind failed: {}", e))?;
@@ -308,16 +314,17 @@ async fn main() -> Result<(), String> {
         let sr = session_registry.clone();
         let ip = addr.ip();
         let tls = tls_acceptor.clone();
+        let st = store.clone();
         tokio::spawn(async move {
             let _permit = permit; // released when the connection ends
             let _active = active; // decrements the active gauge on drop
             let result = if let Some(acceptor) = tls {
                 match acceptor.accept(stream).await {
-                    Ok(tls_stream) => handle_tls_connection(tls_stream, pg, rl, sr, ip).await,
+                    Ok(tls_stream) => handle_tls_connection(tls_stream, pg, rl, sr, ip, st).await,
                     Err(e) => Err(format!("TLS handshake failed: {}", e)),
                 }
             } else {
-                handle_connection(stream, pg, rl, sr, ip).await
+                handle_connection(stream, pg, rl, sr, ip, st).await
             };
             if let Err(e) = result {
                 warn!("Connection error: {}", e);
@@ -346,11 +353,20 @@ async fn handle_tls_connection(
     rate_limiter: RateLimiter,
     session_registry: SessionRegistry,
     client_ip: IpAddr,
+    store: Arc<dyn Blobstore>,
 ) -> Result<(), String> {
     let ws_stream = accept_async_with_config(stream, Some(ws_config()))
         .await
         .map_err(|e| format!("TLS handshake failed: {}", e))?;
-    handle_ws_stream(ws_stream, pool, rate_limiter, session_registry, client_ip).await
+    handle_ws_stream(
+        ws_stream,
+        pool,
+        rate_limiter,
+        session_registry,
+        client_ip,
+        store,
+    )
+    .await
 }
 
 /// Handle a plain TCP WebSocket connection lifecycle.
@@ -360,11 +376,20 @@ async fn handle_connection(
     rate_limiter: RateLimiter,
     session_registry: SessionRegistry,
     client_ip: IpAddr,
+    store: Arc<dyn Blobstore>,
 ) -> Result<(), String> {
     let ws_stream = accept_async_with_config(stream, Some(ws_config()))
         .await
         .map_err(|e| format!("handshake failed: {}", e))?;
-    handle_ws_stream(ws_stream, pool, rate_limiter, session_registry, client_ip).await
+    handle_ws_stream(
+        ws_stream,
+        pool,
+        rate_limiter,
+        session_registry,
+        client_ip,
+        store,
+    )
+    .await
 }
 
 /// Serialize and send an application message over the websocket.
@@ -395,6 +420,7 @@ async fn handle_ws_stream<S>(
     rate_limiter: RateLimiter,
     session_registry: SessionRegistry,
     client_ip: IpAddr,
+    store: Arc<dyn Blobstore>,
 ) -> Result<(), String>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
@@ -541,17 +567,23 @@ where
                 None,
             ),
             Cmd::Delete => (
-                handlers::fs::delete(incoming.data, &session, &pool).await,
+                handlers::fs::delete(incoming.data, &session, &pool, &*store).await,
                 None,
             ),
-            Cmd::Mv => (handlers::fs::mv(incoming.data, &session, &pool).await, None),
-            Cmd::Cp => (handlers::fs::cp(incoming.data, &session, &pool).await, None),
+            Cmd::Mv => (
+                handlers::fs::mv(incoming.data, &session, &pool, &*store).await,
+                None,
+            ),
+            Cmd::Cp => (
+                handlers::fs::cp(incoming.data, &session, &pool, &*store).await,
+                None,
+            ),
             Cmd::Cat => (
-                handlers::fs::cat(incoming.data, &session, &pool).await,
+                handlers::fs::cat(incoming.data, &session, &pool, &*store).await,
                 None,
             ),
             Cmd::Echo => (
-                handlers::fs::echo(incoming.data, &session, &pool).await,
+                handlers::fs::echo(incoming.data, &session, &pool, &*store).await,
                 None,
             ),
             Cmd::Chmod => (
@@ -567,7 +599,7 @@ where
                 None,
             ),
             Cmd::Scan => (
-                handlers::perms::scan(incoming.data, &session, &pool).await,
+                handlers::perms::scan(incoming.data, &session, &pool, &*store).await,
                 None,
             ),
             Cmd::GetEncryptedFile => (
@@ -577,20 +609,20 @@ where
             Cmd::Whoami => (handlers::user::whoami(&session), None),
             Cmd::Tree => (handlers::fs::tree(&session, &pool).await, None),
             Cmd::Stat => (
-                handlers::fs::stat(incoming.data, &session, &pool).await,
+                handlers::fs::stat(incoming.data, &session, &pool, &*store).await,
                 None,
             ),
-            Cmd::Du => (handlers::fs::du(&session, &pool).await, None),
+            Cmd::Du => (handlers::fs::du(&session, &pool, &*store).await, None),
             Cmd::Head => (
-                handlers::fs::head(incoming.data, &session, &pool).await,
+                handlers::fs::head(incoming.data, &session, &pool, &*store).await,
                 None,
             ),
             Cmd::Tail => (
-                handlers::fs::tail(incoming.data, &session, &pool).await,
+                handlers::fs::tail(incoming.data, &session, &pool, &*store).await,
                 None,
             ),
             Cmd::Grep => (
-                handlers::fs::grep(incoming.data, &session, &pool).await,
+                handlers::fs::grep(incoming.data, &session, &pool, &*store).await,
                 None,
             ),
             Cmd::Ln => (handlers::fs::ln(incoming.data, &session, &pool).await, None),
@@ -602,9 +634,12 @@ where
                 handlers::fs::upload_chunk(incoming.data, &mut session),
                 None,
             ),
-            Cmd::UploadEnd => (handlers::fs::upload_end(&mut session, &pool).await, None),
+            Cmd::UploadEnd => (
+                handlers::fs::upload_end(&mut session, &pool, &*store).await,
+                None,
+            ),
             Cmd::DownloadStart => (
-                handlers::fs::download_start(incoming.data, &mut session, &pool).await,
+                handlers::fs::download_start(incoming.data, &mut session, &pool, &*store).await,
                 None,
             ),
             Cmd::DownloadChunk => (handlers::fs::download_chunk(incoming.data, &session), None),

@@ -1,10 +1,11 @@
 use deadpool_postgres::Pool;
 use globset::GlobBuilder;
 use log::info;
+use securefs_blobstore::Blobstore;
 use securefs_model::protocol::{AppMessage, Cmd};
-use tokio::fs;
 
 use securefs_server::dao;
+use securefs_server::storage::physical_key;
 
 use crate::crypto::{decrypt_file_content, hash_content};
 use crate::session::Session;
@@ -254,7 +255,12 @@ pub async fn chgrp(data: Vec<String>, session: &Session, pool: &Pool) -> AppMess
     }
 }
 
-pub async fn scan(data: Vec<String>, session: &Session, pool: &Pool) -> AppMessage {
+pub async fn scan(
+    data: Vec<String>,
+    session: &Session,
+    pool: &Pool,
+    store: &dyn Blobstore,
+) -> AppMessage {
     if !session.authenticated {
         return AppMessage {
             cmd: Cmd::Failure,
@@ -287,8 +293,16 @@ pub async fn scan(data: Vec<String>, session: &Session, pool: &Pool) -> AppMessa
                 session.current_user_group.as_ref(),
                 owner_group.as_ref(),
             ) {
-                let target_path = format!("storage{}/{}", session.current_path, file_name);
-                match fs::read(&target_path).await {
+                let key = match physical_key(&file_path) {
+                    Ok(k) => k,
+                    Err(_) => {
+                        return AppMessage {
+                            cmd: Cmd::Failure,
+                            data: vec!["scan failed: file not found".to_string()],
+                        }
+                    }
+                };
+                match store.get(&key).await {
                     Ok(encrypted) => match decrypt_file_content(&encrypted) {
                         Ok(content) => {
                             let new_hash = hash_content(&content);

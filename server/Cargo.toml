@@ -37,6 +37,8 @@ thiserror = "2"
 
 # Internal dependencies
 securefs-model = { path = "../model" }
+securefs-blobstore = { path = "../blobstore" }
 
 [dev-dependencies]
 rcgen = { version = "0.14", default-features = false, features = ["pem", "aws_lc_rs"] }
+securefs-blobstore = { path = "../blobstore" }

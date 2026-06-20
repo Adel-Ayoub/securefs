@@ -1,6 +1,8 @@
 use deadpool_postgres::{Config, ManagerConfig, Pool, RecyclingMethod, Runtime};
+use securefs_blobstore::{Blobstore, LocalFs};
 use securefs_model::protocol::FNode;
 use securefs_server::dao;
+use securefs_server::storage::physical_key;
 use tokio_postgres::NoTls;
 use uuid::Uuid;
 
@@ -96,15 +98,14 @@ async fn test_recursive_copy() {
         .await
         .expect("link file1");
 
-    // Create physical files
-    let storage_root = "storage";
-    let src_phys_path = format!("{}{}", storage_root, src_dir_path);
-    tokio::fs::create_dir_all(&src_phys_path)
+    // Seed the source blob at its opaque key (copy_recursive copies bytes as-is).
+    let store = LocalFs::new("storage");
+    let file1_path = format!("{}/file1", src_dir_path);
+    let src_key = physical_key(&file1_path).expect("src key");
+    store
+        .put(&src_key, b"data1")
         .await
-        .expect("create src phys dir");
-    tokio::fs::write(format!("{}/file1", src_phys_path), "data1")
-        .await
-        .expect("write file1");
+        .expect("write file1 blob");
 
     // Copy src_dir to dst_dir
     let dst_dir_name = format!("dst_{}", Uuid::new_v4());
@@ -115,6 +116,7 @@ async fn test_recursive_copy() {
         src_dir_path.clone(),
         dst_dir_path.clone(),
         "admin".to_string(),
+        &store,
     )
     .await
     .expect("copy_recursive failed");
@@ -133,14 +135,14 @@ async fn test_recursive_copy() {
         "Destination file1 not found in DB"
     );
 
-    // Verify Physical File exists
-    let dst_phys_path = format!("{}{}/file1", storage_root, dst_dir_path);
+    // Verify the destination blob exists at its opaque key.
+    let dst_key = physical_key(&dst_file1_path).expect("dst key");
     assert!(
-        std::path::Path::new(&dst_phys_path).exists(),
-        "Physical file not copied"
+        store.exists(&dst_key).await.expect("exists check"),
+        "destination blob not copied"
     );
 
-    // Clean up physical
-    let _ = tokio::fs::remove_dir_all(src_phys_path).await;
-    let _ = tokio::fs::remove_dir_all(format!("{}{}", storage_root, dst_dir_path)).await;
+    // Clean up blobs.
+    let _ = store.delete(&src_key).await;
+    let _ = store.delete(&dst_key).await;
 }

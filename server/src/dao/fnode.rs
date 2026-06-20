@@ -1,7 +1,9 @@
 use deadpool_postgres::Pool;
+use securefs_blobstore::Blobstore;
 use securefs_model::protocol::FNode;
 
 use super::{conn, get_db_pass, path_digest, DaoError};
+use crate::storage::physical_key;
 
 /// Persist a file or directory node.
 pub async fn add_file(pool: &Pool, file: FNode) -> Result<String, DaoError> {
@@ -432,6 +434,7 @@ pub async fn copy_recursive(
     src_root: String,
     dst_root: String,
     owner: String,
+    store: &dyn Blobstore,
 ) -> Result<(), DaoError> {
     let mut stack = vec![(src_root, dst_root)];
 
@@ -496,18 +499,14 @@ pub async fn copy_recursive(
                     stack.push((child_src, child_dst));
                 }
             } else {
-                let src_storage = format!("storage{}", src);
-                let dst_storage = format!("storage{}", dst);
-                tokio::fs::copy(&src_storage, &dst_storage)
+                let src_key = physical_key(&src)
+                    .map_err(|e| DaoError::QueryFailed(format!("copy src key: {}", e)))?;
+                let dst_key = physical_key(&dst)
+                    .map_err(|e| DaoError::QueryFailed(format!("copy dst key: {}", e)))?;
+                store
+                    .copy(&src_key, &dst_key)
                     .await
-                    .map_err(|e| DaoError::QueryFailed(format!("fs copy: {}", e)))?;
-            }
-
-            if node.dir {
-                let dst_storage = format!("storage{}", dst);
-                tokio::fs::create_dir_all(&dst_storage)
-                    .await
-                    .map_err(|e| DaoError::QueryFailed(format!("fs mkdir: {}", e)))?;
+                    .map_err(|e| DaoError::QueryFailed(format!("blob copy: {}", e)))?;
             }
         }
     }

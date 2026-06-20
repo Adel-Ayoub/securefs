@@ -1,14 +1,20 @@
 use deadpool_postgres::Pool;
+use securefs_blobstore::Blobstore;
 use securefs_model::protocol::{AppMessage, Cmd};
-use std::fs as stdfs;
 use std::path::Path;
 
 use securefs_server::dao;
+use securefs_server::storage::physical_key;
 
 use crate::session::Session;
 use crate::util::*;
 
-pub async fn mv(data: Vec<String>, session: &Session, pool: &Pool) -> AppMessage {
+pub async fn mv(
+    data: Vec<String>,
+    session: &Session,
+    pool: &Pool,
+    store: &dyn Blobstore,
+) -> AppMessage {
     if !session.authenticated {
         return AppMessage {
             cmd: Cmd::Failure,
@@ -52,6 +58,14 @@ pub async fn mv(data: Vec<String>, session: &Session, pool: &Pool) -> AppMessage
                 session.current_user_group.as_ref(),
                 owner_group.as_ref(),
             ) {
+                // Snapshot blob paths before the DB rewrites descendant paths:
+                // the node itself plus every descendant file. The key derives
+                // from the full path, so each must move from key(old) to
+                // key(new); directories and never-written files have no blob.
+                let mut blob_paths = vec![old_path.clone()];
+                if let Ok(sub) = dao::get_subtree(pool, old_path.clone()).await {
+                    blob_paths.extend(sub.into_iter().filter(|n| !n.dir).map(|n| n.path));
+                }
                 match dao::rename_node(
                     pool,
                     session.current_path.clone(),
@@ -63,12 +77,17 @@ pub async fn mv(data: Vec<String>, session: &Session, pool: &Pool) -> AppMessage
                 .await
                 {
                     Ok(_) => {
-                        // Move backing storage so file content follows the rename.
-                        let old_storage = format!("storage{}", old_path);
-                        let new_storage = format!("storage{}", new_path);
-                        if Path::new(&old_storage).exists() {
-                            if let Err(e) = stdfs::rename(&old_storage, &new_storage) {
-                                log::warn!("mv storage move failed: {}", e);
+                        // Move each backing blob so file content follows the rename.
+                        for old_file in &blob_paths {
+                            let new_file = format!("{}{}", new_path, &old_file[old_path.len()..]);
+                            if let (Ok(old_key), Ok(new_key)) =
+                                (physical_key(old_file), physical_key(&new_file))
+                            {
+                                if store.exists(&old_key).await.unwrap_or(false) {
+                                    if let Err(e) = store.rename(&old_key, &new_key).await {
+                                        log::warn!("mv blob move failed: {}", e);
+                                    }
+                                }
                             }
                         }
                         AppMessage {
@@ -98,7 +117,12 @@ pub async fn mv(data: Vec<String>, session: &Session, pool: &Pool) -> AppMessage
     }
 }
 
-pub async fn cp(data: Vec<String>, session: &Session, pool: &Pool) -> AppMessage {
+pub async fn cp(
+    data: Vec<String>,
+    session: &Session,
+    pool: &Pool,
+    store: &dyn Blobstore,
+) -> AppMessage {
     if !session.authenticated {
         return AppMessage {
             cmd: Cmd::Failure,
@@ -187,6 +211,7 @@ pub async fn cp(data: Vec<String>, session: &Session, pool: &Pool) -> AppMessage
                                         src_path,
                                         final_dst_path,
                                         session.current_user.clone().unwrap(),
+                                        store,
                                     )
                                     .await
                                     {

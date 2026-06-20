@@ -1,8 +1,10 @@
 use deadpool_postgres::Pool;
+use securefs_blobstore::Blobstore;
 use securefs_model::protocol::{AppMessage, Cmd};
 use std::collections::HashSet;
 
 use securefs_server::dao;
+use securefs_server::storage::physical_key;
 
 use crate::session::Session;
 use crate::util::*;
@@ -232,7 +234,12 @@ pub async fn tree(session: &Session, pool: &Pool) -> AppMessage {
     }
 }
 
-pub async fn stat(data: Vec<String>, session: &Session, pool: &Pool) -> AppMessage {
+pub async fn stat(
+    data: Vec<String>,
+    session: &Session,
+    pool: &Pool,
+    store: &dyn Blobstore,
+) -> AppMessage {
     if !session.authenticated {
         return AppMessage {
             cmd: Cmd::Failure,
@@ -268,11 +275,10 @@ pub async fn stat(data: Vec<String>, session: &Session, pool: &Pool) -> AppMessa
             }
 
             let file_size = if !node.dir {
-                let storage_path = format!("storage{}", path);
-                tokio::fs::metadata(&storage_path)
-                    .await
-                    .map(|m| m.len() as i64)
-                    .unwrap_or(0)
+                match physical_key(&path) {
+                    Ok(key) => store.size(&key).await.unwrap_or(0) as i64,
+                    Err(_) => 0,
+                }
             } else {
                 0
             };
@@ -310,7 +316,7 @@ pub async fn stat(data: Vec<String>, session: &Session, pool: &Pool) -> AppMessa
     }
 }
 
-pub async fn du(session: &Session, pool: &Pool) -> AppMessage {
+pub async fn du(session: &Session, pool: &Pool, store: &dyn Blobstore) -> AppMessage {
     if !session.authenticated {
         return AppMessage {
             cmd: Cmd::Failure,
@@ -325,9 +331,10 @@ pub async fn du(session: &Session, pool: &Pool) -> AppMessage {
                 if node.dir {
                     continue;
                 }
-                let storage_path = format!("storage{}", node.path);
-                if let Ok(meta) = tokio::fs::metadata(&storage_path).await {
-                    total += meta.len();
+                if let Ok(key) = physical_key(&node.path) {
+                    if let Ok(sz) = store.size(&key).await {
+                        total += sz;
+                    }
                 }
             }
             let human = if total >= 1_048_576 {
