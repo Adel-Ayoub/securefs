@@ -62,3 +62,36 @@ async fn migrations_are_idempotent_and_build_schema() {
         "baseline must create fnode.parent_digest"
     );
 }
+
+#[tokio::test]
+async fn crypto_meta_seeded_and_dek_backfill() {
+    // SAFETY: single-threaded test — no concurrent env access.
+    unsafe { std::env::set_var("DB_PASS", "securefs") };
+
+    let pool = test_pool();
+    dao::init_db(&pool).await.expect("init_db");
+
+    // crypto_meta is seeded to generation 1 by migration V3.
+    assert_eq!(
+        dao::get_kek_generation(&pool)
+            .await
+            .expect("read generation"),
+        1
+    );
+
+    // The generation-prefix backfill (same statement V3 runs) turns a legacy
+    // 60-byte DEK into a 61-byte value whose first byte is generation 1.
+    let client = pool.get().await.unwrap();
+    let legacy = vec![0u8; 60];
+    let prefixed: Vec<u8> = client
+        .query_one(
+            "SELECT CASE WHEN octet_length($1::bytea) = 60
+                         THEN '\\x01'::bytea || $1::bytea ELSE $1::bytea END",
+            &[&legacy],
+        )
+        .await
+        .expect("backfill statement")
+        .get(0);
+    assert_eq!(prefixed.len(), 61);
+    assert_eq!(prefixed[0], 1);
+}

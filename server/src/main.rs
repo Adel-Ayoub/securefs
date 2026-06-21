@@ -35,6 +35,7 @@ use securefs_server::logging;
 use securefs_server::metrics::{Metrics, SharedMetrics};
 
 mod crypto;
+mod rotate;
 mod session;
 mod util;
 
@@ -142,6 +143,29 @@ fn load_tls_config(cert_path: &str, key_path: &str) -> Result<TlsAcceptor, Strin
     Ok(TlsAcceptor::from(Arc::new(config)))
 }
 
+// Build the Postgres connection pool from env. Shared by the server and the
+// rotate-kek subcommand. The connection password (DB_CONN_PASSWORD) can differ
+// from DB_PASS (the pgcrypto / data key); it falls back to DB_PASS when unset.
+fn build_pool(net: &NetConfig, db_pass: &str) -> Result<Pool, String> {
+    let db_host = env::var("DB_HOST").unwrap_or_else(|_| "localhost".to_string());
+    let db_name = env::var("DB_NAME").unwrap_or_else(|_| "db".to_string());
+    let db_user = env::var("DB_USER").unwrap_or_else(|_| "USER".to_string());
+    let db_conn_pass = env::var("DB_CONN_PASSWORD").unwrap_or_else(|_| db_pass.to_string());
+
+    let mut pool_cfg = Config::new();
+    pool_cfg.host = Some(db_host);
+    pool_cfg.dbname = Some(db_name);
+    pool_cfg.user = Some(db_user);
+    pool_cfg.password = Some(db_conn_pass);
+    pool_cfg.port = Some(net.db_port);
+    pool_cfg.manager = Some(ManagerConfig {
+        recycling_method: RecyclingMethod::Fast,
+    });
+    pool_cfg
+        .create_pool(Some(Runtime::Tokio1), NoTls)
+        .map_err(|e| format!("pool creation failed: {}", e))
+}
+
 #[tokio::main]
 /// Launch the WebSocket server and connect to Postgres.
 async fn main() -> Result<(), String> {
@@ -151,6 +175,13 @@ async fn main() -> Result<(), String> {
         return health::run_healthcheck(&addr)
             .await
             .map_err(|e| e.to_string());
+    }
+
+    // Offline KEK rotation: rewrap every file's DEK from DATA_KEY to DATA_KEY_NEW
+    // without touching file bodies, then exit. Run with the server stopped.
+    if std::env::args().nth(1).as_deref() == Some("rotate-kek") {
+        logging::init();
+        return rotate::run().await;
     }
 
     logging::init();
@@ -186,29 +217,31 @@ async fn main() -> Result<(), String> {
     }
     let net = NetConfig::from_env().map_err(|e| e.to_string())?;
 
-    let db_host = env::var("DB_HOST").unwrap_or_else(|_| "localhost".to_string());
-    let db_name = env::var("DB_NAME").unwrap_or_else(|_| "db".to_string());
-    let db_user = env::var("DB_USER").unwrap_or_else(|_| "USER".to_string());
-    // The Postgres connection password can differ from DB_PASS (the pgcrypto
-    // data key); fall back to DB_PASS when not set.
-    let db_conn_pass = env::var("DB_CONN_PASSWORD").unwrap_or_else(|_| db_pass.clone());
-
-    let mut pool_cfg = Config::new();
-    pool_cfg.host = Some(db_host);
-    pool_cfg.dbname = Some(db_name);
-    pool_cfg.user = Some(db_user);
-    pool_cfg.password = Some(db_conn_pass);
-    pool_cfg.port = Some(net.db_port);
-    pool_cfg.manager = Some(ManagerConfig {
-        recycling_method: RecyclingMethod::Fast,
-    });
-    let pool = pool_cfg
-        .create_pool(Some(Runtime::Tokio1), NoTls)
-        .map_err(|e| format!("pool creation failed: {}", e))?;
+    let pool = build_pool(&net, &db_pass)?;
 
     dao::init_db(&pool)
         .await
         .map_err(|e| format!("database init failed: {}", e))?;
+
+    // Load the current at-rest KEK generation new writes wrap under, and fail
+    // fast if the configured DATA_KEY cannot open an existing DEK (wrong key or
+    // an incomplete rotation) rather than surfacing it on first file access.
+    let kek_generation = dao::get_kek_generation(&pool)
+        .await
+        .map_err(|e| format!("read KEK generation: {}", e))?;
+    crypto::set_current_generation(kek_generation);
+    info!("at-rest KEK generation {}", kek_generation);
+    if let Some(sample) = dao::sample_wrapped_dek(&pool)
+        .await
+        .map_err(|e| format!("sample wrapped DEK: {}", e))?
+    {
+        if !crypto::can_unwrap(&sample) {
+            return Err(format!(
+                "configured DATA_KEY cannot unwrap stored DEKs (KEK generation {}): wrong key or an incomplete rotation",
+                kek_generation
+            ));
+        }
+    }
 
     // Single blob backend for the process; on-disk root is STORAGE_DIR (default
     // "storage"). Logical paths are mapped to opaque keys at the chokepoint.

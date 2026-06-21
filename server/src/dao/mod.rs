@@ -8,6 +8,7 @@ use deadpool_postgres::Pool;
 
 pub mod admin;
 pub mod audit;
+pub mod cryptometa;
 pub mod fnode;
 pub mod groups;
 pub mod perms;
@@ -16,6 +17,7 @@ pub mod users;
 
 pub use admin::*;
 pub use audit::*;
+pub use cryptometa::*;
 pub use fnode::*;
 pub use groups::*;
 pub use perms::*;

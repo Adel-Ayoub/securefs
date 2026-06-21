@@ -457,6 +457,76 @@ pub async fn set_wrapped_dek(pool: &Pool, path: String, wrapped: &[u8]) -> Resul
         .map_err(|e| DaoError::QueryFailed(format!("set wrapped_dek: {}", e)))
 }
 
+// One stored wrapped DEK, if any file has one. Used at boot to verify the
+// configured master can unwrap it.
+pub async fn sample_wrapped_dek(pool: &Pool) -> Result<Option<Vec<u8>>, DaoError> {
+    let client = conn(pool).await?;
+    let row = client
+        .query_opt(
+            "SELECT wrapped_dek FROM fnode WHERE wrapped_dek IS NOT NULL LIMIT 1",
+            &[],
+        )
+        .await
+        .map_err(|e| DaoError::QueryFailed(format!("sample wrapped_dek: {}", e)))?;
+    Ok(row.and_then(|r| r.get::<_, Option<Vec<u8>>>(0)))
+}
+
+// A page of (id, wrapped_dek) for files that have one, ordered by id starting
+// after `after_id`. Drives key rotation without loading every DEK at once.
+pub async fn wrapped_deks_after(
+    pool: &Pool,
+    after_id: i64,
+    limit: i64,
+) -> Result<Vec<(i64, Vec<u8>)>, DaoError> {
+    let client = conn(pool).await?;
+    let rows = client
+        .query(
+            "SELECT id, wrapped_dek FROM fnode
+             WHERE wrapped_dek IS NOT NULL AND id > $1
+             ORDER BY id ASC LIMIT $2",
+            &[&after_id, &limit],
+        )
+        .await
+        .map_err(|e| DaoError::QueryFailed(format!("page wrapped_deks: {}", e)))?;
+    Ok(rows
+        .into_iter()
+        .map(|r| (r.get::<_, i64>(0), r.get::<_, Vec<u8>>(1)))
+        .collect())
+}
+
+// Replace a file's wrapped DEK by row id (rotation rewrap).
+pub async fn update_wrapped_dek_by_id(
+    pool: &Pool,
+    id: i64,
+    wrapped: &[u8],
+) -> Result<(), DaoError> {
+    let client = conn(pool).await?;
+    client
+        .execute(
+            "UPDATE fnode SET wrapped_dek = $2 WHERE id = $1",
+            &[&id, &wrapped],
+        )
+        .await
+        .map(|_| ())
+        .map_err(|e| DaoError::QueryFailed(format!("update wrapped_dek by id: {}", e)))
+}
+
+// Count non-directory, non-symlink files that have no wrapped DEK (legacy v0/v1
+// blobs under the global key). Rotation refuses to run while any exist, since
+// rotating the master would make them unreadable.
+pub async fn count_legacy_unwrapped_files(pool: &Pool) -> Result<i64, DaoError> {
+    let client = conn(pool).await?;
+    let row = client
+        .query_one(
+            "SELECT count(*)::bigint FROM fnode
+             WHERE dir = false AND wrapped_dek IS NULL AND link_target IS NULL",
+            &[],
+        )
+        .await
+        .map_err(|e| DaoError::QueryFailed(format!("count legacy files: {}", e)))?;
+    Ok(row.get::<_, i64>(0))
+}
+
 /// Recursively copy a file or directory tree.
 pub async fn copy_recursive(
     pool: &Pool,
