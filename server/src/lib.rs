@@ -8,4 +8,6 @@ pub mod dao;
 pub mod health;
 pub mod logging;
 pub mod metrics;
+pub mod rate_limiter;
+pub mod session_store;
 pub mod storage;

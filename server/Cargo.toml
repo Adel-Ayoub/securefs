@@ -35,6 +35,7 @@ totp-rs = { version = "5", features = ["gen_secret", "otpauth"] }
 zstd = "0.13"
 thiserror = "2"
 zeroize = "1"
+async-trait = "0.1"
 refinery = { version = "0.8", features = ["tokio-postgres"] }
 
 # Internal dependencies

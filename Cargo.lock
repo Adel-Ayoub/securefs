@@ -2049,6 +2049,7 @@ version = "0.1.0"
 dependencies = [
  "aes-gcm",
  "argon2",
+ "async-trait",
  "base64",
  "blake3",
  "deadpool-postgres",

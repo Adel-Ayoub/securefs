@@ -12,7 +12,9 @@ pub mod cryptometa;
 pub mod fnode;
 pub mod groups;
 pub mod perms;
+pub mod rate_limit;
 pub mod secret;
+pub mod sessions;
 pub mod users;
 
 pub use admin::*;
@@ -21,7 +23,9 @@ pub use cryptometa::*;
 pub use fnode::*;
 pub use groups::*;
 pub use perms::*;
+pub use rate_limit::*;
 pub use secret::*;
+pub use sessions::*;
 pub use users::*;
 
 /// Typed error for all DAO operations.
