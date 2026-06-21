@@ -95,3 +95,48 @@ async fn crypto_meta_seeded_and_dek_backfill() {
     assert_eq!(prefixed.len(), 61);
     assert_eq!(prefixed[0], 1);
 }
+
+#[tokio::test]
+async fn merkle_root_column_round_trips() {
+    // SAFETY: single-threaded test - no concurrent env access.
+    unsafe { std::env::set_var("DB_PASS", "securefs") };
+
+    let pool = test_pool();
+    dao::init_db(&pool).await.expect("init_db");
+
+    // V4 adds fnode.merkle_root; the DAO persists and reads it by path digest.
+    let path = "/home/merkle_root_test_file";
+    let digest = dao::path_digest(path);
+    let client = pool.get().await.unwrap();
+    client
+        .execute("DELETE FROM fnode WHERE path_digest = $1", &[&digest])
+        .await
+        .unwrap();
+    client
+        .execute(
+            "INSERT INTO fnode (dir, path_digest) VALUES (false, $1)",
+            &[&digest],
+        )
+        .await
+        .unwrap();
+
+    assert!(dao::get_merkle_root(&pool, path.to_string())
+        .await
+        .unwrap()
+        .is_none());
+    dao::set_merkle_root(&pool, path.to_string(), "deadbeef")
+        .await
+        .unwrap();
+    assert_eq!(
+        dao::get_merkle_root(&pool, path.to_string())
+            .await
+            .unwrap()
+            .as_deref(),
+        Some("deadbeef")
+    );
+
+    client
+        .execute("DELETE FROM fnode WHERE path_digest = $1", &[&digest])
+        .await
+        .unwrap();
+}

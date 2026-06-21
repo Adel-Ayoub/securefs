@@ -6,7 +6,7 @@ use securefs_model::protocol::{AppMessage, Cmd, FNode};
 use securefs_server::dao;
 use securefs_server::storage::physical_key;
 
-use crate::crypto::{encrypt_file_content, hash_content};
+use crate::crypto::{encrypt_file_chunked, hash_content};
 use crate::session::{DownloadState, Session, UploadState};
 use crate::util::*;
 
@@ -159,8 +159,8 @@ pub async fn upload_end(session: &mut Session, pool: &Pool, store: &dyn Blobstor
         };
     }
 
-    // Encrypt (compress-then-encrypt handled by encrypt_file_content)
-    let (encrypted, wrapped) = encrypt_file_content(&content);
+    // Chunked AEAD at rest, with a per-file Merkle root over the plaintext.
+    let (encrypted, wrapped, merkle_root) = encrypt_file_chunked(&content);
     let hash = hash_content(&content);
 
     let node_path = format!("{}/{}", session.current_path, file_name);
@@ -216,6 +216,15 @@ pub async fn upload_end(session: &mut Session, pool: &Pool, store: &dyn Blobstor
     // Persist the wrapped DEK before the hash so that a hash conflict still
     // leaves the blob and its key consistent (readable).
     if dao::set_wrapped_dek(pool, node_path.clone(), &wrapped)
+        .await
+        .is_err()
+    {
+        return AppMessage {
+            cmd: Cmd::Failure,
+            data: vec!["upload write failed".into()],
+        };
+    }
+    if dao::set_merkle_root(pool, node_path.clone(), &merkle_root)
         .await
         .is_err()
     {
@@ -291,7 +300,7 @@ pub async fn download_start(
     let wrapped = dao::get_wrapped_dek(pool, node_path.clone())
         .await
         .unwrap_or(None);
-    let content = match read_file_bytes(store, &node_path, wrapped.as_deref()).await {
+    let content = match read_file_bytes(store, pool, &node_path, wrapped.as_deref()).await {
         Ok(c) => c,
         Err(e) => return e,
     };

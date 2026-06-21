@@ -15,10 +15,11 @@ const MAX_GREP_SCAN_BYTES: usize = 64 * 1024 * 1024;
 // Decrypt to UTF-8 text for the line-oriented commands (cat, head, tail, grep).
 async fn read_file_content(
     store: &dyn Blobstore,
+    pool: &Pool,
     path: &str,
     wrapped_dek: Option<&[u8]>,
 ) -> Result<String, AppMessage> {
-    let bytes = read_file_bytes(store, path, wrapped_dek).await?;
+    let bytes = read_file_bytes(store, pool, path, wrapped_dek).await?;
     String::from_utf8(bytes).map_err(|_| AppMessage {
         cmd: Cmd::Failure,
         data: vec!["binary file; use download".into()],
@@ -94,7 +95,7 @@ pub async fn cat(
                 let wrapped = dao::get_wrapped_dek(pool, resolved_path.clone())
                     .await
                     .unwrap_or(None);
-                match read_file_content(store, &resolved_path, wrapped.as_deref()).await {
+                match read_file_content(store, pool, &resolved_path, wrapped.as_deref()).await {
                     Ok(content) => {
                         audit!(
                             pool,
@@ -171,7 +172,7 @@ pub async fn head(
             let wrapped = dao::get_wrapped_dek(pool, node_path.clone())
                 .await
                 .unwrap_or(None);
-            match read_file_content(store, &node_path, wrapped.as_deref()).await {
+            match read_file_content(store, pool, &node_path, wrapped.as_deref()).await {
                 Ok(content) => {
                     let lines: Vec<&str> = content.lines().take(n).collect();
                     AppMessage {
@@ -236,7 +237,7 @@ pub async fn tail(
             let wrapped = dao::get_wrapped_dek(pool, node_path.clone())
                 .await
                 .unwrap_or(None);
-            match read_file_content(store, &node_path, wrapped.as_deref()).await {
+            match read_file_content(store, pool, &node_path, wrapped.as_deref()).await {
                 Ok(content) => {
                     let all_lines: Vec<&str> = content.lines().collect();
                     let start = all_lines.len().saturating_sub(n);
@@ -313,7 +314,7 @@ pub async fn grep(
         let wrapped = dao::get_wrapped_dek(pool, node.path.clone())
             .await
             .unwrap_or(None);
-        if let Ok(content) = read_file_content(store, &node.path, wrapped.as_deref()).await {
+        if let Ok(content) = read_file_content(store, pool, &node.path, wrapped.as_deref()).await {
             scanned += content.len();
             for (i, line) in content.lines().enumerate() {
                 if line.contains(&pattern) {

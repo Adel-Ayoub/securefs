@@ -457,6 +457,34 @@ pub async fn set_wrapped_dek(pool: &Pool, path: String, wrapped: &[u8]) -> Resul
         .map_err(|e| DaoError::QueryFailed(format!("set wrapped_dek: {}", e)))
 }
 
+// Fetch a file's Merkle root (chunked v3 files); None for other formats.
+pub async fn get_merkle_root(pool: &Pool, path: String) -> Result<Option<String>, DaoError> {
+    let client = conn(pool).await?;
+    let digest = path_digest(&path);
+    let row = client
+        .query_opt(
+            "SELECT merkle_root FROM fnode WHERE path_digest = $1",
+            &[&digest],
+        )
+        .await
+        .map_err(|e| DaoError::QueryFailed(format!("get merkle_root: {}", e)))?;
+    Ok(row.and_then(|r| r.get::<_, Option<String>>(0)))
+}
+
+// Persist a file's Merkle root.
+pub async fn set_merkle_root(pool: &Pool, path: String, root: &str) -> Result<(), DaoError> {
+    let client = conn(pool).await?;
+    let digest = path_digest(&path);
+    client
+        .execute(
+            "UPDATE fnode SET merkle_root = $2 WHERE path_digest = $1",
+            &[&digest, &root],
+        )
+        .await
+        .map(|_| ())
+        .map_err(|e| DaoError::QueryFailed(format!("set merkle_root: {}", e)))
+}
+
 // One stored wrapped DEK, if any file has one. Used at boot to verify the
 // configured master can unwrap it.
 pub async fn sample_wrapped_dek(pool: &Pool) -> Result<Option<Vec<u8>>, DaoError> {
@@ -606,9 +634,13 @@ pub async fn copy_recursive(
                     .copy(&src_key, &dst_key)
                     .await
                     .map_err(|e| DaoError::QueryFailed(format!("blob copy: {}", e)))?;
-                // The copy shares the source's DEK (same ciphertext bytes).
+                // The copy shares the source's DEK (same ciphertext bytes) and
+                // its Merkle root (same plaintext).
                 if let Some(dek) = get_wrapped_dek(pool, src.clone()).await? {
                     set_wrapped_dek(pool, dst.clone(), &dek).await?;
+                }
+                if let Some(root) = get_merkle_root(pool, src.clone()).await? {
+                    set_merkle_root(pool, dst.clone(), &root).await?;
                 }
             }
         }

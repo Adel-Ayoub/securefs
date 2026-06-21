@@ -6,7 +6,7 @@ use securefs_model::protocol::{AppMessage, Cmd, FNode};
 use securefs_server::dao;
 use securefs_server::storage::physical_key;
 
-use crate::crypto::{encrypt_file_content, hash_content};
+use crate::crypto::{encrypt_file_chunked, hash_content};
 use crate::session::Session;
 use crate::util::*;
 
@@ -260,7 +260,7 @@ pub async fn echo(
                         }
                     }
                 };
-                let (encrypted, wrapped) = encrypt_file_content(content.as_bytes());
+                let (encrypted, wrapped, merkle_root) = encrypt_file_chunked(content.as_bytes());
                 if store.put(&key, &encrypted).await.is_err() {
                     return AppMessage {
                         cmd: Cmd::Failure,
@@ -309,6 +309,15 @@ pub async fn echo(
                 // Persist the wrapped DEK before the hash so a hash conflict
                 // still leaves the blob and its key consistent (readable).
                 if dao::set_wrapped_dek(pool, node_path.clone(), &wrapped)
+                    .await
+                    .is_err()
+                {
+                    return AppMessage {
+                        cmd: Cmd::Failure,
+                        data: vec!["echo failed".to_string()],
+                    };
+                }
+                if dao::set_merkle_root(pool, node_path.clone(), &merkle_root)
                     .await
                     .is_err()
                 {
