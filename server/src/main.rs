@@ -26,6 +26,8 @@ use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
 
+#[cfg(feature = "s3")]
+use securefs_blobstore::S3Blobstore;
 use securefs_blobstore::{Blobstore, LocalFs};
 use securefs_server::config::NetConfig;
 use securefs_server::dao;
@@ -169,9 +171,33 @@ fn build_pool(net: &NetConfig, db_pass: &str) -> Result<Pool, String> {
         .map_err(|e| format!("pool creation failed: {}", e))
 }
 
+// Build the S3/MinIO-backed blob store from the environment (S3_BUCKET etc.).
+#[cfg(feature = "s3")]
+fn make_s3_store() -> Result<Arc<dyn Blobstore>, String> {
+    info!("storage backend: s3");
+    let store = S3Blobstore::from_env().map_err(|e| format!("s3 storage init: {}", e))?;
+    Ok(Arc::new(store))
+}
+
+// Without the s3 feature, selecting it is a clear startup error rather than a
+// silent fallback to local disk (which would not be shared across instances).
+#[cfg(not(feature = "s3"))]
+fn make_s3_store() -> Result<Arc<dyn Blobstore>, String> {
+    Err(
+        "STORAGE_BACKEND=s3 but this build lacks the 's3' feature; rebuild with --features s3"
+            .into(),
+    )
+}
+
 #[tokio::main]
 /// Launch the WebSocket server and connect to Postgres.
 async fn main() -> Result<(), String> {
+    // The s3 backend links a second rustls CryptoProvider (ring, via reqwest), so
+    // pin the process default to aws_lc_rs: this disambiguates the server's TLS
+    // config builder and gives reqwest's no-provider S3 client a provider to use.
+    #[cfg(feature = "s3")]
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+
     // Subcommand used by the container HEALTHCHECK; probes /health and exits.
     if std::env::args().nth(1).as_deref() == Some("healthcheck") {
         let addr = env::var("HEALTH_ADDR").unwrap_or_else(|_| "127.0.0.1:8081".to_string());
@@ -246,10 +272,18 @@ async fn main() -> Result<(), String> {
         }
     }
 
-    // Single blob backend for the process; on-disk root is STORAGE_DIR (default
-    // "storage"). Logical paths are mapped to opaque keys at the chokepoint.
-    let storage_root = env::var("STORAGE_DIR").unwrap_or_else(|_| "storage".to_string());
-    let store: Arc<dyn Blobstore> = Arc::new(LocalFs::new(storage_root));
+    // Single blob backend for the process. STORAGE_BACKEND=s3 uses S3-compatible
+    // object storage (so any instance serves any file); otherwise a local
+    // directory rooted at STORAGE_DIR (default "storage"). Either way logical
+    // paths map to opaque keys at the chokepoint, so the backend only ever sees
+    // ciphertext under opaque names.
+    let store: Arc<dyn Blobstore> = if env::var("STORAGE_BACKEND").as_deref() == Ok("s3") {
+        make_s3_store()?
+    } else {
+        let storage_root = env::var("STORAGE_DIR").unwrap_or_else(|_| "storage".to_string());
+        info!("storage backend: local ({})", storage_root);
+        Arc::new(LocalFs::new(storage_root))
+    };
 
     let listener = TcpListener::bind(net.server_addr)
         .await

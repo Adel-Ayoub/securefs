@@ -53,5 +53,17 @@ jobs:
       - name: cargo clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      # The s3 blob backend is an opt-in feature (object storage pulls a second
+      # rustls provider), so lint and unit-test it explicitly. Only the blobstore
+      # tests run under s3; the object-store round-trip skips without a live
+      # endpoint (SFX_S3_TEST_ENDPOINT), and the InMemory tests cover the mapping.
+      - name: cargo clippy (s3 feature)
+        run: |
+          cargo clippy -p securefs-blobstore --features s3 --all-targets -- -D warnings
+          cargo clippy -p securefs-server --features s3 --all-targets -- -D warnings
+
+      - name: cargo test (s3 feature)
+        run: cargo test -p securefs-blobstore --features s3
+
       - name: cargo fmt
         run: cargo fmt --all -- --check

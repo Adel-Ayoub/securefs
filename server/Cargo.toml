@@ -43,6 +43,11 @@ securefs-model = { path = "../model" }
 securefs-blobstore = { path = "../blobstore" }
 securefs-keyring = { path = "../keyring" }
 
+[features]
+# Object-storage (S3/MinIO) blob backend. Off by default so the standard build
+# stays lean and single-provider for rustls; enable for scale-out deployments.
+s3 = ["securefs-blobstore/s3"]
+
 [dev-dependencies]
 rcgen = { version = "0.14", default-features = false, features = ["pem", "aws_lc_rs"] }
 securefs-blobstore = { path = "../blobstore" }
