@@ -15,10 +15,9 @@ use rustls_pki_types::pem::PemObject;
 use rustls_pki_types::{CertificateDer, PrivateKeyDer};
 use securefs_model::protocol::{AppMessage, Cmd};
 use securefs_model::secure_channel::SecureChannel;
-use std::collections::HashMap;
 use std::net::IpAddr;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{Mutex, Semaphore};
+use tokio::sync::Semaphore;
 use tokio_postgres::NoTls;
 use tokio_rustls::rustls;
 use tokio_rustls::TlsAcceptor;
@@ -68,7 +67,11 @@ macro_rules! audit {
 
 mod handlers;
 
-use session::{RateLimiter, Session, SessionInfo, SessionRegistry};
+use securefs_server::rate_limiter::{
+    InProcessRateLimiter, PgRateLimiter, RateLimiter, MAX_LOGIN_ATTEMPTS, RATE_LIMIT_WINDOW_SECS,
+};
+use securefs_server::session_store::{InProcessSessionStore, PgSessionStore, SessionStore};
+use session::Session;
 
 // DoS limits.
 const MAX_MESSAGE_SIZE: usize = 1 << 20; // 1 MiB cap per WebSocket message/frame
@@ -277,17 +280,40 @@ async fn main() -> Result<(), String> {
 
     info!("Listening on: {}", net.server_addr);
 
-    // Shared rate limiter for IP-based tracking
-    let rate_limiter: RateLimiter = Arc::new(Mutex::new(HashMap::new()));
+    // Shared session + rate-limit state. SHARED_STATE=postgres backs both with
+    // Postgres so multiple stateless instances coordinate; otherwise both are
+    // in-process (single instance / dev), preserving the previous behavior.
+    let window = std::time::Duration::from_secs(RATE_LIMIT_WINDOW_SECS);
+    let (session_store, rate_limiter): (Arc<dyn SessionStore>, Arc<dyn RateLimiter>) =
+        if env::var("SHARED_STATE").as_deref() == Ok("postgres") {
+            info!("shared state: postgres (scale-out)");
+            (
+                Arc::new(PgSessionStore::new(pool.clone())),
+                Arc::new(PgRateLimiter::new(pool.clone(), MAX_LOGIN_ATTEMPTS, window)),
+            )
+        } else {
+            info!("shared state: in-process (single instance)");
+            (
+                Arc::new(InProcessSessionStore::new()),
+                Arc::new(InProcessRateLimiter::new(MAX_LOGIN_ATTEMPTS, window)),
+            )
+        };
 
-    // Periodic cleanup of expired rate limiter entries
+    // Periodic maintenance: drop expired rate-limit entries and reap sessions
+    // left behind by an instance that died mid-session.
     {
         let rl = rate_limiter.clone();
+        let ss = session_store.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
             loop {
                 interval.tick().await;
-                session::cleanup_rate_limiter(&rl).await;
+                if let Err(e) = rl.cleanup().await {
+                    warn!("rate limiter cleanup failed: {}", e);
+                }
+                if let Err(e) = ss.reap_expired(SESSION_TIMEOUT_SECS).await {
+                    warn!("session reap failed: {}", e);
+                }
             }
         });
     }
@@ -302,7 +328,6 @@ async fn main() -> Result<(), String> {
         tokio::spawn(health::serve(pool, health_addr, metrics));
     }
 
-    let session_registry: SessionRegistry = Arc::new(Mutex::new(HashMap::new()));
     let conn_limit = Arc::new(Semaphore::new(MAX_CONNECTIONS));
 
     let shutdown = shutdown_signal();
@@ -344,7 +369,7 @@ async fn main() -> Result<(), String> {
         let active = ActiveGuard::new(metrics.clone());
         let pg = pool.clone();
         let rl = rate_limiter.clone();
-        let sr = session_registry.clone();
+        let ss = session_store.clone();
         let ip = addr.ip();
         let tls = tls_acceptor.clone();
         let st = store.clone();
@@ -353,11 +378,11 @@ async fn main() -> Result<(), String> {
             let _active = active; // decrements the active gauge on drop
             let result = if let Some(acceptor) = tls {
                 match acceptor.accept(stream).await {
-                    Ok(tls_stream) => handle_tls_connection(tls_stream, pg, rl, sr, ip, st).await,
+                    Ok(tls_stream) => handle_tls_connection(tls_stream, pg, rl, ss, ip, st).await,
                     Err(e) => Err(format!("TLS handshake failed: {}", e)),
                 }
             } else {
-                handle_connection(stream, pg, rl, sr, ip, st).await
+                handle_connection(stream, pg, rl, ss, ip, st).await
             };
             if let Err(e) = result {
                 warn!("Connection error: {}", e);
@@ -383,8 +408,8 @@ async fn main() -> Result<(), String> {
 async fn handle_tls_connection(
     stream: tokio_rustls::server::TlsStream<TcpStream>,
     pool: Pool,
-    rate_limiter: RateLimiter,
-    session_registry: SessionRegistry,
+    rate_limiter: Arc<dyn RateLimiter>,
+    session_store: Arc<dyn SessionStore>,
     client_ip: IpAddr,
     store: Arc<dyn Blobstore>,
 ) -> Result<(), String> {
@@ -395,7 +420,7 @@ async fn handle_tls_connection(
         ws_stream,
         pool,
         rate_limiter,
-        session_registry,
+        session_store,
         client_ip,
         store,
     )
@@ -406,8 +431,8 @@ async fn handle_tls_connection(
 async fn handle_connection(
     stream: TcpStream,
     pool: Pool,
-    rate_limiter: RateLimiter,
-    session_registry: SessionRegistry,
+    rate_limiter: Arc<dyn RateLimiter>,
+    session_store: Arc<dyn SessionStore>,
     client_ip: IpAddr,
     store: Arc<dyn Blobstore>,
 ) -> Result<(), String> {
@@ -418,7 +443,7 @@ async fn handle_connection(
         ws_stream,
         pool,
         rate_limiter,
-        session_registry,
+        session_store,
         client_ip,
         store,
     )
@@ -450,8 +475,8 @@ const SESSION_TIMEOUT_SECS: u64 = 1800;
 async fn handle_ws_stream<S>(
     mut ws_stream: WebSocketStream<S>,
     pool: Pool,
-    rate_limiter: RateLimiter,
-    session_registry: SessionRegistry,
+    rate_limiter: Arc<dyn RateLimiter>,
+    session_store: Arc<dyn SessionStore>,
     client_ip: IpAddr,
     store: Arc<dyn Blobstore>,
 ) -> Result<(), String>
@@ -501,19 +526,18 @@ where
                 session.current_user,
                 last_activity.elapsed().as_secs()
             );
-            session_registry.lock().await.remove(&session_id);
+            let _ = session_store.remove(&session_id).await;
             session.reset();
         }
 
         last_activity = std::time::Instant::now();
 
-        // Check if admin flagged this session for forced logout
-        {
-            let reg = session_registry.lock().await;
-            if let Some(info) = reg.get(&session_id) {
-                if info.force_logout {
-                    drop(reg);
-                    session_registry.lock().await.remove(&session_id);
+        // One round-trip: bump last activity and learn whether an admin (here or
+        // on another instance) flagged this session for forced logout.
+        if session.authenticated {
+            match session_store.heartbeat(&session_id).await {
+                Ok(true) => {
+                    let _ = session_store.remove(&session_id).await;
                     session.reset();
                     let reply = AppMessage {
                         cmd: Cmd::Logout,
@@ -522,13 +546,8 @@ where
                     send_app_message(&mut ws_stream, reply, channel.as_mut()).await?;
                     break;
                 }
-            }
-        }
-
-        // Update last_activity in registry
-        if session.authenticated {
-            if let Some(info) = session_registry.lock().await.get_mut(&session_id) {
-                info.last_activity = std::time::Instant::now();
+                Ok(false) => {}
+                Err(e) => warn!("session heartbeat failed: {}", e),
             }
         }
 
@@ -557,8 +576,14 @@ where
         let (reply, new_secret) = match incoming.cmd {
             Cmd::NewConnection => (handlers::auth::new_connection(), None),
             Cmd::Login => (
-                handlers::auth::login(incoming.data, &mut session, &pool, &rate_limiter, client_ip)
-                    .await,
+                handlers::auth::login(
+                    incoming.data,
+                    &mut session,
+                    &pool,
+                    rate_limiter.as_ref(),
+                    client_ip,
+                )
+                .await,
                 None,
             ),
             Cmd::Logout => (handlers::auth::logout(&mut session), None),
@@ -687,19 +712,24 @@ where
                     incoming.data,
                     &mut session,
                     &pool,
-                    &rate_limiter,
+                    rate_limiter.as_ref(),
                     client_ip,
                 )
                 .await,
                 None,
             ),
             Cmd::ListSessions => (
-                handlers::sessions::list_sessions(&session, &pool, &session_registry).await,
+                handlers::sessions::list_sessions(&session, &pool, session_store.as_ref()).await,
                 None,
             ),
             Cmd::ForceLogout => (
-                handlers::sessions::force_logout(incoming.data, &session, &pool, &session_registry)
-                    .await,
+                handlers::sessions::force_logout(
+                    incoming.data,
+                    &session,
+                    &pool,
+                    session_store.as_ref(),
+                )
+                .await,
                 None,
             ),
             _ => (
@@ -711,20 +741,15 @@ where
             ),
         };
 
-        // Register session in registry on successful login
+        // Register session in the shared store on successful login.
         if matches!(reply.cmd, Cmd::Login) && session.authenticated {
-            let now = std::time::Instant::now();
-            session_registry.lock().await.insert(
-                session_id.clone(),
-                SessionInfo {
-                    session_id: session_id.clone(),
-                    username: session.current_user.clone().unwrap_or_default(),
-                    client_ip,
-                    connected_at: now,
-                    last_activity: now,
-                    force_logout: false,
-                },
-            );
+            let username = session.current_user.clone().unwrap_or_default();
+            if let Err(e) = session_store
+                .register(&session_id, &username, client_ip)
+                .await
+            {
+                warn!("session register failed: {}", e);
+            }
         }
 
         let is_logout = matches!(reply.cmd, Cmd::Logout);
@@ -735,13 +760,13 @@ where
         }
 
         if !session.authenticated && is_logout {
-            session_registry.lock().await.remove(&session_id);
+            let _ = session_store.remove(&session_id).await;
             break;
         }
     }
 
     // Deregister on disconnect
-    session_registry.lock().await.remove(&session_id);
+    let _ = session_store.remove(&session_id).await;
     Ok(())
 }
 

@@ -4,15 +4,15 @@ use rand_core::OsRng;
 use securefs_model::protocol::{AppMessage, Cmd};
 use securefs_model::secure_channel::{Role, SecureChannel, PROTOCOL_VERSION};
 use std::net::IpAddr;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 use totp_rs::{Algorithm, Secret, TOTP};
 use x25519_dalek::{EphemeralSecret, PublicKey};
 
 use securefs_server::dao;
+use securefs_server::rate_limiter::{RateLimiter, MAX_LOGIN_ATTEMPTS};
 
-use crate::session::{RateLimiter, Session, RATE_LIMIT_WINDOW_SECS};
+use crate::session::Session;
 
-const MAX_LOGIN_ATTEMPTS: u8 = 5;
 const TOTP_STEP_SECS: u64 = 30;
 
 pub fn new_connection() -> AppMessage {
@@ -26,25 +26,12 @@ pub async fn login(
     data: Vec<String>,
     session: &mut Session,
     pool: &Pool,
-    rate_limiter: &RateLimiter,
+    rate_limiter: &dyn RateLimiter,
     client_ip: IpAddr,
 ) -> AppMessage {
-    let (_attempts, blocked) = {
-        let mut rl = rate_limiter.lock().await;
-        if let Some((count, first_time)) = rl.get(&client_ip) {
-            let elapsed = first_time.elapsed().as_secs();
-            if elapsed > RATE_LIMIT_WINDOW_SECS {
-                rl.remove(&client_ip);
-                (0u8, false)
-            } else {
-                (*count, *count >= MAX_LOGIN_ATTEMPTS)
-            }
-        } else {
-            (0u8, false)
-        }
-    };
-
-    if blocked {
+    // Fail open on a limiter error: auth itself needs the database, so a blip
+    // already fails the login; this just avoids locking everyone out.
+    if rate_limiter.is_blocked(client_ip).await.unwrap_or(false) {
         warn!(
             "IP {} blocked due to too many failed login attempts",
             client_ip
@@ -62,12 +49,7 @@ pub async fn login(
         .unwrap_or(false);
 
     if !is_ok {
-        let new_count = {
-            let mut rl = rate_limiter.lock().await;
-            let entry = rl.entry(client_ip).or_insert((0, Instant::now()));
-            entry.0 += 1;
-            entry.0
-        };
+        let new_count = rate_limiter.record_failure(client_ip).await.unwrap_or(0);
         audit!(
             pool,
             "LOGIN_FAIL",
@@ -75,7 +57,7 @@ pub async fn login(
             &client_ip.to_string(),
             "invalid credentials"
         );
-        let remaining = MAX_LOGIN_ATTEMPTS.saturating_sub(new_count);
+        let remaining = rate_limiter.max_attempts().saturating_sub(new_count);
         return AppMessage {
             cmd: Cmd::Failure,
             data: vec![
@@ -86,10 +68,7 @@ pub async fn login(
     }
 
     // Successful login — clear rate limiter and set session state
-    {
-        let mut rl = rate_limiter.lock().await;
-        rl.remove(&client_ip);
-    }
+    let _ = rate_limiter.clear(client_ip).await;
     session.authenticated = true;
     session.current_user = Some(user_name.clone());
     let user_home = format!("/home/{}", user_name);
@@ -216,7 +195,7 @@ pub async fn totp_verify(
     data: Vec<String>,
     session: &mut Session,
     pool: &Pool,
-    rate_limiter: &RateLimiter,
+    rate_limiter: &dyn RateLimiter,
     client_ip: IpAddr,
 ) -> AppMessage {
     if !session.authenticated {
@@ -227,18 +206,11 @@ pub async fn totp_verify(
     }
 
     // Reuse the login bucket so TOTP guesses are bounded per IP.
-    {
-        let rl = rate_limiter.lock().await;
-        if let Some((count, first_time)) = rl.get(&client_ip) {
-            if first_time.elapsed().as_secs() <= RATE_LIMIT_WINDOW_SECS
-                && *count >= MAX_LOGIN_ATTEMPTS
-            {
-                return AppMessage {
-                    cmd: Cmd::Failure,
-                    data: vec!["too many attempts, try again later".into()],
-                };
-            }
-        }
+    if rate_limiter.is_blocked(client_ip).await.unwrap_or(false) {
+        return AppMessage {
+            cmd: Cmd::Failure,
+            data: vec!["too many attempts, try again later".into()],
+        };
     }
 
     let user = session.current_user.as_deref().unwrap_or("");
@@ -315,15 +287,11 @@ pub async fn totp_verify(
             data: vec!["ok".into()],
         }
     } else {
-        {
-            let mut rl = rate_limiter.lock().await;
-            let entry = rl.entry(client_ip).or_insert((0, Instant::now()));
-            entry.0 = entry.0.saturating_add(1);
-        }
+        let _ = rate_limiter.record_failure(client_ip).await;
         session.totp_attempts = session.totp_attempts.saturating_add(1);
         let reason = if valid { "replay" } else { "invalid code" };
         audit!(pool, "TOTP_VERIFY", user, "-", reason);
-        if session.totp_attempts >= MAX_LOGIN_ATTEMPTS {
+        if u32::from(session.totp_attempts) >= MAX_LOGIN_ATTEMPTS {
             session.reset();
             return AppMessage {
                 cmd: Cmd::Failure,

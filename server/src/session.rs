@@ -1,43 +1,6 @@
-use std::collections::HashMap;
-use std::net::IpAddr;
-use std::sync::Arc;
-use std::time::Instant;
-use tokio::sync::Mutex;
-
-pub const RATE_LIMIT_WINDOW_SECS: u64 = 900;
-const MAX_RATE_LIMITER_ENTRIES: usize = 10_000;
-
-/// Rate limiter tracking failed login attempts per IP address.
-/// Stores (attempt_count, first_attempt_time) per IP.
-pub type RateLimiter = Arc<Mutex<HashMap<IpAddr, (u8, Instant)>>>;
-
-/// Remove expired entries and enforce a hard cap on the rate limiter.
-pub async fn cleanup_rate_limiter(rl: &RateLimiter) {
-    let mut map = rl.lock().await;
-    map.retain(|_, (_count, first_time)| first_time.elapsed().as_secs() <= RATE_LIMIT_WINDOW_SECS);
-    if map.len() > MAX_RATE_LIMITER_ENTRIES {
-        let mut entries: Vec<(IpAddr, Instant)> =
-            map.iter().map(|(ip, (_c, t))| (*ip, *t)).collect();
-        entries.sort_by_key(|(_ip, t)| *t);
-        let to_remove = map.len() - MAX_RATE_LIMITER_ENTRIES;
-        for (ip, _) in entries.into_iter().take(to_remove) {
-            map.remove(&ip);
-        }
-    }
-}
-
-/// Info about an active session, stored in the global registry.
-pub struct SessionInfo {
-    pub session_id: String,
-    pub username: String,
-    pub client_ip: IpAddr,
-    pub connected_at: Instant,
-    pub last_activity: Instant,
-    pub force_logout: bool,
-}
-
-/// Global registry of all active sessions. Keyed by session_id.
-pub type SessionRegistry = Arc<Mutex<HashMap<String, SessionInfo>>>;
+// Per-connection state. Shared, cross-instance state (the session registry and
+// the rate limiter) lives behind the SessionStore / RateLimiter traits in the
+// library crate, not here.
 
 /// Active upload state for chunked file transfers.
 pub struct UploadState {
