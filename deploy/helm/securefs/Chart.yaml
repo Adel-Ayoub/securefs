@@ -1,0 +1,7 @@
+apiVersion: v2
+name: securefs
+description: SecureFS encrypted file server - stateless, horizontally scalable.
+type: application
+# Chart version, independent of the app it deploys.
+version: 0.1.0
+appVersion: "0.1.0"

@@ -1,0 +1,86 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "securefs.fullname" . }}
+  labels:
+    {{- include "securefs.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "securefs.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "securefs.selectorLabels" . | nindent 8 }}
+    spec:
+      # Grace period covers the app's drain window plus a small buffer so the
+      # SIGTERM drain finishes before the kubelet SIGKILLs the pod.
+      terminationGracePeriodSeconds: {{ add .Values.shutdownGraceSeconds 5 }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: server
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: wss
+              containerPort: {{ .Values.service.port }}
+            - name: health
+              containerPort: {{ .Values.service.healthPort }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "securefs.fullname" . }}
+            - secretRef:
+                name: {{ include "securefs.secretName" . }}
+          # Readiness gates rolling deploys; liveness restarts a wedged pod.
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: health
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 20
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            {{- if eq .Values.storage.backend "local" }}
+            - name: storage
+              mountPath: /app/storage
+            {{- end }}
+            {{- if .Values.tls.enabled }}
+            - name: tls
+              mountPath: /app/certs
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        {{- if eq .Values.storage.backend "local" }}
+        - name: storage
+          emptyDir: {}
+        {{- end }}
+        {{- if .Values.tls.enabled }}
+        - name: tls
+          secret:
+            secretName: {{ .Values.tls.secretName | quote }}
+        {{- end }}

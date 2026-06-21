@@ -1,0 +1,74 @@
+{{- if .Values.pgbouncer.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "securefs.fullname" . }}-pgbouncer
+  labels:
+    {{- include "securefs.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "securefs.pgbouncerSelectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "securefs.pgbouncerSelectorLabels" . | nindent 8 }}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: pgbouncer
+          image: "{{ .Values.pgbouncer.image.repository }}:{{ .Values.pgbouncer.image.tag }}"
+          imagePullPolicy: {{ .Values.pgbouncer.image.pullPolicy }}
+          ports:
+            - name: pgbouncer
+              containerPort: {{ .Values.pgbouncer.port }}
+          env:
+            # Pools connections to the external Postgres (database.host), not the
+            # in-cluster server. The server's DB_HOST points back at this service.
+            - name: DB_HOST
+              value: {{ .Values.database.host | quote }}
+            - name: DB_PORT
+              value: {{ .Values.database.port | quote }}
+            - name: DB_USER
+              value: {{ .Values.database.user | quote }}
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "securefs.secretName" . }}
+                  key: DB_CONN_PASSWORD
+            - name: POOL_MODE
+              value: {{ .Values.pgbouncer.poolMode | quote }}
+            - name: MAX_CLIENT_CONN
+              value: {{ .Values.pgbouncer.maxClientConn | quote }}
+            - name: DEFAULT_POOL_SIZE
+              value: {{ .Values.pgbouncer.defaultPoolSize | quote }}
+            - name: MAX_PREPARED_STATEMENTS
+              value: {{ .Values.pgbouncer.maxPreparedStatements | quote }}
+            - name: LISTEN_PORT
+              value: {{ .Values.pgbouncer.port | quote }}
+            - name: AUTH_TYPE
+              value: scram-sha-256
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "securefs.fullname" . }}-pgbouncer
+  labels:
+    {{- include "securefs.labels" . | nindent 4 }}
+spec:
+  selector:
+    {{- include "securefs.pgbouncerSelectorLabels" . | nindent 4 }}
+  ports:
+    - name: pgbouncer
+      port: {{ .Values.pgbouncer.port }}
+      targetPort: pgbouncer
+{{- end }}

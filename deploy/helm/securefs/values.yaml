@@ -1,0 +1,91 @@
+# Default values for the SecureFS server chart.
+
+replicaCount: 2
+
+image:
+  repository: securefs-server
+  tag: latest
+  pullPolicy: IfNotPresent
+
+# Connection cap and graceful-drain window (env-tunable in the server). The pod's
+# terminationGracePeriodSeconds is derived from shutdownGraceSeconds + a buffer.
+maxConnections: 1024
+shutdownGraceSeconds: 10
+
+# Shared cross-instance state for stateless scale-out: "postgres" (required for
+# more than one replica) or "memory" (single instance / dev).
+sharedState: postgres
+
+storage:
+  # "s3" (object storage; required for multi-replica) or "local" (single replica).
+  backend: s3
+  s3:
+    bucket: securefs
+    region: us-east-1
+    endpoint: "" # set for MinIO/custom S3, e.g. http://minio:9000
+    keyPrefix: ""
+
+database:
+  host: postgres # external Postgres (or the in-cluster service); pgbouncer overrides this
+  port: 5432
+  name: securefs
+  user: securefs_user
+  poolMaxSize: "" # DB_POOL_MAX_SIZE; empty keeps the driver default
+  replica:
+    host: "" # optional read replica for ls/tree/find
+    port: ""
+    poolMaxSize: ""
+
+# Secrets. In production reference an existing Secret (existingSecret) populated by
+# external-secrets / sealed-secrets. The inline values are dev placeholders only -
+# never commit real secrets.
+secrets:
+  create: true
+  existingSecret: ""
+  dbPass: "change-me"
+  dataKey: "change-me"
+  dbConnPassword: "" # falls back to dbPass when empty
+  awsAccessKeyId: ""
+  awsSecretAccessKey: ""
+
+# TLS: mount a kubernetes.io/tls Secret, else the server refuses to start unless
+# allowInsecure is set (development only).
+tls:
+  enabled: false
+  secretName: ""
+allowInsecure: false
+
+service:
+  type: ClusterIP
+  port: 8080
+  healthPort: 8081
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: "1"
+    memory: 512Mi
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+
+# Optional in-cluster PgBouncer in front of the external Postgres. Reference
+# config; validate auth/pool settings against your image and cluster before prod.
+pgbouncer:
+  enabled: false
+  image:
+    repository: edoburu/pgbouncer
+    tag: latest
+    pullPolicy: IfNotPresent
+  port: 6432
+  poolMode: transaction
+  maxClientConn: 1000
+  defaultPoolSize: 20
+  # tokio-postgres prepares statements; transaction pooling needs PgBouncer >=1.21
+  # with prepared-statement support. Set 0 (or use session mode) if unsupported.
+  maxPreparedStatements: 200

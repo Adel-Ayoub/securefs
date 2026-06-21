@@ -1,0 +1,47 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "securefs.fullname" . }}
+  labels:
+    {{- include "securefs.labels" . | nindent 4 }}
+data:
+  SERVER_ADDR: "0.0.0.0:{{ .Values.service.port }}"
+  HEALTH_ADDR: "0.0.0.0:{{ .Values.service.healthPort }}"
+  LOG_FORMAT: "json"
+  DB_HOST: {{ include "securefs.dbHost" . | quote }}
+  DB_PORT: {{ include "securefs.dbPort" . | quote }}
+  DB_NAME: {{ .Values.database.name | quote }}
+  DB_USER: {{ .Values.database.user | quote }}
+  MAX_CONNECTIONS: {{ .Values.maxConnections | quote }}
+  SHUTDOWN_GRACE_SECS: {{ .Values.shutdownGraceSeconds | quote }}
+  SHARED_STATE: {{ .Values.sharedState | quote }}
+  STORAGE_BACKEND: {{ .Values.storage.backend | quote }}
+  {{- if .Values.database.poolMaxSize }}
+  DB_POOL_MAX_SIZE: {{ .Values.database.poolMaxSize | quote }}
+  {{- end }}
+  {{- if .Values.database.replica.host }}
+  DB_REPLICA_HOST: {{ .Values.database.replica.host | quote }}
+  {{- if .Values.database.replica.port }}
+  DB_REPLICA_PORT: {{ .Values.database.replica.port | quote }}
+  {{- end }}
+  {{- if .Values.database.replica.poolMaxSize }}
+  DB_REPLICA_POOL_MAX_SIZE: {{ .Values.database.replica.poolMaxSize | quote }}
+  {{- end }}
+  {{- end }}
+  {{- if eq .Values.storage.backend "s3" }}
+  S3_BUCKET: {{ .Values.storage.s3.bucket | quote }}
+  S3_REGION: {{ .Values.storage.s3.region | quote }}
+  {{- if .Values.storage.s3.endpoint }}
+  S3_ENDPOINT: {{ .Values.storage.s3.endpoint | quote }}
+  {{- end }}
+  {{- if .Values.storage.s3.keyPrefix }}
+  S3_KEY_PREFIX: {{ .Values.storage.s3.keyPrefix | quote }}
+  {{- end }}
+  {{- end }}
+  {{- if .Values.tls.enabled }}
+  TLS_CERT: "/app/certs/tls.crt"
+  TLS_KEY: "/app/certs/tls.key"
+  {{- end }}
+  {{- if .Values.allowInsecure }}
+  ALLOW_INSECURE: "1"
+  {{- end }}

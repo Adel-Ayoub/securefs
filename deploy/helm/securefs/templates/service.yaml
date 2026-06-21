@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "securefs.fullname" . }}
+  labels:
+    {{- include "securefs.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.type }}
+  selector:
+    {{- include "securefs.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: wss
+      port: {{ .Values.service.port }}
+      targetPort: wss
+    - name: health
+      port: {{ .Values.service.healthPort }}
+      targetPort: health
