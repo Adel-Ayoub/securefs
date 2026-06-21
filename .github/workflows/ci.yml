@@ -45,8 +45,11 @@ jobs:
       - name: cargo check
         run: cargo check --workspace
 
+      # Serial (--test-threads=1) is required: the suite shares one Postgres
+      # database and process-global state (DATA_KEY env, KEK generation), so the
+      # crypto/rotation tests race under parallel execution. Mirrors scripts/test-db.sh.
       - name: cargo test
-        run: cargo test --workspace
+        run: cargo test --workspace -- --test-threads=1
         env:
           DB_PASS: securefs
 
@@ -63,7 +66,7 @@ jobs:
           cargo clippy -p securefs-server --features s3 --all-targets -- -D warnings
 
       - name: cargo test (s3 feature)
-        run: cargo test -p securefs-blobstore --features s3
+        run: cargo test -p securefs-blobstore --features s3 -- --test-threads=1
 
       - name: cargo fmt
         run: cargo fmt --all -- --check
