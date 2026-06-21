@@ -77,9 +77,12 @@ use session::Session;
 
 // DoS limits.
 const MAX_MESSAGE_SIZE: usize = 1 << 20; // 1 MiB cap per WebSocket message/frame
-const MAX_CONNECTIONS: usize = 1024; // concurrent connections accepted at once
 const CONNECTION_IDLE_TIMEOUT_SECS: u64 = 1800; // close a connection idle this long
-const SHUTDOWN_GRACE_SECS: u64 = 10; // drain window for in-flight connections
+
+// Defaults for env-tunable MAX_CONNECTIONS and SHUTDOWN_GRACE_SECS: a deployment
+// sizes pods and aligns the drain with the orchestrator's termination grace period.
+const DEFAULT_MAX_CONNECTIONS: usize = 1024;
+const DEFAULT_SHUTDOWN_GRACE_SECS: u64 = 10;
 
 // RAII guard for the active-connections gauge: increment on creation, decrement
 // on drop, so the count stays correct even if a connection task panics.
@@ -174,6 +177,26 @@ fn build_pool_to(
     pool_cfg
         .create_pool(Some(Runtime::Tokio1), NoTls)
         .map_err(|e| format!("pool creation failed: {}", e))
+}
+
+// Parse a numeric setting (raw env value or None), falling back to `default`;
+// a malformed value fails loudly. Split from env access so it is unit-testable.
+fn parse_num_or<T: std::str::FromStr>(
+    raw: Option<String>,
+    var: &str,
+    default: T,
+) -> Result<T, String> {
+    match raw {
+        Some(v) if !v.is_empty() => v
+            .parse::<T>()
+            .map_err(|_| format!("{} must be a number, got '{}'", var, v)),
+        _ => Ok(default),
+    }
+}
+
+// Numeric setting from env var `var`, or `default` when unset.
+fn env_num<T: std::str::FromStr>(var: &str, default: T) -> Result<T, String> {
+    parse_num_or(env::var(var).ok(), var, default)
 }
 
 // Optional positive connection cap read from `var`; a non-positive or malformed
@@ -424,7 +447,9 @@ async fn main() -> Result<(), String> {
         tokio::spawn(health::serve(pool, health_addr, metrics));
     }
 
-    let conn_limit = Arc::new(Semaphore::new(MAX_CONNECTIONS));
+    let max_connections = env_num("MAX_CONNECTIONS", DEFAULT_MAX_CONNECTIONS)?;
+    let shutdown_grace_secs = env_num("SHUTDOWN_GRACE_SECS", DEFAULT_SHUTDOWN_GRACE_SECS)?;
+    let conn_limit = Arc::new(Semaphore::new(max_connections));
 
     let shutdown = shutdown_signal();
     tokio::pin!(shutdown);
@@ -454,7 +479,7 @@ async fn main() -> Result<(), String> {
                     .fetch_add(1, Ordering::Relaxed);
                 warn!(
                     "connection limit ({}) reached; refusing {}",
-                    MAX_CONNECTIONS, addr
+                    max_connections, addr
                 );
                 continue;
             }
@@ -490,12 +515,12 @@ async fn main() -> Result<(), String> {
     }
 
     // Best-effort graceful drain: wait for in-flight connections to finish.
-    let in_flight = MAX_CONNECTIONS - conn_limit.available_permits();
+    let in_flight = max_connections - conn_limit.available_permits();
     if in_flight > 0 {
         info!("Draining {} in-flight connection(s)...", in_flight);
         let _ = tokio::time::timeout(
-            std::time::Duration::from_secs(SHUTDOWN_GRACE_SECS),
-            conn_limit.acquire_many(MAX_CONNECTIONS as u32),
+            std::time::Duration::from_secs(shutdown_grace_secs),
+            conn_limit.acquire_many(max_connections as u32),
         )
         .await;
     }
@@ -876,9 +901,18 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::build_pool_to;
     use crate::util::*;
+    use crate::{build_pool_to, parse_num_or};
     use securefs_model::protocol::FNode;
+
+    #[test]
+    fn numeric_settings_parse_with_fallback() {
+        assert_eq!(parse_num_or(Some("42".into()), "X", 7usize).unwrap(), 42);
+        assert_eq!(parse_num_or(None, "X", 7usize).unwrap(), 7);
+        assert_eq!(parse_num_or(Some("".into()), "X", 7usize).unwrap(), 7);
+        assert_eq!(parse_num_or(Some("9".into()), "X", 1u64).unwrap(), 9);
+        assert!(parse_num_or(Some("nope".into()), "X", 0usize).is_err());
+    }
 
     #[test]
     fn pool_size_cap_is_applied() {
