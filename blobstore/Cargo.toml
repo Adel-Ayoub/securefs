@@ -10,6 +10,11 @@ license.workspace = true
 async-trait = "0.1"
 thiserror = "2"
 tokio = { version = "1", features = ["fs"] }
+object_store = { version = "0.11", optional = true, features = ["aws"] }
+
+[features]
+# Object-storage (S3/MinIO) backend; off by default to keep LocalFs builds lean.
+s3 = ["dep:object_store"]
 
 [dev-dependencies]
 tokio = { version = "1", features = ["fs", "macros", "rt-multi-thread"] }

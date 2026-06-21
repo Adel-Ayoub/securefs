@@ -4,6 +4,11 @@ use async_trait::async_trait;
 use thiserror::Error;
 use tokio::fs;
 
+#[cfg(feature = "s3")]
+mod s3;
+#[cfg(feature = "s3")]
+pub use s3::S3Blobstore;
+
 #[derive(Debug, Error)]
 pub enum BlobError {
     #[error("blob not found")]
@@ -12,6 +17,12 @@ pub enum BlobError {
     InvalidKey,
     #[error("blob io error: {0}")]
     Io(#[from] std::io::Error),
+    #[cfg(feature = "s3")]
+    #[error("blob backend error: {0}")]
+    Backend(String),
+    #[cfg(feature = "s3")]
+    #[error("blob configuration error: {0}")]
+    Config(String),
 }
 
 // Content store keyed by opaque tokens. Implementations know nothing about
@@ -50,7 +61,7 @@ impl LocalFs {
     }
 }
 
-fn is_valid_key(key: &str) -> bool {
+pub(crate) fn is_valid_key(key: &str) -> bool {
     key.len() >= 4 && key.len() <= 128 && key.bytes().all(|b| b.is_ascii_alphanumeric())
 }
 
