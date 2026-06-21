@@ -27,9 +27,11 @@ RUN mkdir -p model/src server/src client/src \
 # Copy real source code
 COPY . .
 
-# Touch source files to invalidate the cache layer and build the real binary
+# Touch source files to invalidate the cache layer and build the real binary.
+# --features s3 enables the S3/MinIO object-storage backend so the image can run
+# with STORAGE_BACKEND=s3 for scale-out (defaults to local storage when unset).
 RUN touch server/src/main.rs server/src/lib.rs model/src/lib.rs \
-    && cargo build --release --bin securefs-server
+    && cargo build --release -p securefs-server --features s3 --bin securefs-server
 
 # Verify runtime dependencies so we know what to include in the runtime stage
 RUN ldd target/release/securefs-server || true

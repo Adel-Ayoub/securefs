@@ -23,7 +23,7 @@ services:
   server:
     build:
       context: .
-      dockerfile: docker/Dockerfile.server
+      dockerfile: deploy/docker/Dockerfile.server
     image: securefs-server
     container_name: securefs_server
     depends_on:
