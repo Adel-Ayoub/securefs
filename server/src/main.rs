@@ -8,7 +8,7 @@ use std::env;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-use deadpool_postgres::{Config, ManagerConfig, Pool, RecyclingMethod, Runtime};
+use deadpool_postgres::{Config, ManagerConfig, Pool, PoolConfig, RecyclingMethod, Runtime};
 use futures_util::{SinkExt, StreamExt};
 use log::{info, warn};
 use rustls_pki_types::pem::PemObject;
@@ -148,27 +148,88 @@ fn load_tls_config(cert_path: &str, key_path: &str) -> Result<TlsAcceptor, Strin
     Ok(TlsAcceptor::from(Arc::new(config)))
 }
 
-// Build the Postgres connection pool from env. Shared by the server and the
-// rotate-kek subcommand. The connection password (DB_CONN_PASSWORD) can differ
-// from DB_PASS (the pgcrypto / data key); it falls back to DB_PASS when unset.
-fn build_pool(net: &NetConfig, db_pass: &str) -> Result<Pool, String> {
-    let db_host = env::var("DB_HOST").unwrap_or_else(|_| "localhost".to_string());
-    let db_name = env::var("DB_NAME").unwrap_or_else(|_| "db".to_string());
-    let db_user = env::var("DB_USER").unwrap_or_else(|_| "USER".to_string());
-    let db_conn_pass = env::var("DB_CONN_PASSWORD").unwrap_or_else(|_| db_pass.to_string());
-
+// Lowest-level pool builder: explicit connection params, optional connection
+// cap. Takes no env, so it is unit-testable. max_size None keeps the deadpool
+// default (cpu count * 4).
+fn build_pool_to(
+    host: String,
+    port: u16,
+    dbname: String,
+    user: String,
+    password: String,
+    max_size: Option<usize>,
+) -> Result<Pool, String> {
     let mut pool_cfg = Config::new();
-    pool_cfg.host = Some(db_host);
-    pool_cfg.dbname = Some(db_name);
-    pool_cfg.user = Some(db_user);
-    pool_cfg.password = Some(db_conn_pass);
-    pool_cfg.port = Some(net.db_port);
+    pool_cfg.host = Some(host);
+    pool_cfg.dbname = Some(dbname);
+    pool_cfg.user = Some(user);
+    pool_cfg.password = Some(password);
+    pool_cfg.port = Some(port);
     pool_cfg.manager = Some(ManagerConfig {
         recycling_method: RecyclingMethod::Fast,
     });
+    if let Some(n) = max_size {
+        pool_cfg.pool = Some(PoolConfig::new(n));
+    }
     pool_cfg
         .create_pool(Some(Runtime::Tokio1), NoTls)
         .map_err(|e| format!("pool creation failed: {}", e))
+}
+
+// Optional positive connection cap read from `var`; a non-positive or malformed
+// value fails loudly at startup rather than silently falling back.
+fn pool_max_size(var: &str) -> Result<Option<usize>, String> {
+    match env::var(var) {
+        Ok(v) if !v.is_empty() => match v.parse::<usize>() {
+            Ok(n) if n > 0 => Ok(Some(n)),
+            _ => Err(format!("{} must be a positive integer, got '{}'", var, v)),
+        },
+        _ => Ok(None),
+    }
+}
+
+// Build the primary Postgres pool from env. Shared by the server and the
+// rotate-kek subcommand. The connection password (DB_CONN_PASSWORD) can differ
+// from DB_PASS (the pgcrypto / data key); it falls back to DB_PASS when unset.
+// DB_POOL_MAX_SIZE caps per-instance connections so many instances don't
+// exhaust the database's connection limit.
+fn build_pool(net: &NetConfig, db_pass: &str) -> Result<Pool, String> {
+    build_pool_to(
+        env::var("DB_HOST").unwrap_or_else(|_| "localhost".to_string()),
+        net.db_port,
+        env::var("DB_NAME").unwrap_or_else(|_| "db".to_string()),
+        env::var("DB_USER").unwrap_or_else(|_| "USER".to_string()),
+        env::var("DB_CONN_PASSWORD").unwrap_or_else(|_| db_pass.to_string()),
+        pool_max_size("DB_POOL_MAX_SIZE")?,
+    )
+}
+
+// Optional read-replica pool for read-only queries. When DB_REPLICA_HOST is set,
+// builds a separate pool to the replica (own DB_REPLICA_PORT / DB_REPLICA_POOL_MAX_SIZE,
+// reusing the primary's dbname/user/password); otherwise reads share the primary
+// pool. Replicas lag, so only staleness-tolerant listing reads are routed here -
+// writes and content reads stay on the primary.
+fn build_read_pool(net: &NetConfig, db_pass: &str, primary: &Pool) -> Result<Pool, String> {
+    match env::var("DB_REPLICA_HOST") {
+        Ok(host) if !host.is_empty() => {
+            let port = match env::var("DB_REPLICA_PORT") {
+                Ok(p) if !p.is_empty() => p
+                    .parse::<u16>()
+                    .map_err(|_| format!("DB_REPLICA_PORT must be a port number, got '{}'", p))?,
+                _ => net.db_port,
+            };
+            info!("read-replica pool enabled -> {}:{}", host, port);
+            build_pool_to(
+                host,
+                port,
+                env::var("DB_NAME").unwrap_or_else(|_| "db".to_string()),
+                env::var("DB_USER").unwrap_or_else(|_| "USER".to_string()),
+                env::var("DB_CONN_PASSWORD").unwrap_or_else(|_| db_pass.to_string()),
+                pool_max_size("DB_REPLICA_POOL_MAX_SIZE")?,
+            )
+        }
+        _ => Ok(primary.clone()),
+    }
 }
 
 // Build the S3/MinIO-backed blob store from the environment (S3_BUCKET etc.).
@@ -247,6 +308,7 @@ async fn main() -> Result<(), String> {
     let net = NetConfig::from_env().map_err(|e| e.to_string())?;
 
     let pool = build_pool(&net, &db_pass)?;
+    let read_pool = build_read_pool(&net, &db_pass, &pool)?;
 
     dao::init_db(&pool)
         .await
@@ -402,6 +464,7 @@ async fn main() -> Result<(), String> {
         metrics.connections_total.fetch_add(1, Ordering::Relaxed);
         let active = ActiveGuard::new(metrics.clone());
         let pg = pool.clone();
+        let rp = read_pool.clone();
         let rl = rate_limiter.clone();
         let ss = session_store.clone();
         let ip = addr.ip();
@@ -412,11 +475,13 @@ async fn main() -> Result<(), String> {
             let _active = active; // decrements the active gauge on drop
             let result = if let Some(acceptor) = tls {
                 match acceptor.accept(stream).await {
-                    Ok(tls_stream) => handle_tls_connection(tls_stream, pg, rl, ss, ip, st).await,
+                    Ok(tls_stream) => {
+                        handle_tls_connection(tls_stream, pg, rp, rl, ss, ip, st).await
+                    }
                     Err(e) => Err(format!("TLS handshake failed: {}", e)),
                 }
             } else {
-                handle_connection(stream, pg, rl, ss, ip, st).await
+                handle_connection(stream, pg, rp, rl, ss, ip, st).await
             };
             if let Err(e) = result {
                 warn!("Connection error: {}", e);
@@ -442,6 +507,7 @@ async fn main() -> Result<(), String> {
 async fn handle_tls_connection(
     stream: tokio_rustls::server::TlsStream<TcpStream>,
     pool: Pool,
+    read_pool: Pool,
     rate_limiter: Arc<dyn RateLimiter>,
     session_store: Arc<dyn SessionStore>,
     client_ip: IpAddr,
@@ -453,6 +519,7 @@ async fn handle_tls_connection(
     handle_ws_stream(
         ws_stream,
         pool,
+        read_pool,
         rate_limiter,
         session_store,
         client_ip,
@@ -465,6 +532,7 @@ async fn handle_tls_connection(
 async fn handle_connection(
     stream: TcpStream,
     pool: Pool,
+    read_pool: Pool,
     rate_limiter: Arc<dyn RateLimiter>,
     session_store: Arc<dyn SessionStore>,
     client_ip: IpAddr,
@@ -476,6 +544,7 @@ async fn handle_connection(
     handle_ws_stream(
         ws_stream,
         pool,
+        read_pool,
         rate_limiter,
         session_store,
         client_ip,
@@ -509,6 +578,7 @@ const SESSION_TIMEOUT_SECS: u64 = 1800;
 async fn handle_ws_stream<S>(
     mut ws_stream: WebSocketStream<S>,
     pool: Pool,
+    read_pool: Pool,
     rate_limiter: Arc<dyn RateLimiter>,
     session_store: Arc<dyn SessionStore>,
     client_ip: IpAddr,
@@ -645,9 +715,9 @@ where
                 handlers::fs::cd(incoming.data, &mut session, &pool).await,
                 None,
             ),
-            Cmd::Ls => (handlers::fs::ls(&session, &pool).await, None),
+            Cmd::Ls => (handlers::fs::ls(&session, &read_pool).await, None),
             Cmd::Find => (
-                handlers::fs::find(incoming.data, &session, &pool).await,
+                handlers::fs::find(incoming.data, &session, &read_pool).await,
                 None,
             ),
             Cmd::Mkdir => (
@@ -699,7 +769,7 @@ where
                 None,
             ),
             Cmd::Whoami => (handlers::user::whoami(&session), None),
-            Cmd::Tree => (handlers::fs::tree(&session, &pool).await, None),
+            Cmd::Tree => (handlers::fs::tree(&session, &read_pool).await, None),
             Cmd::Stat => (
                 handlers::fs::stat(incoming.data, &session, &pool, &*store).await,
                 None,
@@ -806,8 +876,34 @@ where
 
 #[cfg(test)]
 mod tests {
+    use crate::build_pool_to;
     use crate::util::*;
     use securefs_model::protocol::FNode;
+
+    #[test]
+    fn pool_size_cap_is_applied() {
+        // An explicit cap is honored; None keeps deadpool's (nonzero) default.
+        let capped = build_pool_to(
+            "localhost".into(),
+            5432,
+            "db".into(),
+            "u".into(),
+            "p".into(),
+            Some(3),
+        )
+        .unwrap();
+        assert_eq!(capped.status().max_size, 3);
+        let default = build_pool_to(
+            "localhost".into(),
+            5432,
+            "db".into(),
+            "u".into(),
+            "p".into(),
+            None,
+        )
+        .unwrap();
+        assert!(default.status().max_size >= 1);
+    }
 
     #[test]
     fn test_normalize_path() {
