@@ -4,6 +4,8 @@
 //! protocol commands into DAO/database operations and on-disk file
 //! changes.
 
+#![deny(unsafe_code)]
+
 use std::env;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;

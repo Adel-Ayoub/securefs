@@ -55,6 +55,7 @@ async fn read_file_bytes(
 }
 
 #[cfg(test)]
+#[allow(unsafe_code)] // tests set DB_PASS via the unsafe std::env::set_var
 mod tests {
     use super::*;
     use deadpool_postgres::{Config, ManagerConfig, RecyclingMethod, Runtime};

@@ -3,6 +3,8 @@
 //! Establishes a WebSocket connection to the server and forwards CLI
 //! commands to protocol messages.
 
+#![forbid(unsafe_code)]
+
 use std::env;
 
 use colored::Colorize;

@@ -414,6 +414,7 @@ pub fn decrypt_verified(
 }
 
 #[cfg(test)]
+#[allow(unsafe_code)] // tests set DB_PASS via the unsafe std::env::set_var
 mod tests {
     use super::*;
 

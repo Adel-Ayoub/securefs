@@ -3,6 +3,8 @@
 //! This crate provides the server component of SecureFS, handling
 //! WebSocket connections, command processing, and file system operations.
 
+#![forbid(unsafe_code)]
+
 pub mod config;
 pub mod dao;
 pub mod health;
