@@ -58,10 +58,16 @@ macro_rules! audit {
         let re = $resource.to_string();
         let rs = $result.to_string();
         tokio::spawn(async move {
-            if let Err(e) =
-                securefs_server::dao::insert_audit_log(&pool_ref, &ev, &us, &re, &rs, None).await
+            match securefs_server::dao::append_audit_log(&pool_ref, &ev, &us, &re, &rs, None).await
             {
-                log::warn!("audit persist failed: {}", e);
+                // The chained head doubles as a witness: the structured log is a
+                // separate sink, so a DB-side rewrite still has to match the logs.
+                Ok(entry) => log::info!(
+                    "[AUDIT] chained seq={} head={}",
+                    entry.seq,
+                    hex::encode(entry.entry_hash)
+                ),
+                Err(e) => log::warn!("audit persist failed: {}", e),
             }
         });
     }};

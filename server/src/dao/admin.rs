@@ -159,6 +159,14 @@ pub async fn init_db(pool: &Pool) -> Result<(), DaoError> {
         .map_err(|e| DaoError::QueryFailed(format!("backfill parent_digest: {}", e)))?;
     drop(client);
 
+    // Adopt any pre-chain audit rows into the tamper-evident hash chain. The
+    // hash is computed in application code, so this backfill stays in Rust like
+    // the digest backfills above; it is a cheap no-op once everything is chained.
+    let chained = super::backfill_audit_chain(pool).await?;
+    if chained > 0 {
+        log::info!("audit chain: backfilled {} pre-existing entries", chained);
+    }
+
     bootstrap(pool).await?;
     Ok(())
 }
