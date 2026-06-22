@@ -35,6 +35,7 @@ use securefs_server::health;
 use securefs_server::logging;
 use securefs_server::metrics::{Metrics, SharedMetrics};
 
+mod audit_verify;
 mod crypto;
 mod rotate;
 mod session;
@@ -301,6 +302,13 @@ async fn main() -> Result<(), String> {
     if std::env::args().nth(1).as_deref() == Some("rotate-kek") {
         logging::init();
         return rotate::run().await;
+    }
+
+    // Offline audit-chain verification: walk the chain, validate the signed head,
+    // and exit non-zero if it was tampered with. Run against the live database.
+    if std::env::args().nth(1).as_deref() == Some("verify-audit") {
+        logging::init();
+        return audit_verify::run().await;
     }
 
     logging::init();
