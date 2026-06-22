@@ -363,6 +363,14 @@ async fn main() -> Result<(), String> {
         }
     }
 
+    // Seal the audit-chain head now so there is always a checkpoint under the
+    // current master right after boot (and so a post-rotation restart re-anchors
+    // under the new key). The maintenance task re-seals periodically.
+    let audit_seal_key = crypto::audit_seal_key();
+    if let Err(e) = dao::seal_audit_head(&pool, &audit_seal_key).await {
+        warn!("audit checkpoint seal at startup failed: {}", e);
+    }
+
     // Single blob backend for the process. STORAGE_BACKEND=s3 uses S3-compatible
     // object storage (so any instance serves any file); otherwise a local
     // directory rooted at STORAGE_DIR (default "storage"). Either way logical
@@ -424,11 +432,13 @@ async fn main() -> Result<(), String> {
             )
         };
 
-    // Periodic maintenance: drop expired rate-limit entries and reap sessions
-    // left behind by an instance that died mid-session.
+    // Periodic maintenance: drop expired rate-limit entries, reap sessions left
+    // behind by an instance that died mid-session, and re-seal the audit head.
     {
         let rl = rate_limiter.clone();
         let ss = session_store.clone();
+        let maint_pool = pool.clone();
+        let seal_key = audit_seal_key;
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
             loop {
@@ -438,6 +448,9 @@ async fn main() -> Result<(), String> {
                 }
                 if let Err(e) = ss.reap_expired(SESSION_TIMEOUT_SECS).await {
                     warn!("session reap failed: {}", e);
+                }
+                if let Err(e) = dao::seal_audit_head(&maint_pool, &seal_key).await {
+                    warn!("audit checkpoint seal failed: {}", e);
                 }
             }
         });

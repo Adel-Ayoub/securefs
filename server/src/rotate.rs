@@ -46,6 +46,14 @@ pub async fn run() -> Result<(), String> {
     let pool = build_pool(&net, &db_pass)?;
 
     let stats = rotate(&pool, old_master.as_bytes(), new_master.as_bytes()).await?;
+
+    // Re-seal the audit head under the new master so the signed tree head is
+    // valid immediately, before the server restarts with the new DATA_KEY.
+    let seal_key = crypto::audit_seal_key_from_master(new_master.as_bytes());
+    if let Err(e) = dao::seal_audit_head(&pool, &seal_key).await {
+        log::warn!("audit checkpoint re-seal after rotation failed: {}", e);
+    }
+
     let new_gen = dao::get_kek_generation(&pool)
         .await
         .map_err(|e| e.to_string())?;

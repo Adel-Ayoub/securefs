@@ -26,6 +26,7 @@ const FORMAT_V3_CHUNKED: u8 = 0x03;
 // HKDF(master_for_that_generation, DEK_WRAP_INFO).
 const DEK_WRAP_INFO: &[u8] = b"securefs-dek-wrap-v1";
 const LEGACY_FILE_INFO: &[u8] = b"securefs-file-encryption-key-v1";
+const AUDIT_SEAL_INFO: &[u8] = b"securefs-audit-seal-v1";
 
 // Generation that new DEK wraps are stamped with. Set once at boot from the
 // crypto_meta row; defaults to 1 (fresh DB / unit tests). Process-constant: it
@@ -75,6 +76,20 @@ fn derive_key(info: &[u8]) -> Zeroizing<[u8; 32]> {
 // derive the old and new KEKs side by side from their respective masters.
 pub fn kek_from_master(master: &[u8]) -> Zeroizing<[u8; 32]> {
     derive_from_master(master, DEK_WRAP_INFO)
+}
+
+// Key that seals audit-chain checkpoints (signed tree heads). Derived from the
+// current master under its own label, so it is an independent subkey of the
+// DEK-wrapping KEK. Rotating the master re-keys it; only the latest head is
+// sealed, so a post-rotation re-seal is all that is needed.
+pub fn audit_seal_key() -> Zeroizing<[u8; 32]> {
+    derive_key(AUDIT_SEAL_INFO)
+}
+
+// Audit-seal key under an explicit master, so rotation can re-seal the head
+// under the new master before the server restarts.
+pub fn audit_seal_key_from_master(master: &[u8]) -> Zeroizing<[u8; 32]> {
+    derive_from_master(master, AUDIT_SEAL_INFO)
 }
 
 // Key-encryption key that wraps per-file DEKs under the current master.

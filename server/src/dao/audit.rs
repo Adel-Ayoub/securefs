@@ -1,7 +1,11 @@
 use deadpool_postgres::Pool;
+use hmac::{Hmac, Mac};
+use sha2::Sha256;
 use tokio_postgres::Transaction;
 
 use super::{conn, DaoError};
+
+type HmacSha256 = Hmac<Sha256>;
 
 // Serialize audit-log appends (and the one-time backfill) so the hash chain
 // stays a single linear sequence even across stateless instances. Transaction-
@@ -86,6 +90,18 @@ fn now_unix() -> i64 {
         .unwrap_or(0)
 }
 
+// Keyed attestation over a chain head: HMAC-SHA256(seal_key, head_seq || head).
+// The key derives from the server master, so only the key holder can produce a
+// valid seal for a given head.
+fn seal_mac(key: &[u8; 32], head_seq: i64, head_hash: &[u8; 32]) -> [u8; 32] {
+    let mut mac = HmacSha256::new_from_slice(key).expect("HMAC accepts any key length");
+    mac.update(&head_seq.to_be_bytes());
+    mac.update(head_hash);
+    let mut seal = [0u8; 32];
+    seal.copy_from_slice(&mac.finalize().into_bytes());
+    seal
+}
+
 // Current chain head (seq, entry_hash) under the held lock, or genesis if empty.
 async fn chain_head(tx: &Transaction<'_>) -> Result<(i64, [u8; 32]), DaoError> {
     let row = tx
@@ -160,6 +176,43 @@ pub async fn append_audit_log(
     Ok(AuditChainEntry { seq, entry_hash })
 }
 
+/// Seal the current chain head as a signed tree head: store an HMAC over
+/// (head_seq, head_hash) under `seal_key` in the single checkpoint row. The head
+/// is read without the chain lock - any committed head is a valid one to seal -
+/// and the upsert keeps just the latest. Returns the sealed head, or None when
+/// the chain is empty.
+pub async fn seal_audit_head(
+    pool: &Pool,
+    seal_key: &[u8; 32],
+) -> Result<Option<(i64, [u8; 32])>, DaoError> {
+    let mut client = conn(pool).await?;
+    let tx = client
+        .transaction()
+        .await
+        .map_err(|e| DaoError::QueryFailed(format!("begin seal tx: {}", e)))?;
+    let (head_seq, head_hash) = chain_head(&tx).await?;
+    if head_seq == 0 {
+        return Ok(None);
+    }
+    let seal = seal_mac(seal_key, head_seq, &head_hash);
+    let head_b: &[u8] = &head_hash;
+    let seal_b: &[u8] = &seal;
+    tx.execute(
+        "INSERT INTO audit_checkpoint (id, head_seq, head_hash, seal, sealed_at)
+         VALUES (1, $1, $2, $3, now())
+         ON CONFLICT (id) DO UPDATE
+           SET head_seq = EXCLUDED.head_seq, head_hash = EXCLUDED.head_hash,
+               seal = EXCLUDED.seal, sealed_at = EXCLUDED.sealed_at",
+        &[&head_seq, &head_b, &seal_b],
+    )
+    .await
+    .map_err(|e| DaoError::QueryFailed(format!("upsert checkpoint: {}", e)))?;
+    tx.commit()
+        .await
+        .map_err(|e| DaoError::QueryFailed(format!("commit seal: {}", e)))?;
+    Ok(Some((head_seq, head_hash)))
+}
+
 /// Chain any audit rows that predate the hash chain (seq IS NULL), oldest first,
 /// continuing from the current head. One-time on the first upgrade boot, a cheap
 /// no-op afterward. Runs under the chain lock so it cannot race appends.
@@ -230,15 +283,54 @@ pub async fn backfill_audit_chain(pool: &Pool) -> Result<u64, DaoError> {
 /// Walk the whole chain in seq order and report whether it is intact. Pages so
 /// memory stays bounded on a large log. The log is append-only, so a concurrent
 /// append (a new higher seq at the tail) never disturbs the verified prefix.
-pub async fn verify_audit_chain(pool: &Pool) -> Result<ChainStatus, DaoError> {
+///
+/// With `seal_key`, also validate the signed tree head: the latest checkpoint's
+/// seal must verify under the key, and the chain's recomputed hash at the sealed
+/// seq must equal the sealed head. This catches a fully-recomputed rewrite (the
+/// unkeyed walk alone would accept it) and truncation below the sealed head,
+/// neither forgeable without the key.
+pub async fn verify_audit_chain(
+    pool: &Pool,
+    seal_key: Option<&[u8; 32]>,
+) -> Result<ChainStatus, DaoError> {
     const PAGE: i64 = 1024;
     let client = conn(pool).await?;
+
+    // Resolve the signed head up front; an invalid seal is itself tampering.
+    let sealed: Option<(i64, [u8; 32])> = match seal_key {
+        Some(key) => {
+            match client
+                .query_opt(
+                    "SELECT head_seq, head_hash, seal FROM audit_checkpoint WHERE id = 1",
+                    &[],
+                )
+                .await
+                .map_err(|e| DaoError::QueryFailed(format!("read checkpoint: {}", e)))?
+            {
+                Some(r) => {
+                    let s: i64 = r.get(0);
+                    let h = to_hash(&r.get::<_, Vec<u8>>(1))?;
+                    let stored_seal: Vec<u8> = r.get(2);
+                    if stored_seal.as_slice() != seal_mac(key, s, &h) {
+                        return Ok(ChainStatus::Broken {
+                            seq: s,
+                            reason: "checkpoint seal does not validate under the audit key (forged or wrong key)".into(),
+                        });
+                    }
+                    Some((s, h))
+                }
+                None => None,
+            }
+        }
+        None => None,
+    };
 
     let mut after: i64 = 0;
     let mut expected_seq: i64 = 1;
     let mut expected_prev: [u8; 32] = GENESIS_PREV;
     let mut entries: u64 = 0;
     let mut head_hash: [u8; 32] = GENESIS_PREV;
+    let mut sealed_reached = sealed.is_none();
 
     loop {
         let rows = client
@@ -298,6 +390,17 @@ pub async fn verify_audit_chain(pool: &Pool) -> Result<ChainStatus, DaoError> {
                     reason: "entry_hash does not match the row contents (row was altered)".into(),
                 });
             }
+            if let Some((sealed_seq, sealed_hash)) = sealed {
+                if seq == sealed_seq {
+                    if computed != sealed_hash {
+                        return Ok(ChainStatus::Broken {
+                            seq,
+                            reason: "chain head at the sealed seq does not match the signed checkpoint (history rewritten)".into(),
+                        });
+                    }
+                    sealed_reached = true;
+                }
+            }
 
             expected_prev = computed;
             head_hash = computed;
@@ -307,6 +410,15 @@ pub async fn verify_audit_chain(pool: &Pool) -> Result<ChainStatus, DaoError> {
         }
         if (page_len as i64) < PAGE {
             break;
+        }
+    }
+
+    if let Some((sealed_seq, _)) = sealed {
+        if !sealed_reached {
+            return Ok(ChainStatus::Broken {
+                seq: sealed_seq,
+                reason: "signed checkpoint references a seq beyond the chain (entries after the sealed head were deleted)".into(),
+            });
         }
     }
 

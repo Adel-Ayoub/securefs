@@ -34,7 +34,7 @@ async fn appends_chain_verify_and_detect_tampering() {
     let pool = ready_pool().await;
 
     // init_db backfills any pre-chain rows, so the chain starts intact.
-    let (base_entries, base_head) = match dao::verify_audit_chain(&pool).await.unwrap() {
+    let (base_entries, base_head) = match dao::verify_audit_chain(&pool, None).await.unwrap() {
         ChainStatus::Intact {
             entries, head_seq, ..
         } => (entries, head_seq),
@@ -63,7 +63,7 @@ async fn appends_chain_verify_and_detect_tampering() {
     assert_eq!(e1.seq, base_head + 1, "seq continues from the head");
     assert_eq!(e3.seq, base_head + 3, "seq is gapless");
 
-    match dao::verify_audit_chain(&pool).await.unwrap() {
+    match dao::verify_audit_chain(&pool, None).await.unwrap() {
         ChainStatus::Intact {
             entries,
             head_seq,
@@ -93,7 +93,7 @@ async fn appends_chain_verify_and_detect_tampering() {
         .await
         .unwrap();
 
-    match dao::verify_audit_chain(&pool).await.unwrap() {
+    match dao::verify_audit_chain(&pool, None).await.unwrap() {
         ChainStatus::Broken { seq, .. } => {
             assert_eq!(seq, e1.seq, "verify pinpoints the altered row")
         }
@@ -108,13 +108,110 @@ async fn appends_chain_verify_and_detect_tampering() {
         )
         .await
         .unwrap();
-    match dao::verify_audit_chain(&pool).await.unwrap() {
+    match dao::verify_audit_chain(&pool, None).await.unwrap() {
         ChainStatus::Intact { .. } => {}
         ChainStatus::Broken { seq, reason } => {
             panic!(
                 "restoring the row should re-validate, broke at {}: {}",
                 seq, reason
             )
+        }
+    }
+}
+
+#[tokio::test]
+async fn signed_head_anchors_and_detects_truncation() {
+    let pool = ready_pool().await;
+    let key = [7u8; 32];
+    let wrong_key = [9u8; 32];
+
+    dao::append_audit_log(&pool, "TEST_SEAL", "alice", "/s1", "ok", None)
+        .await
+        .unwrap();
+    let b = dao::append_audit_log(&pool, "TEST_SEAL", "bob", "/s2", "ok", None)
+        .await
+        .unwrap();
+
+    let (sealed_seq, sealed_hash) = dao::seal_audit_head(&pool, &key)
+        .await
+        .unwrap()
+        .expect("chain is non-empty");
+    assert_eq!(sealed_seq, b.seq);
+    assert_eq!(sealed_hash, b.entry_hash);
+
+    // The signed head validates under the key.
+    match dao::verify_audit_chain(&pool, Some(&key)).await.unwrap() {
+        ChainStatus::Intact { head_seq, .. } => assert_eq!(head_seq, b.seq),
+        ChainStatus::Broken { seq, reason } => {
+            panic!("sealed chain should verify, broke at {}: {}", seq, reason)
+        }
+    }
+
+    // A wrong key cannot validate the seal (key-binding / forgery resistance).
+    match dao::verify_audit_chain(&pool, Some(&wrong_key))
+        .await
+        .unwrap()
+    {
+        ChainStatus::Broken { .. } => {}
+        ChainStatus::Intact { .. } => panic!("a checkpoint must not validate under the wrong key"),
+    }
+
+    // Truncation below the signed head: delete the sealed tail row. The unkeyed
+    // walk alone would accept the shorter chain; the seal catches the missing head.
+    let client = pool.get().await.unwrap();
+    let row = client
+        .query_one(
+            "SELECT ts, event, username, resource, result, ip, prev_hash, entry_hash
+             FROM audit_log WHERE seq = $1",
+            &[&b.seq],
+        )
+        .await
+        .unwrap();
+    let ts: i64 = row.get(0);
+    let event: String = row.get(1);
+    let username: String = row.get(2);
+    let resource: String = row.get(3);
+    let result: String = row.get(4);
+    let ip: Option<String> = row.get(5);
+    let prev_hash: Vec<u8> = row.get(6);
+    let entry_hash: Vec<u8> = row.get(7);
+
+    client
+        .execute("DELETE FROM audit_log WHERE seq = $1", &[&b.seq])
+        .await
+        .unwrap();
+
+    match dao::verify_audit_chain(&pool, Some(&key)).await.unwrap() {
+        ChainStatus::Broken { seq, .. } => {
+            assert_eq!(seq, b.seq, "verify flags the truncated sealed head")
+        }
+        ChainStatus::Intact { .. } => panic!("truncation below the signed head must be detected"),
+    }
+
+    // Restore the row exactly so the shared chain is left pristine.
+    client
+        .execute(
+            "INSERT INTO audit_log
+                (ts, event, username, resource, result, ip, seq, prev_hash, entry_hash)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+            &[
+                &ts,
+                &event,
+                &username,
+                &resource,
+                &result,
+                &ip,
+                &b.seq,
+                &prev_hash,
+                &entry_hash,
+            ],
+        )
+        .await
+        .unwrap();
+    match dao::verify_audit_chain(&pool, Some(&key)).await.unwrap() {
+        ChainStatus::Intact { .. } => {}
+        ChainStatus::Broken { seq, reason } => {
+            panic!("restore should re-validate, broke at {}: {}", seq, reason)
         }
     }
 }
