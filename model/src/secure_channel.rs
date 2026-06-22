@@ -14,6 +14,7 @@ use aes_gcm::aead::{Aead, Payload};
 use aes_gcm::{Aes256Gcm, Key, KeyInit, Nonce};
 use hkdf::Hkdf;
 use sha2::Sha256;
+use zeroize::Zeroizing;
 
 use crate::protocol::AppMessage;
 
@@ -55,20 +56,20 @@ pub enum SecureChannelError {
 /// Per-connection channel state: a key and monotonic counter for each
 /// direction.
 pub struct SecureChannel {
-    send_key: Key<Aes256Gcm>,
-    recv_key: Key<Aes256Gcm>,
+    send_key: Zeroizing<[u8; 32]>,
+    recv_key: Zeroizing<[u8; 32]>,
     send_dir: u8,
     recv_dir: u8,
     send_seq: u64,
     recv_seq: u64,
 }
 
-fn derive(secret: &[u8], info: &[u8]) -> Key<Aes256Gcm> {
+fn derive(secret: &[u8], info: &[u8]) -> Zeroizing<[u8; 32]> {
     let hkdf = Hkdf::<Sha256>::new(None, secret);
-    let mut okm = [0u8; 32];
-    hkdf.expand(info, &mut okm)
+    let mut okm = Zeroizing::new([0u8; 32]);
+    hkdf.expand(info, okm.as_mut_slice())
         .expect("32 bytes is a valid HKDF-SHA256 output length");
-    *Key::<Aes256Gcm>::from_slice(&okm)
+    okm
 }
 
 fn nonce_for(seq: u64) -> [u8; 12] {
@@ -116,7 +117,7 @@ impl SecureChannel {
         let seq = self.send_seq;
         let nonce = nonce_for(seq);
         let aad = aad_for(self.send_dir, seq);
-        let cipher = Aes256Gcm::new(&self.send_key);
+        let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&self.send_key[..]));
         let ciphertext = cipher
             .encrypt(
                 Nonce::from_slice(&nonce),
@@ -145,7 +146,7 @@ impl SecureChannel {
             hex::decode(&ciphertext_hex).map_err(|_| SecureChannelError::InvalidHex)?;
         let nonce = nonce_for(seq);
         let aad = aad_for(self.recv_dir, seq);
-        let cipher = Aes256Gcm::new(&self.recv_key);
+        let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&self.recv_key[..]));
         let plaintext = cipher
             .decrypt(
                 Nonce::from_slice(&nonce),
