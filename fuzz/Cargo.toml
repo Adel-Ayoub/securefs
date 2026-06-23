@@ -1,0 +1,31 @@
+[package]
+name = "securefs-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+# Empty table detaches this crate into its own workspace, so the parent
+# workspace's `-D warnings` clippy gate and `forbid(unsafe_code)` never build it.
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+securefs-server = { path = "../server" }
+securefs-model = { path = "../model" }
+
+[[bin]]
+name = "secure_channel_open"
+path = "fuzz_targets/secure_channel_open.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "health_parse"
+path = "fuzz_targets/health_parse.rs"
+test = false
+doc = false
+bench = false
