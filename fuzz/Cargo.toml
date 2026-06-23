@@ -7,14 +7,10 @@ edition = "2021"
 [package.metadata]
 cargo-fuzz = true
 
-# Empty table detaches this crate into its own workspace, so the parent
-# workspace's `-D warnings` clippy gate and `forbid(unsafe_code)` never build it.
-[workspace]
-
 [dependencies]
 libfuzzer-sys = "0.4"
-securefs-server = { path = "../server" }
-securefs-model = { path = "../model" }
+securefs-server = { path = "../crates/server" }
+securefs-model = { path = "../crates/model" }
 
 [[bin]]
 name = "secure_channel_open"

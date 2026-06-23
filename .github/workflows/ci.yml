@@ -38,7 +38,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Apply database baseline
-        run: psql -h localhost -p 5431 -U securefs_user -d securefs -f server/migrations/V1__baseline.sql
+        run: psql -h localhost -p 5431 -U securefs_user -d securefs -f crates/server/migrations/V1__baseline.sql
         env:
           PGPASSWORD: securefs_password
 

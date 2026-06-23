@@ -1,11 +1,5 @@
 [workspace]
-members = [
-  "model",
-  "blobstore",
-  "keyring",
-  "server",
-  "client"
-]
+members = ["crates/*", "fuzz"]
 resolver = "2"
 
 [workspace.package]

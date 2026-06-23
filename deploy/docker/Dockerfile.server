@@ -11,18 +11,18 @@ RUN apt-get update \
 
 # Copy workspace manifests first to create a cacheable dependency layer
 COPY Cargo.toml Cargo.lock ./
-COPY model/Cargo.toml model/Cargo.toml
-COPY server/Cargo.toml server/Cargo.toml
-COPY client/Cargo.toml client/Cargo.toml
+COPY crates/model/Cargo.toml crates/model/Cargo.toml
+COPY crates/server/Cargo.toml crates/server/Cargo.toml
+COPY crates/client/Cargo.toml crates/client/Cargo.toml
 
 # Build deps with dummy source files so Docker caches this layer separately.
 # client is binary-only ([[bin]]), so it needs main.rs not lib.rs.
-RUN mkdir -p model/src server/src client/src \
-    && echo "fn main() {}" > server/src/main.rs \
-    && echo "fn main() {}" > client/src/main.rs \
-    && touch model/src/lib.rs server/src/lib.rs \
+RUN mkdir -p crates/model/src crates/server/src crates/client/src \
+    && echo "fn main() {}" > crates/server/src/main.rs \
+    && echo "fn main() {}" > crates/client/src/main.rs \
+    && touch crates/model/src/lib.rs crates/server/src/lib.rs \
     && cargo build --release \
-    && rm -rf model/src server/src client/src
+    && rm -rf crates/model/src crates/server/src crates/client/src
 
 # Copy real source code
 COPY . .
@@ -30,7 +30,7 @@ COPY . .
 # Touch source files to invalidate the cache layer and build the real binary.
 # --features s3 enables the S3/MinIO object-storage backend so the image can run
 # with STORAGE_BACKEND=s3 for scale-out (defaults to local storage when unset).
-RUN touch server/src/main.rs server/src/lib.rs model/src/lib.rs \
+RUN touch crates/server/src/main.rs crates/server/src/lib.rs crates/model/src/lib.rs \
     && cargo build --release -p securefs-server --features s3 --bin securefs-server
 
 # Verify runtime dependencies so we know what to include in the runtime stage
