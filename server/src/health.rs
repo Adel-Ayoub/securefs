@@ -35,17 +35,26 @@ pub async fn serve_on(listener: TcpListener, pool: Pool, metrics: SharedMetrics)
     }
 }
 
+// Parse the request-target (path) out of a raw HTTP request head: the second
+// whitespace-separated token of the first line ("METHOD <target> VERSION").
+// Returns "" for non-UTF-8 or otherwise malformed input. Pure and panic-free,
+// so it is safe to run on unauthenticated bytes straight off the socket (and is
+// exercised continuously by the `health_parse` fuzz target).
+pub fn parse_request_target(buf: &[u8]) -> &str {
+    std::str::from_utf8(buf)
+        .ok()
+        .and_then(|req| req.lines().next())
+        .and_then(|line| line.split_whitespace().nth(1))
+        .unwrap_or("")
+}
+
 async fn handle(mut stream: TcpStream, pool: Pool, metrics: SharedMetrics) -> std::io::Result<()> {
     let mut buf = [0u8; 1024];
     let n = match tokio::time::timeout(Duration::from_secs(5), stream.read(&mut buf)).await {
         Ok(Ok(n)) => n,
         _ => return Ok(()),
     };
-    let path = std::str::from_utf8(&buf[..n])
-        .ok()
-        .and_then(|req| req.lines().next())
-        .and_then(|line| line.split_whitespace().nth(1))
-        .unwrap_or("");
+    let path = parse_request_target(&buf[..n]);
 
     let (status, ctype, body) = match path {
         "/health" => ("200 OK", "text/plain", "ok".to_string()),
@@ -117,5 +126,48 @@ pub async fn run_healthcheck(addr: &str) -> Result<(), HealthCheckError> {
         Err(HealthCheckError::BadStatus(
             head.lines().next().unwrap_or("no response").to_string(),
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_request_target;
+
+    #[test]
+    fn parses_common_request_targets() {
+        assert_eq!(
+            parse_request_target(b"GET /health HTTP/1.1\r\nHost: x\r\n\r\n"),
+            "/health"
+        );
+        assert_eq!(
+            parse_request_target(b"GET /ready HTTP/1.1\r\n\r\n"),
+            "/ready"
+        );
+        assert_eq!(
+            parse_request_target(b"POST /metrics HTTP/1.0\n"),
+            "/metrics"
+        );
+    }
+
+    #[test]
+    fn empty_on_malformed_or_non_utf8() {
+        assert_eq!(parse_request_target(b""), "");
+        assert_eq!(parse_request_target(b"GET"), "");
+        assert_eq!(parse_request_target(b"   \r\n"), "");
+        assert_eq!(parse_request_target(b"\xff\xfe not utf8"), "");
+    }
+
+    #[test]
+    fn never_panics_on_odd_shapes() {
+        for raw in [
+            &b"GET "[..],
+            b"\n\n\n",
+            b"G E T",
+            b"GET  /x  y",
+            b"\0\0 /y z",
+        ] {
+            let target = parse_request_target(raw);
+            assert!(target.len() <= raw.len());
+        }
     }
 }
