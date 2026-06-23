@@ -31,6 +31,7 @@ pub fn physical_key(path: &str) -> Result<String, StorageError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     #[test]
     fn safe_path_maps_to_64_hex() {
@@ -66,6 +67,73 @@ mod tests {
                 matches!(physical_key(bad), Err(StorageError::UnsafePath)),
                 "path {bad:?} should be rejected"
             );
+        }
+    }
+
+    // A path the chokepoint accepts: rooted at /home, sane depth, no NUL byte.
+    fn safe_path() -> impl Strategy<Value = String> {
+        prop::collection::vec("[A-Za-z0-9._-]{1,16}", 0..=12).prop_map(|segs| {
+            if segs.is_empty() {
+                "/home".to_string()
+            } else {
+                format!("/home/{}", segs.join("/"))
+            }
+        })
+    }
+
+    // Safe paths plus arbitrary and hand-picked adversarial strings, to probe
+    // the gate from both sides (the NUL cases the `.*` regex never emits).
+    fn any_path() -> impl Strategy<Value = String> {
+        let adversarial = prop::sample::select(vec![
+            "/etc/passwd".to_string(),
+            "/home/../etc/passwd".to_string(),
+            "/home/../../root".to_string(),
+            "/".to_string(),
+            String::new(),
+            "/homeevil".to_string(),
+            "/root".to_string(),
+            "/home/a\0b".to_string(),
+            "../home".to_string(),
+            "/home/".to_string(),
+        ]);
+        prop_oneof![
+            safe_path(),
+            adversarial,
+            ".*",
+            ".*".prop_map(|s| format!("/home/{s}")),
+        ]
+    }
+
+    proptest! {
+        // Acceptance is exactly `is_safe_path`, and every accepted path maps to a
+        // 64-char lowercase-hex key with no path separators - so no input, however
+        // adversarial, yields an on-disk key that could escape the storage root.
+        #[test]
+        fn physical_key_matches_gate_and_is_opaque(p in any_path()) {
+            match physical_key(&p) {
+                Ok(key) => {
+                    prop_assert!(is_safe_path(&p));
+                    prop_assert_eq!(key.len(), 64);
+                    prop_assert!(
+                        key.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                    );
+                }
+                Err(StorageError::UnsafePath) => prop_assert!(!is_safe_path(&p)),
+            }
+        }
+
+        // The chokepoint and the underlying digest are deterministic.
+        #[test]
+        fn physical_key_is_deterministic(p in safe_path()) {
+            prop_assert_eq!(physical_key(&p).unwrap(), physical_key(&p).unwrap());
+            prop_assert_eq!(path_digest(&p), path_digest(&p));
+        }
+
+        // Distinct accepted paths map to distinct keys (keyed-HMAC injectivity).
+        #[test]
+        fn distinct_safe_paths_get_distinct_keys(p in safe_path(), q in safe_path()) {
+            prop_assume!(p != q);
+            prop_assert_ne!(physical_key(&p).unwrap(), physical_key(&q).unwrap());
         }
     }
 }

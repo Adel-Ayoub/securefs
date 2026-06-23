@@ -49,5 +49,6 @@ securefs-keyring = { path = "../keyring" }
 s3 = ["securefs-blobstore/s3"]
 
 [dev-dependencies]
+proptest = "1"
 rcgen = { version = "0.14", default-features = false, features = ["pem", "aws_lc_rs"] }
 securefs-blobstore = { path = "../blobstore" }
