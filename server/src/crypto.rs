@@ -15,11 +15,11 @@ use securefs_server::dao;
 //   0x01 = zstd then AES-256-GCM under the global key: 0x01 || nonce || ct
 //   0x02 = envelope: zstd then AES-256-GCM under a per-file DEK; the DEK is
 //          wrapped by the KEK and stored as file metadata (fnode.wrapped_dek)
-const FORMAT_V1_ZSTD: u8 = 0x01;
-const FORMAT_V2_ENVELOPE: u8 = 0x02;
+const FORMAT_ZSTD_GLOBAL: u8 = 0x01;
+const FORMAT_ENVELOPE: u8 = 0x02;
 //   0x03 = chunked envelope: per-chunk zstd-then-AES-256-GCM under a per-file DEK
 //          with STREAM nonces, plus a per-file Merkle root over the plaintext.
-const FORMAT_V3_CHUNKED: u8 = 0x03;
+const FORMAT_CHUNKED: u8 = 0x03;
 
 // HKDF-SHA256 info labels. The DEK-wrapping label is fixed across generations:
 // rotation changes the master, not the label, so the KEK for a generation is
@@ -97,7 +97,7 @@ fn dek_wrapping_key() -> Zeroizing<[u8; 32]> {
     kek_from_master(&current_master())
 }
 
-// Global key for legacy (v0/v1) files written before envelope encryption.
+// Global key for legacy files written before envelope encryption.
 fn legacy_file_key() -> Zeroizing<[u8; 32]> {
     derive_key(LEGACY_FILE_INFO)
 }
@@ -211,15 +211,15 @@ pub fn encrypt_file_content(content: &[u8]) -> (Vec<u8>, Vec<u8>) {
         .encrypt(&nonce, compressed.as_ref())
         .expect("AES-GCM encryption should not fail with valid inputs");
     let mut blob = Vec::with_capacity(1 + 12 + ciphertext.len());
-    blob.push(FORMAT_V2_ENVELOPE);
+    blob.push(FORMAT_ENVELOPE);
     blob.extend_from_slice(&nonce);
     blob.extend_from_slice(&ciphertext);
     let wrapped = wrap_dek(dek.as_slice());
     (blob, wrapped)
 }
 
-/// Decrypt file content. v2 (envelope) requires the file's wrapped DEK; v1 and
-/// legacy blobs decrypt under the global key.
+/// Decrypt file content. The per-file-DEK formats (envelope and chunked) require
+/// the file's wrapped DEK; the older global-key and legacy blobs do not.
 pub fn decrypt_file_content(
     encrypted: &[u8],
     wrapped_dek: Option<&[u8]>,
@@ -229,16 +229,16 @@ pub fn decrypt_file_content(
     }
 
     match encrypted[0] {
-        FORMAT_V3_CHUNKED => {
+        FORMAT_CHUNKED => {
             let wrapped = wrapped_dek.ok_or("missing wrapped dek for chunked file")?;
             decrypt_file_chunked(encrypted, wrapped).map(|(content, _root)| content)
         }
-        FORMAT_V2_ENVELOPE => {
+        FORMAT_ENVELOPE => {
             let wrapped = wrapped_dek.ok_or("missing wrapped dek for envelope file")?;
             let dek = unwrap_dek(wrapped)?;
             open_zstd(Key::<Aes256Gcm>::from_slice(&dek), &encrypted[1..])
         }
-        FORMAT_V1_ZSTD => {
+        FORMAT_ZSTD_GLOBAL => {
             let key = legacy_file_key();
             open_zstd(
                 Key::<Aes256Gcm>::from_slice(key.as_slice()),
@@ -265,7 +265,7 @@ pub fn hash_content(content: &[u8]) -> String {
     hex::encode(blake3::hash(content).as_bytes())
 }
 
-// Chunked envelope (v3): zstd-then-AES-256-GCM per fixed-size plaintext chunk
+// Chunked envelope: zstd-then-AES-256-GCM per fixed-size plaintext chunk
 // under the per-file DEK, framed as 0x03 || prefix(7) || (len32 || aead_chunk)*.
 // Each chunk's nonce is a STREAM construction - a 7-byte per-file random prefix,
 // a 4-byte big-endian chunk counter, and a 1-byte final flag - so chunks cannot
@@ -305,7 +305,7 @@ fn merkle_root(leaves: &[[u8; 32]]) -> [u8; 32] {
     level[0]
 }
 
-/// Encrypt content as the chunked envelope format (v3). Returns the on-disk blob,
+/// Encrypt content as the chunked envelope format. Returns the on-disk blob,
 /// the wrapped DEK, and the hex Merkle root over the plaintext chunks.
 pub fn encrypt_file_chunked(content: &[u8]) -> (Vec<u8>, Vec<u8>, String) {
     let dek = Aes256Gcm::generate_key(OsRng);
@@ -321,7 +321,7 @@ pub fn encrypt_file_chunked(content: &[u8]) -> (Vec<u8>, Vec<u8>, String) {
     let n = pieces.len();
 
     let mut blob = Vec::with_capacity(1 + 7 + content.len());
-    blob.push(FORMAT_V3_CHUNKED);
+    blob.push(FORMAT_CHUNKED);
     blob.extend_from_slice(&prefix);
 
     let mut leaves = Vec::with_capacity(n);
@@ -340,14 +340,14 @@ pub fn encrypt_file_chunked(content: &[u8]) -> (Vec<u8>, Vec<u8>, String) {
     (blob, wrapped, hex::encode(merkle_root(&leaves)))
 }
 
-/// Decrypt a chunked envelope (v3) blob. Returns the plaintext and the hex Merkle
+/// Decrypt a chunked envelope blob. Returns the plaintext and the hex Merkle
 /// root recomputed from it, for the caller to check against the stored root.
 pub fn decrypt_file_chunked(
     blob: &[u8],
     wrapped_dek: &[u8],
 ) -> Result<(Vec<u8>, String), &'static str> {
-    if blob.len() < 8 || blob[0] != FORMAT_V3_CHUNKED {
-        return Err("not a chunked (v3) blob");
+    if blob.len() < 8 || blob[0] != FORMAT_CHUNKED {
+        return Err("not a chunked blob");
     }
     let dek = unwrap_dek(wrapped_dek)?;
     let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&dek));
@@ -387,12 +387,12 @@ pub fn decrypt_file_chunked(
     Ok((out, hex::encode(merkle_root(&leaves))))
 }
 
-/// Whether a blob is the chunked (v3) format.
+/// Whether a blob is the chunked format.
 pub fn is_chunked(blob: &[u8]) -> bool {
-    blob.first() == Some(&FORMAT_V3_CHUNKED)
+    blob.first() == Some(&FORMAT_CHUNKED)
 }
 
-/// Decrypt any at-rest format, additionally checking a v3 file's recomputed
+/// Decrypt any at-rest format, additionally checking a chunked file's recomputed
 /// Merkle root against the stored one when one is provided.
 pub fn decrypt_verified(
     blob: &[u8],
@@ -428,7 +428,7 @@ mod tests {
     fn envelope_round_trip() {
         set_key();
         let (blob, wrapped) = encrypt_file_content(b"hello envelope");
-        assert_eq!(blob[0], FORMAT_V2_ENVELOPE);
+        assert_eq!(blob[0], FORMAT_ENVELOPE);
         let out = decrypt_file_content(&blob, Some(&wrapped)).unwrap();
         assert_eq!(out, b"hello envelope");
     }
@@ -449,15 +449,15 @@ mod tests {
     }
 
     #[test]
-    fn legacy_v1_still_decrypts() {
+    fn legacy_global_key_still_decrypts() {
         set_key();
-        // Produce a v1 blob (global key) the way pre-envelope writes did.
+        // Produce a global-key blob the way pre-envelope writes did.
         let compressed = zstd::encode_all(&b"old file"[..], 3).unwrap();
         let key = legacy_file_key();
         let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key.as_slice()));
         let nonce = Aes256Gcm::generate_nonce(OsRng);
         let ct = cipher.encrypt(&nonce, compressed.as_ref()).unwrap();
-        let mut blob = vec![FORMAT_V1_ZSTD];
+        let mut blob = vec![FORMAT_ZSTD_GLOBAL];
         blob.extend_from_slice(&nonce);
         blob.extend_from_slice(&ct);
         // Decrypts with no wrapped DEK (global key path).
@@ -526,11 +526,11 @@ mod tests {
         // > 3 chunks of 64 KiB.
         let content: Vec<u8> = (0..200_000u32).map(|i| (i % 251) as u8).collect();
         let (blob, wrapped, root) = encrypt_file_chunked(&content);
-        assert_eq!(blob[0], FORMAT_V3_CHUNKED);
+        assert_eq!(blob[0], FORMAT_CHUNKED);
         let (out, root2) = decrypt_file_chunked(&blob, &wrapped).unwrap();
         assert_eq!(out, content);
         assert_eq!(root, root2);
-        // decrypt_file_content dispatches v3 by the version byte too.
+        // decrypt_file_content dispatches the chunked format by the version byte too.
         assert_eq!(
             decrypt_file_content(&blob, Some(&wrapped)).unwrap(),
             content
@@ -632,10 +632,10 @@ mod tests {
         }
     }
 
-    // Split a genuine v3 blob into its 8-byte header and the list of framed
+    // Split a genuine chunked blob into its 8-byte header and the list of framed
     // chunks (each entry is the on-disk `len32 || ciphertext` slice), so a test
     // can forge a reordered blob out of authentic ciphertext.
-    fn v3_frames(blob: &[u8]) -> (Vec<u8>, Vec<Vec<u8>>) {
+    fn chunked_frames(blob: &[u8]) -> (Vec<u8>, Vec<Vec<u8>>) {
         let header = blob[..8].to_vec();
         let mut frames = Vec::new();
         let mut pos = 8;
@@ -651,13 +651,13 @@ mod tests {
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(64))]
 
-        // v3 chunked encrypt -> decrypt is the identity, the recomputed Merkle
+        // chunked encrypt -> decrypt is the identity, the recomputed Merkle
         // root matches the encoder's, and the version-dispatching decoders agree.
         #[test]
-        fn v3_round_trips(content in prop::collection::vec(any::<u8>(), 0..=160_000)) {
+        fn chunked_round_trips(content in prop::collection::vec(any::<u8>(), 0..=160_000)) {
             set_key();
             let (blob, wrapped, root) = encrypt_file_chunked(&content);
-            prop_assert_eq!(blob[0], FORMAT_V3_CHUNKED);
+            prop_assert_eq!(blob[0], FORMAT_CHUNKED);
             let (out, root2) = decrypt_file_chunked(&blob, &wrapped).unwrap();
             prop_assert_eq!(&out, &content);
             prop_assert_eq!(&root, &root2);
@@ -667,11 +667,11 @@ mod tests {
             prop_assert_eq!(&via_verified, &content);
         }
 
-        // Flipping any single byte of a v3 blob breaks decryption, whether it
+        // Flipping any single byte of a chunked blob breaks decryption, whether it
         // lands in the version byte, the per-file nonce prefix, a frame length,
         // or a chunk's authenticated ciphertext.
         #[test]
-        fn v3_single_byte_tamper_is_rejected(
+        fn chunked_single_byte_tamper_is_rejected(
             content in prop::collection::vec(any::<u8>(), 0..=160_000),
             idx in any::<usize>(),
         ) {
@@ -682,10 +682,10 @@ mod tests {
             prop_assert!(decrypt_file_chunked(&blob, &wrapped).is_err());
         }
 
-        // Truncating a v3 blob anywhere short of its full length is rejected: a
+        // Truncating a chunked blob anywhere short of its full length is rejected: a
         // non-final chunk re-presented as the final one fails authentication.
         #[test]
-        fn v3_truncation_is_rejected(
+        fn chunked_truncation_is_rejected(
             content in prop::collection::vec(any::<u8>(), 0..=160_000),
             cut in any::<usize>(),
         ) {
@@ -698,14 +698,14 @@ mod tests {
         // Reordering two chunk frames is rejected: each chunk's STREAM nonce
         // binds its ciphertext to its position.
         #[test]
-        fn v3_frame_reorder_is_rejected(
+        fn chunked_frame_reorder_is_rejected(
             content in prop::collection::vec(any::<u8>(), 65_537..=160_000),
             a in any::<usize>(),
             b in any::<usize>(),
         ) {
             set_key();
             let (blob, wrapped, _root) = encrypt_file_chunked(&content);
-            let (header, mut frames) = v3_frames(&blob);
+            let (header, mut frames) = chunked_frames(&blob);
             prop_assume!(frames.len() >= 2);
             let i = a % frames.len();
             let j = b % frames.len();
@@ -724,7 +724,7 @@ mod tests {
 
         // A different file's wrapped DEK never opens this file's blob.
         #[test]
-        fn v3_foreign_dek_is_rejected(
+        fn chunked_foreign_dek_is_rejected(
             a in prop::collection::vec(any::<u8>(), 0..=8192),
             b in prop::collection::vec(any::<u8>(), 0..=8192),
         ) {
@@ -738,7 +738,7 @@ mod tests {
         // re-encryption (fresh DEK/nonce each time) yet changed by any one-byte
         // plaintext edit.
         #[test]
-        fn v3_merkle_root_tracks_plaintext(
+        fn chunked_merkle_root_tracks_plaintext(
             content in prop::collection::vec(any::<u8>(), 1..=8192),
             idx in any::<usize>(),
         ) {
@@ -753,27 +753,27 @@ mod tests {
             prop_assert_ne!(root_a, root_c);
         }
 
-        // v2 whole-file envelope round-trips and refuses to decrypt without its
+        // whole-file envelope round-trips and refuses to decrypt without its
         // wrapped DEK.
         #[test]
-        fn v2_envelope_round_trips(content in prop::collection::vec(any::<u8>(), 0..=8192)) {
+        fn envelope_round_trips_any_content(content in prop::collection::vec(any::<u8>(), 0..=8192)) {
             set_key();
             let (blob, wrapped) = encrypt_file_content(&content);
-            prop_assert_eq!(blob[0], FORMAT_V2_ENVELOPE);
+            prop_assert_eq!(blob[0], FORMAT_ENVELOPE);
             prop_assert!(decrypt_file_content(&blob, None).is_err());
             prop_assert_eq!(decrypt_file_content(&blob, Some(&wrapped)).unwrap(), content);
         }
 
-        // v1 legacy blobs (global key, no per-file DEK) still decrypt.
+        // legacy global-key blobs (no per-file DEK) still decrypt.
         #[test]
-        fn v1_legacy_round_trips(content in prop::collection::vec(any::<u8>(), 0..=8192)) {
+        fn legacy_global_key_round_trips(content in prop::collection::vec(any::<u8>(), 0..=8192)) {
             set_key();
             let compressed = zstd::encode_all(content.as_slice(), 3).unwrap();
             let key = legacy_file_key();
             let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key.as_slice()));
             let nonce = Aes256Gcm::generate_nonce(OsRng);
             let ct = cipher.encrypt(&nonce, compressed.as_ref()).unwrap();
-            let mut blob = vec![FORMAT_V1_ZSTD];
+            let mut blob = vec![FORMAT_ZSTD_GLOBAL];
             blob.extend_from_slice(&nonce);
             blob.extend_from_slice(&ct);
             prop_assert_eq!(decrypt_file_content(&blob, None).unwrap(), content);
