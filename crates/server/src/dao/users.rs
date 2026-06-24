@@ -1,10 +1,10 @@
+use super::records::User;
 use aes_gcm::{Aes256Gcm, Key};
 use argon2::{
     password_hash::{Encoding, PasswordHashString, PasswordVerifier},
     Argon2,
 };
 use deadpool_postgres::Pool;
-use super::records::User;
 
 use super::{conn, get_db_pass, key_gen, salt_pass, DaoError};
 

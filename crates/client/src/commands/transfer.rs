@@ -3,8 +3,8 @@ use std::io::Write as _;
 
 use base64::Engine;
 use colored::Colorize;
-use securefs_proto::protocol::{AppMessage, Cmd};
 use securefs_channel::secure_channel::SecureChannel;
+use securefs_proto::protocol::{AppMessage, Cmd};
 
 use crate::transport::{recv, send, Ws};
 

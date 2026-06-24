@@ -1,6 +1,6 @@
 use deadpool_postgres::{Config, ManagerConfig, Pool, RecyclingMethod, Runtime};
-use securefs_server::dao::records::FNode;
 use securefs_server::dao;
+use securefs_server::dao::records::FNode;
 use tokio_postgres::NoTls;
 
 fn test_pool() -> Pool {
