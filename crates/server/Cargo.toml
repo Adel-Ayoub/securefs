@@ -39,7 +39,8 @@ async-trait = "0.1"
 refinery = { version = "0.8", features = ["tokio-postgres"] }
 
 # Internal dependencies
-securefs-model = { path = "../model" }
+securefs-proto = { path = "../proto" }
+securefs-channel = { path = "../channel" }
 securefs-blobstore = { path = "../blobstore" }
 securefs-keyring = { path = "../keyring" }
 

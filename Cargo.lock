@@ -2489,7 +2489,8 @@ dependencies = [
  "rand_core 0.6.4",
  "rpassword",
  "rustyline",
- "securefs-model",
+ "securefs-channel",
+ "securefs-proto",
  "serde_json",
  "tokio",
  "tokio-tungstenite",
@@ -2501,7 +2502,7 @@ name = "securefs-fuzz"
 version = "0.0.0"
 dependencies = [
  "libfuzzer-sys",
- "securefs-model",
+ "securefs-channel",
  "securefs-server",
 ]
 
@@ -2511,15 +2512,6 @@ version = "0.1.0"
 dependencies = [
  "thiserror 2.0.18",
  "zeroize",
-]
-
-[[package]]
-name = "securefs-model"
-version = "0.1.0"
-dependencies = [
- "securefs-channel",
- "securefs-proto",
- "serde",
 ]
 
 [[package]]
@@ -2555,8 +2547,9 @@ dependencies = [
  "refinery",
  "rustls-pki-types",
  "securefs-blobstore",
+ "securefs-channel",
  "securefs-keyring",
- "securefs-model",
+ "securefs-proto",
  "serde",
  "serde_json",
  "sha2 0.10.9",

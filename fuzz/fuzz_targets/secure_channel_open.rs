@@ -1,7 +1,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use securefs_model::secure_channel::{Role, SecureChannel};
+use securefs_channel::secure_channel::{Role, SecureChannel};
 
 // open() parses an attacker-controlled wire frame: outer JSON -> hex-decode ->
 // AES-256-GCM decrypt -> inner JSON. Every layer must reject malformed input

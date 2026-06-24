@@ -1,9 +1,8 @@
-//! Server-side persistence records, plus a re-export of the wire vocabulary
-//! so existing `securefs_model::protocol::*` paths keep resolving.
+//! Persistence records for files, users, and groups, stored by the data-access
+//! layer. Server-only (never sent to the client), so they live here rather than
+//! in the wire-protocol crate.
 
 use serde::{Deserialize, Serialize};
-
-pub use securefs_proto::protocol::{AppMessage, Cmd, Path};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 /// File or directory node persisted in storage.

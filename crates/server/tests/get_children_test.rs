@@ -2,7 +2,7 @@
 // returns exactly the nodes whose parent matches, never a sibling's children.
 
 use deadpool_postgres::{Config, ManagerConfig, Pool, RecyclingMethod, Runtime};
-use securefs_model::protocol::FNode;
+use securefs_server::dao::records::FNode;
 use securefs_server::dao;
 use tokio_postgres::NoTls;
 use uuid::Uuid;

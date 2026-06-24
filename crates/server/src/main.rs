@@ -15,8 +15,8 @@ use futures_util::{SinkExt, StreamExt};
 use log::{info, warn};
 use rustls_pki_types::pem::PemObject;
 use rustls_pki_types::{CertificateDer, PrivateKeyDer};
-use securefs_model::protocol::{AppMessage, Cmd};
-use securefs_model::secure_channel::SecureChannel;
+use securefs_proto::protocol::{AppMessage, Cmd};
+use securefs_channel::secure_channel::SecureChannel;
 use std::net::IpAddr;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Semaphore;
@@ -932,7 +932,7 @@ where
 mod tests {
     use crate::util::*;
     use crate::{build_pool_to, parse_num_or};
-    use securefs_model::protocol::FNode;
+    use securefs_server::dao::records::FNode;
 
     #[test]
     fn numeric_settings_parse_with_fallback() {

@@ -1,5 +1,5 @@
-use securefs_model::cmd::{MapStr, NumArgs};
-use securefs_model::protocol::{AppMessage, Cmd};
+use securefs_proto::cmd::{MapStr, NumArgs};
+use securefs_proto::protocol::{AppMessage, Cmd};
 
 /// Parse user input into an `AppMessage` understood by the server.
 pub fn command_parser(input: String) -> Result<AppMessage, String> {

@@ -1,6 +1,6 @@
 use deadpool_postgres::Pool;
 use securefs_blobstore::Blobstore;
-use securefs_model::protocol::{AppMessage, Cmd};
+use securefs_proto::protocol::{AppMessage, Cmd};
 
 use securefs_server::dao;
 use securefs_server::storage::physical_key;

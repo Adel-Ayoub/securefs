@@ -1,4 +1,4 @@
-use securefs_model::protocol::FNode;
+use securefs_server::dao::records::FNode;
 
 /// Resolve a user input path relative to the current working directory.
 pub fn resolve_path(current: &str, input: &str) -> String {

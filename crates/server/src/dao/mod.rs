@@ -13,6 +13,7 @@ pub mod fnode;
 pub mod groups;
 pub mod perms;
 pub mod rate_limit;
+pub mod records;
 pub mod secret;
 pub mod sessions;
 pub mod users;

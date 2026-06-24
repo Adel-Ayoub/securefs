@@ -1,7 +1,8 @@
 use deadpool_postgres::Pool;
 use globset::GlobBuilder;
 use securefs_blobstore::Blobstore;
-use securefs_model::protocol::{AppMessage, Cmd, FNode};
+use securefs_proto::protocol::{AppMessage, Cmd};
+use securefs_server::dao::records::FNode;
 
 use securefs_server::dao;
 use securefs_server::storage::physical_key;

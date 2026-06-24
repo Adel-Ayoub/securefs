@@ -1,6 +1,6 @@
 use futures_util::{SinkExt, StreamExt};
-use securefs_model::protocol::AppMessage;
-use securefs_model::secure_channel::SecureChannel;
+use securefs_proto::protocol::AppMessage;
+use securefs_channel::secure_channel::SecureChannel;
 use tokio_tungstenite::tungstenite::Message;
 
 pub type Ws =

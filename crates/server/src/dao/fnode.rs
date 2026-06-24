@@ -1,6 +1,6 @@
 use deadpool_postgres::Pool;
 use securefs_blobstore::Blobstore;
-use securefs_model::protocol::FNode;
+use super::records::FNode;
 
 use super::{conn, get_db_pass, path_digest, DaoError};
 use crate::storage::physical_key;

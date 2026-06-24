@@ -1,6 +1,6 @@
 use deadpool_postgres::Pool;
 use securefs_blobstore::Blobstore;
-use securefs_model::protocol::{AppMessage, Cmd};
+use securefs_proto::protocol::{AppMessage, Cmd};
 use std::collections::HashSet;
 
 use securefs_server::dao;

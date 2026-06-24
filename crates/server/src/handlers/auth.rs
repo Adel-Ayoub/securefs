@@ -1,8 +1,8 @@
 use deadpool_postgres::Pool;
 use log::{info, warn};
 use rand_core::OsRng;
-use securefs_model::protocol::{AppMessage, Cmd};
-use securefs_model::secure_channel::{Role, SecureChannel, PROTOCOL_VERSION};
+use securefs_proto::protocol::{AppMessage, Cmd};
+use securefs_channel::secure_channel::{Role, SecureChannel, PROTOCOL_VERSION};
 use std::net::IpAddr;
 use std::time::{SystemTime, UNIX_EPOCH};
 use totp_rs::{Algorithm, Secret, TOTP};

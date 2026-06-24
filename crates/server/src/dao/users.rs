@@ -4,7 +4,7 @@ use argon2::{
     Argon2,
 };
 use deadpool_postgres::Pool;
-use securefs_model::protocol::User;
+use super::records::User;
 
 use super::{conn, get_db_pass, key_gen, salt_pass, DaoError};
 

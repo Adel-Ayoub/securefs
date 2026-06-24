@@ -4,8 +4,8 @@ use colored::Colorize;
 use rand_core::OsRng;
 use rustyline::error::ReadlineError;
 use rustyline::Editor;
-use securefs_model::protocol::{AppMessage, Cmd};
-use securefs_model::secure_channel::{Role, SecureChannel, PROTOCOL_VERSION};
+use securefs_proto::protocol::{AppMessage, Cmd};
+use securefs_channel::secure_channel::{Role, SecureChannel, PROTOCOL_VERSION};
 use tokio_tungstenite::connect_async;
 use x25519_dalek::{EphemeralSecret, PublicKey};
 

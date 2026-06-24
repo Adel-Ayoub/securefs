@@ -1,5 +1,5 @@
 use deadpool_postgres::Pool;
-use securefs_model::protocol::{AppMessage, Cmd};
+use securefs_proto::protocol::{AppMessage, Cmd};
 use securefs_server::dao;
 
 use crate::session::Session;

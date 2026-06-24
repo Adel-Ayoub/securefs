@@ -1,6 +1,6 @@
 use deadpool_postgres::{Config, ManagerConfig, Pool, RecyclingMethod, Runtime};
 use securefs_blobstore::{Blobstore, LocalFs};
-use securefs_model::protocol::FNode;
+use securefs_server::dao::records::FNode;
 use securefs_server::dao;
 use securefs_server::storage::physical_key;
 use tokio_postgres::NoTls;

@@ -27,4 +27,5 @@ rpassword = "7"
 blake3 = "1.5"
 
 # Internal dependencies
-securefs-model = { path = "../model" }
+securefs-proto = { path = "../proto" }
+securefs-channel = { path = "../channel" }
