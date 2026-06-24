@@ -2506,11 +2506,21 @@ dependencies = [
  "aes-gcm",
  "hex",
  "hkdf",
+ "securefs-proto",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "thiserror 2.0.18",
  "zeroize",
+]
+
+[[package]]
+name = "securefs-proto"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

@@ -5,6 +5,7 @@
 
 #![forbid(unsafe_code)]
 
-pub mod cmd;
 pub mod protocol;
 pub mod secure_channel;
+
+pub use securefs_proto::cmd;
