@@ -580,7 +580,6 @@ dependencies = [
  "curve25519-dalek-derive",
  "fiat-crypto",
  "rustc_version",
- "serde",
  "subtle",
  "zeroize",
 ]
@@ -2468,10 +2467,12 @@ dependencies = [
  "aes-gcm",
  "hex",
  "hkdf",
+ "rand_core 0.6.4",
  "securefs-proto",
  "serde_json",
  "sha2 0.10.9",
  "thiserror 2.0.18",
+ "x25519-dalek",
  "zeroize",
 ]
 
@@ -2486,7 +2487,6 @@ dependencies = [
  "dirs",
  "futures-util",
  "hex",
- "rand_core 0.6.4",
  "rpassword",
  "rustyline",
  "securefs-channel",
@@ -2494,7 +2494,6 @@ dependencies = [
  "serde_json",
  "tokio",
  "tokio-tungstenite",
- "x25519-dalek",
 ]
 
 [[package]]
@@ -2560,7 +2559,6 @@ dependencies = [
  "tokio-tungstenite",
  "totp-rs",
  "uuid",
- "x25519-dalek",
  "zeroize",
  "zstd",
 ]

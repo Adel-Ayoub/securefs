@@ -3,4 +3,5 @@
 
 #![forbid(unsafe_code)]
 
+pub mod handshake;
 pub mod secure_channel;

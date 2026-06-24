@@ -11,10 +11,10 @@ use std::time::Duration;
 
 use deadpool_postgres::{Config, ManagerConfig, Pool, RecyclingMethod, Runtime};
 use futures_util::{SinkExt, StreamExt};
-use rand_core::OsRng;
 use rcgen::CertifiedKey;
+use securefs_channel::handshake::ClientHandshake;
+use securefs_channel::secure_channel::SecureChannel;
 use securefs_proto::protocol::{AppMessage, Cmd};
-use securefs_channel::secure_channel::{Role, SecureChannel, PROTOCOL_VERSION};
 use securefs_server::dao;
 use tokio_postgres::NoTls;
 use tokio_rustls::rustls::{ClientConfig, RootCertStore};
@@ -23,7 +23,6 @@ use tokio_tungstenite::{
     connect_async_tls_with_config, Connector, MaybeTlsStream, WebSocketStream,
 };
 use uuid::Uuid;
-use x25519_dalek::{EphemeralSecret, PublicKey};
 
 type Ws = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 
@@ -118,29 +117,13 @@ async fn tls_flow(
         connected.ok_or_else(|| format!("could not connect over tls: {}", last))?
     };
 
-    let secret = EphemeralSecret::random_from_rng(OsRng);
-    let public = PublicKey::from(&secret);
-    send_plain(
-        &mut ws,
-        &AppMessage {
-            cmd: Cmd::KeyExchangeInit,
-            data: vec![hex::encode(public.as_bytes()), PROTOCOL_VERSION.to_string()],
-        },
-    )
-    .await?;
+    let (handshake, init) = ClientHandshake::initiate();
+    send_plain(&mut ws, &init).await?;
     let reply = recv_plain(&mut ws).await?;
     if reply.cmd != Cmd::KeyExchangeResponse {
         return Err(format!("unexpected handshake reply: {:?}", reply.cmd));
     }
-    let server_bytes =
-        hex::decode(reply.data.first().cloned().unwrap_or_default()).map_err(|e| e.to_string())?;
-    if server_bytes.len() != 32 {
-        return Err("bad server pubkey length".into());
-    }
-    let mut sb = [0u8; 32];
-    sb.copy_from_slice(&server_bytes);
-    let shared = secret.diffie_hellman(&PublicKey::from(sb));
-    let mut ch = SecureChannel::new(shared.as_bytes(), Role::Client);
+    let mut ch = handshake.complete(&reply.data).map_err(|e| e.to_string())?;
 
     send_sealed(
         &mut ws,

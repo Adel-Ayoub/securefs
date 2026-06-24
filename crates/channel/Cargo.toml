@@ -15,3 +15,5 @@ hex = "0.4.3"
 thiserror = "2"
 zeroize = "1"
 serde_json = "1.0"
+x25519-dalek = "2.0.1"
+rand_core = { version = "0.6.4", features = ["getrandom"] }

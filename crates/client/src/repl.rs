@@ -1,13 +1,12 @@
 use std::env;
 
 use colored::Colorize;
-use rand_core::OsRng;
 use rustyline::error::ReadlineError;
 use rustyline::Editor;
-use securefs_proto::protocol::{AppMessage, Cmd};
-use securefs_channel::secure_channel::{Role, SecureChannel, PROTOCOL_VERSION};
+use securefs_channel::handshake::{ClientHandshake, HandshakeError};
+use securefs_channel::secure_channel::SecureChannel;
+use securefs_proto::protocol::Cmd;
 use tokio_tungstenite::connect_async;
-use x25519_dalek::{EphemeralSecret, PublicKey};
 
 use crate::cli::SecureFsHelper;
 use crate::commands;
@@ -28,45 +27,28 @@ pub async fn connect_and_run(
         println!("{}", "WebSocket connection established".green());
     }
 
-    // Perform X25519 key exchange with server
-    let client_secret = EphemeralSecret::random_from_rng(OsRng);
-    let client_public = PublicKey::from(&client_secret);
+    // Perform the X25519 key exchange with the server.
+    let (handshake, key_exchange_msg) = ClientHandshake::initiate();
 
     if verbose {
         println!("{}", "Initiating key exchange...".cyan());
     }
 
-    // Send our public key and protocol version to the server
-    let key_exchange_msg = AppMessage {
-        cmd: Cmd::KeyExchangeInit,
-        data: vec![
-            hex::encode(client_public.as_bytes()),
-            PROTOCOL_VERSION.to_string(),
-        ],
-    };
     send(&mut ws_stream, &key_exchange_msg, None).await?;
 
-    // Receive server's public key and version
+    // Receive the server's public key and version.
     let reply = recv(&mut ws_stream, None).await?;
-    let shared_secret = match reply.cmd {
+    let mut channel: Option<SecureChannel> = match reply.cmd {
         Cmd::KeyExchangeResponse => {
-            if reply.data.get(1).and_then(|v| v.parse::<u8>().ok()) != Some(PROTOCOL_VERSION) {
-                return Err("server uses an incompatible protocol version".into());
-            }
-            let server_pubkey_hex = reply.data.first().cloned().unwrap_or_default();
-            let server_bytes =
-                hex::decode(&server_pubkey_hex).map_err(|_| "invalid server public key")?;
-            if server_bytes.len() != 32 {
-                return Err("invalid server public key length".into());
-            }
-            let mut server_pubkey_bytes = [0u8; 32];
-            server_pubkey_bytes.copy_from_slice(&server_bytes);
-            let server_public = PublicKey::from(server_pubkey_bytes);
-            let shared = client_secret.diffie_hellman(&server_public);
+            let ch = handshake.complete(&reply.data).map_err(|e| match e {
+                HandshakeError::Version => "server uses an incompatible protocol version",
+                HandshakeError::Pubkey => "invalid server public key",
+                HandshakeError::PubkeyLength => "invalid server public key length",
+            })?;
             if verbose {
                 println!("{}", "Secure key exchange completed".green());
             }
-            shared
+            Some(ch)
         }
         Cmd::Failure => {
             let err = reply
@@ -78,9 +60,6 @@ pub async fn connect_and_run(
         }
         _ => return Err("unexpected response to key exchange".into()),
     };
-
-    let mut channel: Option<SecureChannel> =
-        Some(SecureChannel::new(shared_secret.as_bytes(), Role::Client));
 
     if !quiet {
         // Use environment variable for server address in prompt or default

@@ -1,6 +1,6 @@
 use futures_util::{SinkExt, StreamExt};
+use securefs_channel::secure_channel::{decode_frame, encode_frame, SecureChannel};
 use securefs_proto::protocol::AppMessage;
-use securefs_channel::secure_channel::SecureChannel;
 use tokio_tungstenite::tungstenite::Message;
 
 pub type Ws =
@@ -14,10 +14,7 @@ pub async fn send(
     msg: &AppMessage,
     channel: Option<&mut SecureChannel>,
 ) -> Result<(), String> {
-    let payload = match channel {
-        Some(ch) => ch.seal(msg).map_err(|e| e.to_string())?,
-        None => serde_json::to_string(msg).map_err(|e| e.to_string())?,
-    };
+    let payload = encode_frame(channel, msg).map_err(|e| e.to_string())?;
     ws.send(Message::Text(payload.into()))
         .await
         .map_err(|e| format!("send failed: {}", e))
@@ -40,8 +37,5 @@ pub async fn recv(
     }
     let text = msg.to_text().unwrap();
 
-    match channel {
-        Some(ch) => ch.open(text).map_err(|e| e.to_string()),
-        None => serde_json::from_str(text).map_err(|e| format!("decode failed: {}", e)),
-    }
+    decode_frame(channel, text).map_err(|e| e.to_string())
 }

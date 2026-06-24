@@ -164,6 +164,30 @@ impl SecureChannel {
     }
 }
 
+/// Encode a message to a wire frame: sealed when a channel is established,
+/// plaintext JSON otherwise (only the pre-handshake messages travel plaintext).
+pub fn encode_frame(
+    channel: Option<&mut SecureChannel>,
+    msg: &AppMessage,
+) -> Result<String, SecureChannelError> {
+    match channel {
+        Some(ch) => ch.seal(msg),
+        None => Ok(serde_json::to_string(msg)?),
+    }
+}
+
+/// Decode a wire frame: opened when a channel is established, plaintext JSON
+/// otherwise.
+pub fn decode_frame(
+    channel: Option<&mut SecureChannel>,
+    wire: &str,
+) -> Result<AppMessage, SecureChannelError> {
+    match channel {
+        Some(ch) => ch.open(wire),
+        None => Ok(serde_json::from_str(wire)?),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

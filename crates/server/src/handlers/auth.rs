@@ -1,12 +1,11 @@
 use deadpool_postgres::Pool;
 use log::{info, warn};
-use rand_core::OsRng;
+use securefs_channel::handshake::derive_server_channel;
+use securefs_channel::secure_channel::{SecureChannel, PROTOCOL_VERSION};
 use securefs_proto::protocol::{AppMessage, Cmd};
-use securefs_channel::secure_channel::{Role, SecureChannel, PROTOCOL_VERSION};
 use std::net::IpAddr;
 use std::time::{SystemTime, UNIX_EPOCH};
 use totp_rs::{Algorithm, Secret, TOTP};
-use x25519_dalek::{EphemeralSecret, PublicKey};
 
 use securefs_server::dao;
 use securefs_server::rate_limiter::{RateLimiter, MAX_LOGIN_ATTEMPTS};
@@ -335,31 +334,18 @@ pub fn key_exchange(data: Vec<String>) -> (AppMessage, Option<SecureChannel>) {
         );
     }
 
-    match hex::decode(&client_pubkey_hex) {
-        Ok(bytes) if bytes.len() == 32 => {
-            let server_secret = EphemeralSecret::random_from_rng(OsRng);
-            let server_public = PublicKey::from(&server_secret);
-
-            let mut client_pubkey_bytes = [0u8; 32];
-            client_pubkey_bytes.copy_from_slice(&bytes);
-            let client_public = PublicKey::from(client_pubkey_bytes);
-            let shared = server_secret.diffie_hellman(&client_public);
-
-            let channel = SecureChannel::new(shared.as_bytes(), Role::Server);
+    match derive_server_channel(&client_pubkey_hex) {
+        Ok((channel, server_pubkey_hex)) => {
             info!("Key exchange completed with client");
-
             (
                 AppMessage {
                     cmd: Cmd::KeyExchangeResponse,
-                    data: vec![
-                        hex::encode(server_public.as_bytes()),
-                        PROTOCOL_VERSION.to_string(),
-                    ],
+                    data: vec![server_pubkey_hex, PROTOCOL_VERSION.to_string()],
                 },
                 Some(channel),
             )
         }
-        _ => (
+        Err(_) => (
             AppMessage {
                 cmd: Cmd::Failure,
                 data: vec!["invalid public key format".to_string()],

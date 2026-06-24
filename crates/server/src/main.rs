@@ -15,8 +15,8 @@ use futures_util::{SinkExt, StreamExt};
 use log::{info, warn};
 use rustls_pki_types::pem::PemObject;
 use rustls_pki_types::{CertificateDer, PrivateKeyDer};
+use securefs_channel::secure_channel::{decode_frame, encode_frame, SecureChannel};
 use securefs_proto::protocol::{AppMessage, Cmd};
-use securefs_channel::secure_channel::SecureChannel;
 use std::net::IpAddr;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Semaphore;
@@ -616,10 +616,7 @@ async fn send_app_message<S>(
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
-    let payload = match channel {
-        Some(ch) => ch.seal(&resp).map_err(|e| e.to_string())?,
-        None => serde_json::to_string(&resp).map_err(|e| e.to_string())?,
-    };
+    let payload = encode_frame(channel, &resp).map_err(|e| e.to_string())?;
     ws_stream
         .send(Message::Text(payload.into()))
         .await
@@ -671,11 +668,8 @@ where
         let text = msg
             .to_text()
             .map_err(|e| format!("ws message error: {}", e))?;
-        let incoming: AppMessage = if let Some(ch) = channel.as_mut() {
-            ch.open(text).map_err(|e| e.to_string())?
-        } else {
-            serde_json::from_str(text).map_err(|e| format!("decode failed: {}", e))?
-        };
+        let incoming: AppMessage =
+            decode_frame(channel.as_mut(), text).map_err(|e| e.to_string())?;
 
         // Check session timeout for authenticated sessions
         if session.authenticated && last_activity.elapsed().as_secs() > SESSION_TIMEOUT_SECS {
@@ -1101,23 +1095,6 @@ mod tests {
         assert!(!is_valid_password(""));
         assert!(!is_valid_password("short"));
         assert!(!is_valid_password("1234567"));
-    }
-
-    #[test]
-    fn test_x25519_key_exchange() {
-        use rand_core::OsRng;
-        use x25519_dalek::{EphemeralSecret, PublicKey};
-
-        let client_secret = EphemeralSecret::random_from_rng(OsRng);
-        let client_public = PublicKey::from(&client_secret);
-
-        let server_secret = EphemeralSecret::random_from_rng(OsRng);
-        let server_public = PublicKey::from(&server_secret);
-
-        let client_shared = client_secret.diffie_hellman(&server_public);
-        let server_shared = server_secret.diffie_hellman(&client_public);
-
-        assert_eq!(client_shared.as_bytes(), server_shared.as_bytes());
     }
 
     #[test]
