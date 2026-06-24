@@ -2462,6 +2462,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "securefs-channel"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm",
+ "hex",
+ "hkdf",
+ "securefs-proto",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.18",
+ "zeroize",
+]
+
+[[package]]
 name = "securefs-client"
 version = "0.1.0"
 dependencies = [
@@ -2503,15 +2517,9 @@ dependencies = [
 name = "securefs-model"
 version = "0.1.0"
 dependencies = [
- "aes-gcm",
- "hex",
- "hkdf",
+ "securefs-channel",
  "securefs-proto",
  "serde",
- "serde_json",
- "sha2 0.10.9",
- "thiserror 2.0.18",
- "zeroize",
 ]
 
 [[package]]

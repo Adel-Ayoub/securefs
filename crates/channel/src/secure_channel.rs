@@ -16,7 +16,7 @@ use hkdf::Hkdf;
 use sha2::Sha256;
 use zeroize::Zeroizing;
 
-use crate::protocol::AppMessage;
+use securefs_proto::protocol::AppMessage;
 
 /// Framing version, sent during the handshake and bound into every frame's
 /// AAD. Bump on any change to key derivation or wire format so mismatched
@@ -167,7 +167,7 @@ impl SecureChannel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::{AppMessage, Cmd};
+    use securefs_proto::protocol::{AppMessage, Cmd};
 
     fn pair() -> (SecureChannel, SecureChannel) {
         let secret = [7u8; 32];
