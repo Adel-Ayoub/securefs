@@ -20,8 +20,11 @@ cd securefs
 docker-compose up -d                  # start PostgreSQL
 cargo build --release
 
-cargo run --bin securefs-server       # server
-cargo run --bin securefs              # client (new terminal)
+# Local dev (plaintext ws://). For production set DB_PASS, DATA_KEY,
+# TLS_CERT and TLS_KEY instead of ALLOW_INSECURE — see Configuration.
+ALLOW_INSECURE=1 DB_PASS=securefs_password \
+  cargo run --bin securefs-server     # server
+ALLOW_INSECURE=1 cargo run --bin securefs   # client (new terminal)
 ```
 
 ---
@@ -42,20 +45,12 @@ SecureFS implements a client-server model over encrypted WebSocket channels. The
 | Database | pgcrypto | Symmetric encryption for all metadata |
 | Integrity | BLAKE3 | File corruption detection |
 
-### Communication Flow
-
-<p align="center">
-  <img src="docs/sequence_diagram.png" alt="Communication Flow" width="600">
-</p>
-
-The client and server perform an X25519 ECDH handshake to derive a shared AES-256 key, then exchange encrypted messages over a long-lived WebSocket until the client disconnects.
-
 ---
 
 ## Usage
 
 ```sh
-> login admin password            # default admin
+> login admin <password>          # set ADMIN_PASSWORD, or use the one printed at first start
 > mkdir projects
 > cd projects
 > echo "Hello SecureFS" notes.md
@@ -84,11 +79,13 @@ The client and server perform an X25519 ECDH handshake to derive a shared AES-25
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `SERVER_ADDR` | `127.0.0.1:8080` | Server bind address |
-| `DB_PASS` | `securefs` | Database password |
-| `ALLOW_INSECURE` | — | Set to `1` to disable TLS requirement |
+| `SERVER_ADDR` | `127.0.0.1:8080` | Server bind address (`ip:port`) |
+| `DB_PASS` | *(required)* | Database password and pgcrypto secret; must match the database password below. Or `DB_PASS_FILE` |
+| `DATA_KEY` | *(required)* | At-rest file-encryption secret. Or `DATA_KEY_FILE` |
+| `TLS_CERT` / `TLS_KEY` | *(required)* | PEM certificate and key for `wss://` |
+| `ALLOW_INSECURE` | — | Set to `1` to bypass the `DB_PASS`/`DATA_KEY`/TLS requirements for local dev (plaintext `ws://`) |
 
-Database defaults (see `docker-compose.yml`): host `localhost`, port `5431`, database `securefs`, user `securefs_user`.
+Database defaults (see `docker-compose.yml`): host `localhost`, port `5431`, database `securefs`, user `securefs_user`, password `securefs_password`.
 
 ---
 
