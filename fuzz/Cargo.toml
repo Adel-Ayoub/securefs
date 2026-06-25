@@ -9,7 +9,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-securefs-server = { path = "../crates/server" }
+securefs-server-core = { path = "../crates/server-core" }
 securefs-channel = { path = "../crates/channel" }
 
 [[bin]]

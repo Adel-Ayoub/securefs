@@ -1,0 +1,48 @@
+[package]
+name = "securefs-server-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "SecureFS domain and security core: crypto, handlers, DAO, and infrastructure"
+license.workspace = true
+
+[dependencies]
+tokio = { version = "1.0", features = ["full"] }
+tokio-postgres = "0.7"
+deadpool-postgres = "0.14"
+argon2 = "0.5"
+aes-gcm = "0.10.3"
+blake3 = "1.5.1"
+hkdf = "0.12"
+hmac = "0.12"
+sha2 = "0.10"
+hex = "0.4.3"
+rand_core = "0.6.4"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+uuid = { version = "1", features = ["v4"] }
+log = "0.4"
+env_logger = "0.11"
+base64 = "0.22"
+globset = "0.4"
+totp-rs = { version = "5", features = ["gen_secret", "otpauth"] }
+zstd = "0.13"
+thiserror = "2"
+zeroize = "1"
+async-trait = "0.1"
+refinery = { version = "0.8", features = ["tokio-postgres"] }
+
+# Internal dependencies
+securefs-proto = { path = "../proto" }
+securefs-channel = { path = "../channel" }
+securefs-blobstore = { path = "../blobstore" }
+securefs-keyring = { path = "../keyring" }
+
+[features]
+# Object-storage (S3/MinIO) blob backend. Off by default so the standard build
+# stays lean and single-provider for rustls; enable for scale-out deployments.
+s3 = ["securefs-blobstore/s3"]
+
+[dev-dependencies]
+proptest = "1"
+securefs-blobstore = { path = "../blobstore" }

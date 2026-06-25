@@ -10,7 +10,7 @@ use std::env;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-use deadpool_postgres::{Config, ManagerConfig, Pool, PoolConfig, RecyclingMethod, Runtime};
+use deadpool_postgres::Pool;
 use futures_util::{SinkExt, StreamExt};
 use log::{info, warn};
 use rustls_pki_types::pem::PemObject;
@@ -20,7 +20,6 @@ use securefs_proto::protocol::{AppMessage, Cmd};
 use std::net::IpAddr;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Semaphore;
-use tokio_postgres::NoTls;
 use tokio_rustls::rustls;
 use tokio_rustls::TlsAcceptor;
 use tokio_tungstenite::accept_async_with_config;
@@ -31,58 +30,16 @@ use tokio_tungstenite::WebSocketStream;
 #[cfg(feature = "s3")]
 use securefs_blobstore::S3Blobstore;
 use securefs_blobstore::{Blobstore, LocalFs};
-use securefs_server::config::NetConfig;
-use securefs_server::dao;
-use securefs_server::health;
-use securefs_server::logging;
-use securefs_server::metrics::{Metrics, SharedMetrics};
+use securefs_server_core::config::NetConfig;
+use securefs_server_core::metrics::{Metrics, SharedMetrics};
+use securefs_server_core::pool::{build_pool, build_read_pool};
+use securefs_server_core::session::Session;
+use securefs_server_core::{audit_verify, crypto, dao, handlers, health, logging, rotate};
 
-mod audit_verify;
-mod crypto;
-mod rotate;
-mod session;
-mod util;
-
-/// Audit log for security-relevant events.
-/// Logs to stdout AND persists to the audit_log DB table.
-#[macro_export]
-macro_rules! audit {
-    ($pool:expr, $event:expr, $user:expr, $resource:expr, $result:expr) => {{
-        log::info!(
-            "[AUDIT] {} | {} | {} | {}",
-            $event,
-            $user,
-            $resource,
-            $result
-        );
-        let pool_ref = $pool.clone();
-        let ev = $event.to_string();
-        let us = $user.to_string();
-        let re = $resource.to_string();
-        let rs = $result.to_string();
-        tokio::spawn(async move {
-            match securefs_server::dao::append_audit_log(&pool_ref, &ev, &us, &re, &rs, None).await
-            {
-                // The chained head doubles as a witness: the structured log is a
-                // separate sink, so a DB-side rewrite still has to match the logs.
-                Ok(entry) => log::info!(
-                    "[AUDIT] chained seq={} head={}",
-                    entry.seq,
-                    hex::encode(entry.entry_hash)
-                ),
-                Err(e) => log::warn!("audit persist failed: {}", e),
-            }
-        });
-    }};
-}
-
-mod handlers;
-
-use securefs_server::rate_limiter::{
+use securefs_server_core::rate_limiter::{
     InProcessRateLimiter, PgRateLimiter, RateLimiter, MAX_LOGIN_ATTEMPTS, RATE_LIMIT_WINDOW_SECS,
 };
-use securefs_server::session_store::{InProcessSessionStore, PgSessionStore, SessionStore};
-use session::Session;
+use securefs_server_core::session_store::{InProcessSessionStore, PgSessionStore, SessionStore};
 
 // DoS limits.
 const MAX_MESSAGE_SIZE: usize = 1 << 20; // 1 MiB cap per WebSocket message/frame
@@ -160,34 +117,6 @@ fn load_tls_config(cert_path: &str, key_path: &str) -> Result<TlsAcceptor, Strin
     Ok(TlsAcceptor::from(Arc::new(config)))
 }
 
-// Lowest-level pool builder: explicit connection params, optional connection
-// cap. Takes no env, so it is unit-testable. max_size None keeps the deadpool
-// default (cpu count * 4).
-fn build_pool_to(
-    host: String,
-    port: u16,
-    dbname: String,
-    user: String,
-    password: String,
-    max_size: Option<usize>,
-) -> Result<Pool, String> {
-    let mut pool_cfg = Config::new();
-    pool_cfg.host = Some(host);
-    pool_cfg.dbname = Some(dbname);
-    pool_cfg.user = Some(user);
-    pool_cfg.password = Some(password);
-    pool_cfg.port = Some(port);
-    pool_cfg.manager = Some(ManagerConfig {
-        recycling_method: RecyclingMethod::Fast,
-    });
-    if let Some(n) = max_size {
-        pool_cfg.pool = Some(PoolConfig::new(n));
-    }
-    pool_cfg
-        .create_pool(Some(Runtime::Tokio1), NoTls)
-        .map_err(|e| format!("pool creation failed: {}", e))
-}
-
 // Parse a numeric setting (raw env value or None), falling back to `default`;
 // a malformed value fails loudly. Split from env access so it is unit-testable.
 fn parse_num_or<T: std::str::FromStr>(
@@ -206,62 +135,6 @@ fn parse_num_or<T: std::str::FromStr>(
 // Numeric setting from env var `var`, or `default` when unset.
 fn env_num<T: std::str::FromStr>(var: &str, default: T) -> Result<T, String> {
     parse_num_or(env::var(var).ok(), var, default)
-}
-
-// Optional positive connection cap read from `var`; a non-positive or malformed
-// value fails loudly at startup rather than silently falling back.
-fn pool_max_size(var: &str) -> Result<Option<usize>, String> {
-    match env::var(var) {
-        Ok(v) if !v.is_empty() => match v.parse::<usize>() {
-            Ok(n) if n > 0 => Ok(Some(n)),
-            _ => Err(format!("{} must be a positive integer, got '{}'", var, v)),
-        },
-        _ => Ok(None),
-    }
-}
-
-// Build the primary Postgres pool from env. Shared by the server and the
-// rotate-kek subcommand. The connection password (DB_CONN_PASSWORD) can differ
-// from DB_PASS (the pgcrypto / data key); it falls back to DB_PASS when unset.
-// DB_POOL_MAX_SIZE caps per-instance connections so many instances don't
-// exhaust the database's connection limit.
-fn build_pool(net: &NetConfig, db_pass: &str) -> Result<Pool, String> {
-    build_pool_to(
-        env::var("DB_HOST").unwrap_or_else(|_| "localhost".to_string()),
-        net.db_port,
-        env::var("DB_NAME").unwrap_or_else(|_| "db".to_string()),
-        env::var("DB_USER").unwrap_or_else(|_| "USER".to_string()),
-        env::var("DB_CONN_PASSWORD").unwrap_or_else(|_| db_pass.to_string()),
-        pool_max_size("DB_POOL_MAX_SIZE")?,
-    )
-}
-
-// Optional read-replica pool for read-only queries. When DB_REPLICA_HOST is set,
-// builds a separate pool to the replica (own DB_REPLICA_PORT / DB_REPLICA_POOL_MAX_SIZE,
-// reusing the primary's dbname/user/password); otherwise reads share the primary
-// pool. Replicas lag, so only staleness-tolerant listing reads are routed here -
-// writes and content reads stay on the primary.
-fn build_read_pool(net: &NetConfig, db_pass: &str, primary: &Pool) -> Result<Pool, String> {
-    match env::var("DB_REPLICA_HOST") {
-        Ok(host) if !host.is_empty() => {
-            let port = match env::var("DB_REPLICA_PORT") {
-                Ok(p) if !p.is_empty() => p
-                    .parse::<u16>()
-                    .map_err(|_| format!("DB_REPLICA_PORT must be a port number, got '{}'", p))?,
-                _ => net.db_port,
-            };
-            info!("read-replica pool enabled -> {}:{}", host, port);
-            build_pool_to(
-                host,
-                port,
-                env::var("DB_NAME").unwrap_or_else(|_| "db".to_string()),
-                env::var("DB_USER").unwrap_or_else(|_| "USER".to_string()),
-                env::var("DB_CONN_PASSWORD").unwrap_or_else(|_| db_pass.to_string()),
-                pool_max_size("DB_REPLICA_POOL_MAX_SIZE")?,
-            )
-        }
-        _ => Ok(primary.clone()),
-    }
 }
 
 // Build the S3/MinIO-backed blob store from the environment (S3_BUCKET etc.).
@@ -344,6 +217,12 @@ async fn main() -> Result<(), String> {
         }
         _ => {}
     }
+
+    // Inject the at-rest master DOWN into the crypto layer from the configured
+    // secret, so derivation routes through the held provider instead of reaching
+    // up into the DAO on each call.
+    crypto::install_env_key_provider();
+
     let net = NetConfig::from_env().map_err(|e| e.to_string())?;
 
     let pool = build_pool(&net, &db_pass)?;
@@ -924,9 +803,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::util::*;
-    use crate::{build_pool_to, parse_num_or};
-    use securefs_server::dao::records::FNode;
+    use crate::parse_num_or;
 
     #[test]
     fn numeric_settings_parse_with_fallback() {
@@ -935,220 +812,5 @@ mod tests {
         assert_eq!(parse_num_or(Some("".into()), "X", 7usize).unwrap(), 7);
         assert_eq!(parse_num_or(Some("9".into()), "X", 1u64).unwrap(), 9);
         assert!(parse_num_or(Some("nope".into()), "X", 0usize).is_err());
-    }
-
-    #[test]
-    fn pool_size_cap_is_applied() {
-        // An explicit cap is honored; None keeps deadpool's (nonzero) default.
-        let capped = build_pool_to(
-            "localhost".into(),
-            5432,
-            "db".into(),
-            "u".into(),
-            "p".into(),
-            Some(3),
-        )
-        .unwrap();
-        assert_eq!(capped.status().max_size, 3);
-        let default = build_pool_to(
-            "localhost".into(),
-            5432,
-            "db".into(),
-            "u".into(),
-            "p".into(),
-            None,
-        )
-        .unwrap();
-        assert!(default.status().max_size >= 1);
-    }
-
-    #[test]
-    fn test_normalize_path() {
-        assert_eq!(normalize_path("/home/user".into()), "/home/user");
-        assert_eq!(normalize_path("/home/user/".into()), "/home/user");
-        assert_eq!(normalize_path("/home/./user".into()), "/home/user");
-        assert_eq!(normalize_path("/home/user/..".into()), "/home");
-        assert_eq!(normalize_path("/home/../root".into()), "/root");
-        assert_eq!(normalize_path("/../..".into()), "/");
-    }
-
-    #[test]
-    fn test_is_valid_name() {
-        assert!(is_valid_name("file.txt"));
-        assert!(is_valid_name("mydir"));
-        assert!(!is_valid_name(""));
-        assert!(!is_valid_name("."));
-        assert!(!is_valid_name(".."));
-        assert!(!is_valid_name("dir/subdir"));
-        assert!(!is_valid_name("file\0name"));
-    }
-
-    #[test]
-    fn test_format_permissions() {
-        assert_eq!(format_permissions(7, 5, 4), "rwxr-xr--");
-        assert_eq!(format_permissions(6, 4, 0), "rw-r-----");
-        assert_eq!(format_permissions(0, 0, 0), "---------");
-    }
-
-    #[test]
-    fn test_permission_helpers() {
-        let node = FNode {
-            id: 1,
-            name: "test.txt".to_string(),
-            path: "/home/user/test.txt".to_string(),
-            owner: "alice".to_string(),
-            hash: "".to_string(),
-            parent: "/home/user".to_string(),
-            dir: false,
-            u: 6,
-            g: 4,
-            o: 4,
-            children: vec![],
-            encrypted_name: "".to_string(),
-            size: 0,
-            created_at: 0,
-            modified_at: 0,
-            file_group: None,
-            link_target: None,
-        };
-
-        assert!(can_read(&node, Some(&"alice".to_string())));
-        assert!(can_read(&node, Some(&"bob".to_string())));
-        assert!(can_read(&node, None));
-
-        assert!(can_write(&node, Some(&"alice".to_string())));
-        assert!(!can_write(&node, Some(&"bob".to_string())));
-        assert!(!can_write(&node, None));
-
-        assert!(!can_execute(&node, Some(&"alice".to_string())));
-        assert!(!can_execute(&node, Some(&"bob".to_string())));
-
-        assert!(is_owner(&node, Some(&"alice".to_string())));
-        assert!(!is_owner(&node, Some(&"bob".to_string())));
-        assert!(!is_owner(&node, None));
-    }
-
-    #[test]
-    fn test_group_permission_helpers() {
-        let node = FNode {
-            id: 1,
-            name: "project.rs".to_string(),
-            path: "/home/alice/project.rs".to_string(),
-            owner: "alice".to_string(),
-            hash: "".to_string(),
-            parent: "/home/alice".to_string(),
-            dir: false,
-            u: 6,
-            g: 4,
-            o: 0,
-            children: vec![],
-            encrypted_name: "".to_string(),
-            size: 0,
-            created_at: 0,
-            modified_at: 0,
-            file_group: Some("devs".to_string()),
-            link_target: None,
-        };
-
-        let owner_group = Some("devs".to_string());
-        let alice_group = Some("devs".to_string());
-        let bob_group = Some("devs".to_string());
-        let charlie_group = Some("users".to_string());
-
-        assert!(can_read_with_group(
-            &node,
-            Some(&"alice".to_string()),
-            alice_group.as_ref(),
-            owner_group.as_ref()
-        ));
-        assert!(can_read_with_group(
-            &node,
-            Some(&"bob".to_string()),
-            bob_group.as_ref(),
-            owner_group.as_ref()
-        ));
-        assert!(!can_read_with_group(
-            &node,
-            Some(&"charlie".to_string()),
-            charlie_group.as_ref(),
-            owner_group.as_ref()
-        ));
-        assert!(!can_read_with_group(
-            &node,
-            None,
-            None,
-            owner_group.as_ref()
-        ));
-        assert!(!can_write_with_group(
-            &node,
-            Some(&"bob".to_string()),
-            bob_group.as_ref(),
-            owner_group.as_ref()
-        ));
-    }
-
-    #[test]
-    fn test_is_valid_password() {
-        assert!(is_valid_password("password123"));
-        assert!(is_valid_password("12345678"));
-        assert!(is_valid_password("abcdefgh"));
-        assert!(!is_valid_password(""));
-        assert!(!is_valid_password("short"));
-        assert!(!is_valid_password("1234567"));
-    }
-
-    #[test]
-    fn test_is_safe_path() {
-        assert!(is_safe_path("/home"));
-        assert!(is_safe_path("/home/user"));
-        assert!(is_safe_path("/home/user/docs"));
-        assert!(is_safe_path("/home/user/a/b/c"));
-
-        assert!(!is_safe_path("/homeevil"));
-        assert!(!is_safe_path("/homedir"));
-
-        assert!(!is_safe_path("/"));
-        assert!(!is_safe_path("/etc/passwd"));
-        assert!(!is_safe_path("/root"));
-        assert!(!is_safe_path("/tmp"));
-        assert!(!is_safe_path(""));
-
-        assert!(!is_safe_path("/home/user\0"));
-        assert!(!is_safe_path("/home/\0evil"));
-
-        let deep_ok = format!(
-            "/home/{}",
-            (0..62)
-                .map(|i| format!("d{}", i))
-                .collect::<Vec<_>>()
-                .join("/")
-        );
-        assert!(is_safe_path(&deep_ok));
-        let deep_bad = format!(
-            "/home/{}",
-            (0..64)
-                .map(|i| format!("d{}", i))
-                .collect::<Vec<_>>()
-                .join("/")
-        );
-        assert!(!is_safe_path(&deep_bad));
-    }
-
-    #[test]
-    fn test_path_traversal_attacks() {
-        let attack1 = normalize_path("/home/user/../../etc/passwd".into());
-        assert!(!is_safe_path(&attack1));
-
-        let attack2 = normalize_path("/home/../root".into());
-        assert!(!is_safe_path(&attack2));
-
-        let attack3 = normalize_path("/home/user/../../../".into());
-        assert!(!is_safe_path(&attack3));
-
-        let safe1 = normalize_path("/home/user/../user2".into());
-        assert!(is_safe_path(&safe1));
-
-        let safe2 = normalize_path("/home/user/./docs".into());
-        assert!(is_safe_path(&safe2));
     }
 }

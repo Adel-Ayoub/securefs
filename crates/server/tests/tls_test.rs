@@ -15,7 +15,7 @@ use rcgen::CertifiedKey;
 use securefs_channel::handshake::ClientHandshake;
 use securefs_channel::secure_channel::SecureChannel;
 use securefs_proto::protocol::{AppMessage, Cmd};
-use securefs_server::dao;
+use securefs_server_core::dao;
 use tokio_postgres::NoTls;
 use tokio_rustls::rustls::{ClientConfig, RootCertStore};
 use tokio_tungstenite::tungstenite::Message;

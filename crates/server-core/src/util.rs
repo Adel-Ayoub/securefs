@@ -1,0 +1,382 @@
+use crate::dao::records::FNode;
+
+/// Resolve a user input path relative to the current working directory.
+pub fn resolve_path(current: &str, input: &str) -> String {
+    if input.starts_with('/') {
+        normalize_path(input.to_string())
+    } else {
+        normalize_path(format!("{}/{}", current, input))
+    }
+}
+
+/// Normalize path components by collapsing `.` and `..`.
+pub fn normalize_path(path: String) -> String {
+    let mut parts: Vec<&str> = Vec::new();
+    for part in path.split('/') {
+        if part.is_empty() || part == "." {
+            continue;
+        } else if part == ".." {
+            parts.pop();
+        } else {
+            parts.push(part);
+        }
+    }
+    if parts.is_empty() {
+        "/".into()
+    } else {
+        format!("/{}", parts.join("/"))
+    }
+}
+
+pub use crate::storage::is_safe_path;
+
+/// Format ls entry with owner, group, permissions, and name.
+pub fn format_ls_entry(node: &FNode) -> String {
+    let perms = format_permissions(node.u, node.g, node.o);
+    if let Some(ref target) = node.link_target {
+        format!("{} {} {} -> {}", node.owner, perms, node.name, target)
+    } else {
+        let suffix = if node.dir { "/" } else { "" };
+        format!("{} {} {}{}", node.owner, perms, node.name, suffix)
+    }
+}
+
+/// Format Unix-style permissions into rwxrwxrwx string.
+pub fn format_permissions(u: i16, g: i16, o: i16) -> String {
+    let mut perms = String::new();
+    perms.push(if u & 0b100 != 0 { 'r' } else { '-' });
+    perms.push(if u & 0b010 != 0 { 'w' } else { '-' });
+    perms.push(if u & 0b001 != 0 { 'x' } else { '-' });
+    perms.push(if g & 0b100 != 0 { 'r' } else { '-' });
+    perms.push(if g & 0b010 != 0 { 'w' } else { '-' });
+    perms.push(if g & 0b001 != 0 { 'x' } else { '-' });
+    perms.push(if o & 0b100 != 0 { 'r' } else { '-' });
+    perms.push(if o & 0b010 != 0 { 'w' } else { '-' });
+    perms.push(if o & 0b001 != 0 { 'x' } else { '-' });
+    perms
+}
+
+/// Check if the current user can read the node (owner/other only, no group check).
+#[cfg(test)]
+pub fn can_read(node: &FNode, user: Option<&String>) -> bool {
+    if let Some(u) = user {
+        if node.owner == *u && (node.u & 0b100) != 0 {
+            return true;
+        }
+    }
+    (node.o & 0b100) != 0
+}
+
+/// Check if the current user can write the node (owner/other only, no group check).
+#[cfg(test)]
+pub fn can_write(node: &FNode, user: Option<&String>) -> bool {
+    if let Some(u) = user {
+        if node.owner == *u && (node.u & 0b010) != 0 {
+            return true;
+        }
+    }
+    (node.o & 0b010) != 0
+}
+
+/// Check if the current user can read the node with full group permission support.
+pub fn can_read_with_group(
+    node: &FNode,
+    user: Option<&String>,
+    user_group: Option<&String>,
+    owner_group: Option<&String>,
+) -> bool {
+    if let Some(u) = user {
+        if node.owner == *u && (node.u & 0b100) != 0 {
+            return true;
+        }
+        if let (Some(ug), Some(og)) = (user_group, owner_group) {
+            if ug == og && (node.g & 0b100) != 0 {
+                return true;
+            }
+        }
+    }
+    (node.o & 0b100) != 0
+}
+
+/// Check if the current user can write the node with full group permission support.
+pub fn can_write_with_group(
+    node: &FNode,
+    user: Option<&String>,
+    user_group: Option<&String>,
+    owner_group: Option<&String>,
+) -> bool {
+    if let Some(u) = user {
+        if node.owner == *u && (node.u & 0b010) != 0 {
+            return true;
+        }
+        if let (Some(ug), Some(og)) = (user_group, owner_group) {
+            if ug == og && (node.g & 0b010) != 0 {
+                return true;
+            }
+        }
+    }
+    (node.o & 0b010) != 0
+}
+
+/// Check if the current user can execute the node.
+#[cfg(test)]
+pub fn can_execute(node: &FNode, user: Option<&String>) -> bool {
+    if let Some(u) = user {
+        if node.owner == *u && (node.u & 0b001) != 0 {
+            return true;
+        }
+    }
+    (node.o & 0b001) != 0
+}
+
+/// Check if the current user can execute the node with full group permission support.
+#[allow(dead_code)]
+pub fn can_execute_with_group(
+    node: &FNode,
+    user: Option<&String>,
+    user_group: Option<&String>,
+    owner_group: Option<&String>,
+) -> bool {
+    if let Some(u) = user {
+        if node.owner == *u && (node.u & 0b001) != 0 {
+            return true;
+        }
+        if let (Some(ug), Some(og)) = (user_group, owner_group) {
+            if ug == og && (node.g & 0b001) != 0 {
+                return true;
+            }
+        }
+    }
+    (node.o & 0b001) != 0
+}
+
+/// Check if the current user is the owner of the node.
+pub fn is_owner(node: &FNode, user: Option<&String>) -> bool {
+    if let Some(u) = user {
+        return node.owner == *u;
+    }
+    false
+}
+
+/// Get the current Unix timestamp in seconds.
+pub fn current_timestamp() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// Validate file or directory name (no path separators or special chars).
+pub fn is_valid_name(name: &str) -> bool {
+    !name.is_empty() && !name.contains('/') && !name.contains('\0') && name != "." && name != ".."
+}
+
+/// Validate username or group name (alphanumeric + underscore/hyphen).
+pub fn is_valid_user_group_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 32
+        && name
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+        && name.chars().next().is_some_and(|c| c.is_alphabetic())
+}
+
+/// Validate password strength (minimum 8 characters).
+pub fn is_valid_password(pass: &str) -> bool {
+    pass.len() >= 8
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_normalize_path() {
+        assert_eq!(normalize_path("/home/user".into()), "/home/user");
+        assert_eq!(normalize_path("/home/user/".into()), "/home/user");
+        assert_eq!(normalize_path("/home/./user".into()), "/home/user");
+        assert_eq!(normalize_path("/home/user/..".into()), "/home");
+        assert_eq!(normalize_path("/home/../root".into()), "/root");
+        assert_eq!(normalize_path("/../..".into()), "/");
+    }
+
+    #[test]
+    fn test_is_valid_name() {
+        assert!(is_valid_name("file.txt"));
+        assert!(is_valid_name("mydir"));
+        assert!(!is_valid_name(""));
+        assert!(!is_valid_name("."));
+        assert!(!is_valid_name(".."));
+        assert!(!is_valid_name("dir/subdir"));
+        assert!(!is_valid_name("file\0name"));
+    }
+
+    #[test]
+    fn test_format_permissions() {
+        assert_eq!(format_permissions(7, 5, 4), "rwxr-xr--");
+        assert_eq!(format_permissions(6, 4, 0), "rw-r-----");
+        assert_eq!(format_permissions(0, 0, 0), "---------");
+    }
+
+    #[test]
+    fn test_permission_helpers() {
+        let node = FNode {
+            id: 1,
+            name: "test.txt".to_string(),
+            path: "/home/user/test.txt".to_string(),
+            owner: "alice".to_string(),
+            hash: "".to_string(),
+            parent: "/home/user".to_string(),
+            dir: false,
+            u: 6,
+            g: 4,
+            o: 4,
+            children: vec![],
+            encrypted_name: "".to_string(),
+            size: 0,
+            created_at: 0,
+            modified_at: 0,
+            file_group: None,
+            link_target: None,
+        };
+
+        assert!(can_read(&node, Some(&"alice".to_string())));
+        assert!(can_read(&node, Some(&"bob".to_string())));
+        assert!(can_read(&node, None));
+
+        assert!(can_write(&node, Some(&"alice".to_string())));
+        assert!(!can_write(&node, Some(&"bob".to_string())));
+        assert!(!can_write(&node, None));
+
+        assert!(!can_execute(&node, Some(&"alice".to_string())));
+        assert!(!can_execute(&node, Some(&"bob".to_string())));
+
+        assert!(is_owner(&node, Some(&"alice".to_string())));
+        assert!(!is_owner(&node, Some(&"bob".to_string())));
+        assert!(!is_owner(&node, None));
+    }
+
+    #[test]
+    fn test_group_permission_helpers() {
+        let node = FNode {
+            id: 1,
+            name: "project.rs".to_string(),
+            path: "/home/alice/project.rs".to_string(),
+            owner: "alice".to_string(),
+            hash: "".to_string(),
+            parent: "/home/alice".to_string(),
+            dir: false,
+            u: 6,
+            g: 4,
+            o: 0,
+            children: vec![],
+            encrypted_name: "".to_string(),
+            size: 0,
+            created_at: 0,
+            modified_at: 0,
+            file_group: Some("devs".to_string()),
+            link_target: None,
+        };
+
+        let owner_group = Some("devs".to_string());
+        let alice_group = Some("devs".to_string());
+        let bob_group = Some("devs".to_string());
+        let charlie_group = Some("users".to_string());
+
+        assert!(can_read_with_group(
+            &node,
+            Some(&"alice".to_string()),
+            alice_group.as_ref(),
+            owner_group.as_ref()
+        ));
+        assert!(can_read_with_group(
+            &node,
+            Some(&"bob".to_string()),
+            bob_group.as_ref(),
+            owner_group.as_ref()
+        ));
+        assert!(!can_read_with_group(
+            &node,
+            Some(&"charlie".to_string()),
+            charlie_group.as_ref(),
+            owner_group.as_ref()
+        ));
+        assert!(!can_read_with_group(
+            &node,
+            None,
+            None,
+            owner_group.as_ref()
+        ));
+        assert!(!can_write_with_group(
+            &node,
+            Some(&"bob".to_string()),
+            bob_group.as_ref(),
+            owner_group.as_ref()
+        ));
+    }
+
+    #[test]
+    fn test_is_valid_password() {
+        assert!(is_valid_password("password123"));
+        assert!(is_valid_password("12345678"));
+        assert!(is_valid_password("abcdefgh"));
+        assert!(!is_valid_password(""));
+        assert!(!is_valid_password("short"));
+        assert!(!is_valid_password("1234567"));
+    }
+
+    #[test]
+    fn test_is_safe_path() {
+        assert!(is_safe_path("/home"));
+        assert!(is_safe_path("/home/user"));
+        assert!(is_safe_path("/home/user/docs"));
+        assert!(is_safe_path("/home/user/a/b/c"));
+
+        assert!(!is_safe_path("/homeevil"));
+        assert!(!is_safe_path("/homedir"));
+
+        assert!(!is_safe_path("/"));
+        assert!(!is_safe_path("/etc/passwd"));
+        assert!(!is_safe_path("/root"));
+        assert!(!is_safe_path("/tmp"));
+        assert!(!is_safe_path(""));
+
+        assert!(!is_safe_path("/home/user\0"));
+        assert!(!is_safe_path("/home/\0evil"));
+
+        let deep_ok = format!(
+            "/home/{}",
+            (0..62)
+                .map(|i| format!("d{}", i))
+                .collect::<Vec<_>>()
+                .join("/")
+        );
+        assert!(is_safe_path(&deep_ok));
+        let deep_bad = format!(
+            "/home/{}",
+            (0..64)
+                .map(|i| format!("d{}", i))
+                .collect::<Vec<_>>()
+                .join("/")
+        );
+        assert!(!is_safe_path(&deep_bad));
+    }
+
+    #[test]
+    fn test_path_traversal_attacks() {
+        let attack1 = normalize_path("/home/user/../../etc/passwd".into());
+        assert!(!is_safe_path(&attack1));
+
+        let attack2 = normalize_path("/home/../root".into());
+        assert!(!is_safe_path(&attack2));
+
+        let attack3 = normalize_path("/home/user/../../../".into());
+        assert!(!is_safe_path(&attack3));
+
+        let safe1 = normalize_path("/home/user/../user2".into());
+        assert!(is_safe_path(&safe1));
+
+        let safe2 = normalize_path("/home/user/./docs".into());
+        assert!(is_safe_path(&safe2));
+    }
+}

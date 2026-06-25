@@ -6,7 +6,7 @@ use futures_util::{SinkExt, StreamExt};
 use securefs_channel::handshake::ClientHandshake;
 use securefs_channel::secure_channel::SecureChannel;
 use securefs_proto::protocol::{AppMessage, Cmd};
-use securefs_server::dao;
+use securefs_server_core::dao;
 use tokio_postgres::NoTls;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};

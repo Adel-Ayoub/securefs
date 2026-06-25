@@ -2502,7 +2502,7 @@ version = "0.0.0"
 dependencies = [
  "libfuzzer-sys",
  "securefs-channel",
- "securefs-server",
+ "securefs-server-core",
 ]
 
 [[package]]
@@ -2526,6 +2526,27 @@ dependencies = [
 name = "securefs-server"
 version = "0.1.0"
 dependencies = [
+ "deadpool-postgres",
+ "futures-util",
+ "log",
+ "rcgen",
+ "rustls-pki-types",
+ "securefs-blobstore",
+ "securefs-channel",
+ "securefs-proto",
+ "securefs-server-core",
+ "serde_json",
+ "tokio",
+ "tokio-postgres",
+ "tokio-rustls",
+ "tokio-tungstenite",
+ "uuid",
+]
+
+[[package]]
+name = "securefs-server-core"
+version = "0.1.0"
+dependencies = [
  "aes-gcm",
  "argon2",
  "async-trait",
@@ -2533,8 +2554,6 @@ dependencies = [
  "blake3",
  "deadpool-postgres",
  "env_logger",
- "futures",
- "futures-util",
  "globset",
  "hex",
  "hkdf",
@@ -2542,9 +2561,7 @@ dependencies = [
  "log",
  "proptest",
  "rand_core 0.6.4",
- "rcgen",
  "refinery",
- "rustls-pki-types",
  "securefs-blobstore",
  "securefs-channel",
  "securefs-keyring",
@@ -2555,8 +2572,6 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tokio-postgres",
- "tokio-rustls",
- "tokio-tungstenite",
  "totp-rs",
  "uuid",
  "zeroize",

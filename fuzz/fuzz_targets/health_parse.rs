@@ -1,7 +1,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use securefs_server::health::parse_request_target;
+use securefs_server_core::health::parse_request_target;
 
 // parse_request_target runs on raw, unauthenticated bytes straight off the
 // health socket. It must never panic, and its result is a borrow into the
