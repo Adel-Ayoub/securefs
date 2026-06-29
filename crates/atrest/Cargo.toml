@@ -15,7 +15,9 @@ hex = "0.4.3"
 rand_core = "0.6.4"
 zstd = "0.13"
 zeroize = "1"
-thiserror = "2"
+
+# Internal dependencies
+securefs-keyprovider = { path = "../keyprovider" }
 
 [features]
 # The v2 whole-file envelope encoder is kept only to build at-rest test vectors

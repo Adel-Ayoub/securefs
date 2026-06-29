@@ -6,8 +6,6 @@
 
 #![forbid(unsafe_code)]
 
-pub mod keyprovider;
-
 use std::sync::{Once, OnceLock};
 
 use aes_gcm::aead::{Aead, AeadCore};
@@ -17,7 +15,7 @@ use rand_core::{OsRng, RngCore};
 use sha2::Sha256;
 use zeroize::Zeroizing;
 
-use crate::keyprovider::{KeyProvider, LocalKeyProvider};
+use securefs_keyprovider::{KeyProvider, LocalKeyProvider};
 
 // At-rest format versions (first byte of a blob):
 //   0x00 = legacy: nonce(12) || ciphertext, no compression, global key

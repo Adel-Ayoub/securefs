@@ -1,3 +1,10 @@
+//! Key-provider abstraction for SecureFS at-rest encryption: the source of the
+//! master key from which data keys are derived and wrapped. Implementations may
+//! hold the key locally or defer to an external KMS. A dependency-light leaf with
+//! no SecureFS crates beneath it.
+
+#![forbid(unsafe_code)]
+
 use thiserror::Error;
 use zeroize::Zeroizing;
 

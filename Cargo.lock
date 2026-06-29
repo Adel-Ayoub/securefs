@@ -2460,8 +2460,8 @@ dependencies = [
  "hkdf",
  "proptest",
  "rand_core 0.6.4",
+ "securefs-keyprovider",
  "sha2 0.10.9",
- "thiserror 2.0.18",
  "zeroize",
  "zstd",
 ]
@@ -2521,6 +2521,14 @@ dependencies = [
  "securefs-proto",
  "securefs-server-core",
  "serde_json",
+]
+
+[[package]]
+name = "securefs-keyprovider"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.18",
+ "zeroize",
 ]
 
 [[package]]
