@@ -47,6 +47,7 @@ pub mod crypto;
 pub mod dao;
 pub mod handlers;
 pub mod health;
+pub mod keyprovider;
 pub mod logging;
 pub mod metrics;
 pub mod pool;

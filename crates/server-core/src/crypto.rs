@@ -7,7 +7,7 @@ use rand_core::{OsRng, RngCore};
 use sha2::Sha256;
 use zeroize::Zeroizing;
 
-use securefs_keyring::{KeyProvider, LocalKeyProvider};
+use crate::keyprovider::{KeyProvider, LocalKeyProvider};
 
 use crate::dao;
 

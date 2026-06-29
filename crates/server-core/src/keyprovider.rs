@@ -1,5 +1,3 @@
-#![forbid(unsafe_code)]
-
 use thiserror::Error;
 use zeroize::Zeroizing;
 

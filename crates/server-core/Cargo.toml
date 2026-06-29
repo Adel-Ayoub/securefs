@@ -36,7 +36,6 @@ refinery = { version = "0.8", features = ["tokio-postgres"] }
 securefs-proto = { path = "../proto" }
 securefs-channel = { path = "../channel" }
 securefs-blobstore = { path = "../blobstore" }
-securefs-keyring = { path = "../keyring" }
 
 [features]
 # Object-storage (S3/MinIO) blob backend. Off by default so the standard build

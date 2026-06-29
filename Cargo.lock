@@ -2506,14 +2506,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "securefs-keyring"
-version = "0.1.0"
-dependencies = [
- "thiserror 2.0.18",
- "zeroize",
-]
-
-[[package]]
 name = "securefs-proto"
 version = "0.1.0"
 dependencies = [
@@ -2564,7 +2556,6 @@ dependencies = [
  "refinery",
  "securefs-blobstore",
  "securefs-channel",
- "securefs-keyring",
  "securefs-proto",
  "serde",
  "serde_json",
