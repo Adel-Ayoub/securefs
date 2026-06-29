@@ -11,6 +11,8 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4"
 securefs-server-core = { path = "../crates/server-core" }
 securefs-channel = { path = "../crates/channel" }
+securefs-proto = { path = "../crates/proto" }
+serde_json = "1.0"
 
 [[bin]]
 name = "secure_channel_open"
@@ -22,6 +24,27 @@ bench = false
 [[bin]]
 name = "health_parse"
 path = "fuzz_targets/health_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "at_rest_decrypt"
+path = "fuzz_targets/at_rest_decrypt.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dek_unwrap"
+path = "fuzz_targets/dek_unwrap.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "cmd_parse"
+path = "fuzz_targets/cmd_parse.rs"
 test = false
 doc = false
 bench = false

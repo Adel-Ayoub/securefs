@@ -2502,7 +2502,9 @@ version = "0.0.0"
 dependencies = [
  "libfuzzer-sys",
  "securefs-channel",
+ "securefs-proto",
  "securefs-server-core",
+ "serde_json",
 ]
 
 [[package]]

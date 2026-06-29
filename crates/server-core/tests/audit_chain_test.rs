@@ -5,6 +5,7 @@
 // test is robust to pre-existing entries and leaves the chain pristine.
 
 use deadpool_postgres::{Config, ManagerConfig, Pool, RecyclingMethod, Runtime};
+use securefs_server_core::crypto;
 use securefs_server_core::dao::{self, ChainStatus};
 use tokio_postgres::NoTls;
 
@@ -122,7 +123,9 @@ async fn appends_chain_verify_and_detect_tampering() {
 #[tokio::test]
 async fn signed_head_anchors_and_detects_truncation() {
     let pool = ready_pool().await;
-    let key = [7u8; 32];
+    // The real derived seal key (the production seam), not a fabricated constant;
+    // a different key must still be rejected below.
+    let key = crypto::audit_seal_key();
     let wrong_key = [9u8; 32];
 
     dao::append_audit_log(&pool, "TEST_SEAL", "alice", "/s1", "ok", None)
