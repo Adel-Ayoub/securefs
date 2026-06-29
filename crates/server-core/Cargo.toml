@@ -37,6 +37,7 @@ securefs-atrest = { path = "../atrest" }
 securefs-proto = { path = "../proto" }
 securefs-channel = { path = "../channel" }
 securefs-blobstore = { path = "../blobstore" }
+securefs-records = { path = "../records" }
 
 [features]
 # Object-storage (S3/MinIO) blob backend. Off by default so the standard build

@@ -2541,6 +2541,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "securefs-records"
+version = "0.1.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "securefs-server"
 version = "0.1.0"
 dependencies = [
@@ -2584,6 +2591,7 @@ dependencies = [
  "securefs-blobstore",
  "securefs-channel",
  "securefs-proto",
+ "securefs-records",
  "serde",
  "serde_json",
  "sha2 0.10.9",

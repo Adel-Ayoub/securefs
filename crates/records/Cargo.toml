@@ -1,0 +1,10 @@
+[package]
+name = "securefs-records"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "Server-side persistence records (files, users, groups) for SecureFS"
+license.workspace = true
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }

@@ -2,6 +2,8 @@
 //! layer. Server-only (never sent to the client), so they live here rather than
 //! in the wire-protocol crate.
 
+#![forbid(unsafe_code)]
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
