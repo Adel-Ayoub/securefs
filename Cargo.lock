@@ -2581,7 +2581,6 @@ dependencies = [
  "env_logger",
  "globset",
  "hex",
- "hkdf",
  "hmac 0.12.1",
  "log",
  "proptest",
@@ -2601,7 +2600,6 @@ dependencies = [
  "totp-rs",
  "uuid",
  "zeroize",
- "zstd",
 ]
 
 [[package]]
