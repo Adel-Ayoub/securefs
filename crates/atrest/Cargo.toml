@@ -1,0 +1,27 @@
+[package]
+name = "securefs-atrest"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "At-rest encryption for SecureFS: envelope/chunked AEAD, DEK wrapping, and per-file Merkle integrity"
+license.workspace = true
+
+[dependencies]
+aes-gcm = "0.10.3"
+blake3 = "1.5.1"
+hkdf = "0.12"
+sha2 = "0.10"
+hex = "0.4.3"
+rand_core = "0.6.4"
+zstd = "0.13"
+zeroize = "1"
+thiserror = "2"
+
+[features]
+# The v2 whole-file envelope encoder is kept only to build at-rest test vectors
+# for the legacy decode path. Off in normal builds; server-core turns it on for
+# its tests so they can synthesize old-format blobs.
+test-vectors = []
+
+[dev-dependencies]
+proptest = "1"

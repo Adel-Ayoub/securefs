@@ -43,11 +43,10 @@ macro_rules! audit {
 
 pub mod audit_verify;
 pub mod config;
-pub mod crypto;
+pub use securefs_atrest as crypto;
 pub mod dao;
 pub mod handlers;
 pub mod health;
-pub mod keyprovider;
 pub mod logging;
 pub mod metrics;
 pub mod pool;

@@ -56,12 +56,6 @@ pub fn data_key_secret() -> Option<String> {
     read_secret("DATA_KEY", "DATA_KEY_FILE")
 }
 
-// At-rest data-encryption key for runtime use. Prefers DATA_KEY; falls back to
-// DB_PASS for development only (production requires DATA_KEY, checked at boot).
-pub fn get_data_key() -> String {
-    data_key_secret().unwrap_or_else(get_db_pass)
-}
-
 // Deterministic keyed digest of a plaintext path for indexed exact-match
 // lookups. HMAC-SHA256 keyed by DB_PASS, so the digest reveals nothing about
 // the path without the secret yet the same path always maps to the same value.

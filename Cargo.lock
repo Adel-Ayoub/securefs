@@ -2451,6 +2451,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
+name = "securefs-atrest"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm",
+ "blake3",
+ "hex",
+ "hkdf",
+ "proptest",
+ "rand_core 0.6.4",
+ "sha2 0.10.9",
+ "thiserror 2.0.18",
+ "zeroize",
+ "zstd",
+]
+
+[[package]]
 name = "securefs-blobstore"
 version = "0.1.0"
 dependencies = [
@@ -2556,6 +2572,7 @@ dependencies = [
  "proptest",
  "rand_core 0.6.4",
  "refinery",
+ "securefs-atrest",
  "securefs-blobstore",
  "securefs-channel",
  "securefs-proto",

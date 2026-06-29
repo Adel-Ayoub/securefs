@@ -33,6 +33,7 @@ async-trait = "0.1"
 refinery = { version = "0.8", features = ["tokio-postgres"] }
 
 # Internal dependencies
+securefs-atrest = { path = "../atrest" }
 securefs-proto = { path = "../proto" }
 securefs-channel = { path = "../channel" }
 securefs-blobstore = { path = "../blobstore" }
@@ -45,3 +46,4 @@ s3 = ["securefs-blobstore/s3"]
 [dev-dependencies]
 proptest = "1"
 securefs-blobstore = { path = "../blobstore" }
+securefs-atrest = { path = "../atrest", features = ["test-vectors"] }

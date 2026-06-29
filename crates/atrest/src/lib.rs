@@ -1,4 +1,14 @@
-use std::sync::OnceLock;
+//! At-rest encryption for SecureFS: envelope and chunked AEAD, per-file DEK
+//! wrapping with KEK rotation, and per-file Merkle integrity. The master key is
+//! sourced through an injected key provider, so nothing here reaches into the
+//! database or the wire protocol - it stays an auditable, fuzzable, unsafe-free
+//! leaf.
+
+#![forbid(unsafe_code)]
+
+pub mod keyprovider;
+
+use std::sync::{Once, OnceLock};
 
 use aes_gcm::aead::{Aead, AeadCore};
 use aes_gcm::{Aes256Gcm, Key, KeyInit, Nonce};
@@ -8,8 +18,6 @@ use sha2::Sha256;
 use zeroize::Zeroizing;
 
 use crate::keyprovider::{KeyProvider, LocalKeyProvider};
-
-use crate::dao;
 
 // At-rest format versions (first byte of a blob):
 //   0x00 = legacy: nonce(12) || ciphertext, no compression, global key
@@ -69,7 +77,7 @@ pub fn set_key_provider(provider: Box<dyn KeyProvider + Send + Sync>) {
 // DATA_KEY_FILE, else DB_PASS). Called once at boot so all derivation routes
 // through the injected provider instead of reaching up into the DAO per call.
 pub fn install_env_key_provider() {
-    set_key_provider(Box::new(LocalKeyProvider::new(dao::get_data_key())));
+    set_key_provider(Box::new(LocalKeyProvider::new(env_master_secret())));
 }
 
 // The currently configured master secret, zeroized on drop. Prefers the injected
@@ -80,9 +88,53 @@ fn current_master() -> Zeroizing<Vec<u8>> {
             .master_key()
             .expect("installed key provider yields the configured secret");
     }
-    LocalKeyProvider::new(dao::get_data_key())
+    LocalKeyProvider::new(env_master_secret())
         .master_key()
         .expect("local key provider yields the configured secret")
+}
+
+// Warns once if the at-rest master falls back to the insecure development
+// default. The provider seam normally supplies the secret; this fires only when
+// nothing is installed and no secret is configured (dev/tests).
+static WARN_DEFAULT_MASTER: Once = Once::new();
+
+// At-rest master secret resolved from configuration, mirroring the deployment's
+// secret precedence without reaching into the DB layer: DATA_KEY (or its
+// DATA_KEY_FILE), else DB_PASS (or DB_PASS_FILE), else an insecure dev default.
+// Seeds the default provider and backs current_master when none is installed.
+fn env_master_secret() -> String {
+    if let Some(secret) = read_secret("DATA_KEY", "DATA_KEY_FILE") {
+        return secret;
+    }
+    match read_secret("DB_PASS", "DB_PASS_FILE") {
+        Some(pass) => pass,
+        None => {
+            WARN_DEFAULT_MASTER.call_once(|| {
+                eprintln!("[SECURITY WARNING] DB_PASS not set, using insecure default!");
+                eprintln!("[SECURITY WARNING] Set DB_PASS environment variable for production.");
+            });
+            "TEMP".to_string()
+        }
+    }
+}
+
+// Read a secret from env var `var`, else from the file named by `file_var`
+// (contents trimmed). None if neither yields a non-empty value.
+fn read_secret(var: &str, file_var: &str) -> Option<String> {
+    if let Ok(v) = std::env::var(var) {
+        if !v.is_empty() {
+            return Some(v);
+        }
+    }
+    if let Ok(path) = std::env::var(file_var) {
+        if let Ok(contents) = std::fs::read_to_string(&path) {
+            let trimmed = contents.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    None
 }
 
 // Derive a 32-byte subkey from an explicit master for a given HKDF label.
@@ -228,7 +280,7 @@ fn open_zstd(key: &Key<Aes256Gcm>, body: &[u8]) -> Result<Vec<u8>, &'static str>
 /// Encrypt content as a single whole-file AEAD envelope (`0x02`). Superseded for
 /// new writes by [`encrypt_file_chunked`]; kept to build test vectors so the
 /// older decode path keeps regression coverage (those blobs still exist on disk).
-#[cfg(test)]
+#[cfg(any(test, feature = "test-vectors"))]
 pub fn encrypt_file_content(content: &[u8]) -> (Vec<u8>, Vec<u8>) {
     let compressed = zstd::encode_all(content, 3).expect("zstd compression should not fail");
     let dek = Aes256Gcm::generate_key(OsRng);
